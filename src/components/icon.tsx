@@ -59,16 +59,22 @@ export function ItemIcon({
   className?: string;
 }) {
   const [state, setState] = useState<SpriteState>("loading");
+  const symbolId = `i${iconRef.toUpperCase()}`;
 
   useEffect(() => {
     let alive = true;
     void ensureSprite().then((ok) => {
-      if (alive) setState(ok ? "ready" : "absent");
+      if (!alive) return;
+      // Present-file is not the same as present-symbol. OpenMoji has no art for
+      // every codepoint, and the sprite only carries what was actually fetched,
+      // so asking for this specific symbol is what keeps "the sprite exists"
+      // from turning one missing icon into a blank tile.
+      setState(ok && document.getElementById(symbolId) ? "ready" : "absent");
     });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [symbolId]);
 
   // The emoji is rendered until the sprite is confirmed present, so a tile is
   // never blank while the fetch is in flight.
@@ -87,7 +93,7 @@ export function ItemIcon({
       style={{ width: "1em", height: "1em" }}
       role="presentation"
     >
-      <use href={`#i${iconRef.toUpperCase()}`} />
+      <use href={`#${symbolId}`} />
     </svg>
   );
 }

@@ -1,5 +1,7 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
+import { db } from "@/db";
 import { AuthError, authenticate } from "@/lib/auth";
 import { barcodeRoutes } from "./routes/barcode";
 import { listsRoutes } from "./routes/lists";
@@ -65,6 +67,24 @@ export function createApp() {
       description:
         "Shared household grocery list. Every request authenticates via the reverse proxy (Nginx Proxy Manager + Authelia) in front of the app.",
     },
+  });
+
+  // Also public, and for the same reason: the container's healthcheck runs
+  // inside the container, with no proxy in front of it and therefore no
+  // credentials to present. It leaks nothing — liveness, and whether Postgres
+  // answers.
+  //
+  // A dead database reports 503 rather than 200. The app itself survives one
+  // (the list is served from the client's own copy), but a container that
+  // cannot reach Postgres is degraded, and a healthcheck that says otherwise is
+  // worse than no healthcheck at all.
+  app.get("/health", async (c) => {
+    try {
+      await db.execute(sql`select 1`);
+      return c.json({ status: "ok", db: "up" });
+    } catch {
+      return c.json({ status: "degraded", db: "down" }, 503);
+    }
   });
 
   app.route("/", api());

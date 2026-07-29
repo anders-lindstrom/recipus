@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { sql } from "drizzle-orm";
 import { db } from "./index";
 import { catalogItems, categories, lists, users } from "./schema";
@@ -13,11 +14,16 @@ import { normalizeName, slugify } from "@/lib/utils";
  * are deliberately NOT overwritten on conflict. Re-running this to pick up new
  * seed items must never reset the catalog's learned ordering or un-flag a
  * staple you told it about.
+ *
+ * That idempotence is what lets this run on every server boot in production
+ * (src/instrumentation.ts) rather than being a one-off someone has to remember
+ * after each deploy. A deploy that adds catalog items ships them; a deploy that
+ * adds none changes nothing.
  */
 
 const SEED_ACTOR = "system";
 
-async function main() {
+export async function seed() {
   console.log("Seeding categories…");
   for (const c of CATEGORIES) {
     await db
@@ -90,9 +96,18 @@ async function main() {
   console.log(`Done. Catalog holds ${count} items.`);
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+// CLI entry point (`pnpm db:seed`). Guarded, because the server imports this
+// module at boot: an unguarded `process.exit(0)` at the bottom of the file
+// would take the whole app down the moment the catalog finished seeding.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  seed()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}

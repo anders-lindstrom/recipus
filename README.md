@@ -17,24 +17,28 @@ Samma stack som longhaul, så de två projekten sköts likadant.
 ## Utveckling
 
 ```bash
-# Postgres (dev) — port 5434, longhaul äger 5433
+# Postgres (dev) — port 5434, longhaul äger 5433. Samma major som beelinken.
 docker run -d --name recipus-pg \
   -e POSTGRES_USER=recipus -e POSTGRES_PASSWORD=recipus -e POSTGRES_DB=recipus \
-  -p 5434:5432 postgres:16-alpine
+  -p 5434:5432 postgres:17-alpine
 
 cp .env.example .env          # DATABASE_URL, PROXY_AUTH_SECRET, DEV_AUTH_USER
 
 pnpm install
 pnpm db:migrate               # drizzle-migrationer
-pnpm db:seed                  # 19 kategorier, 336 svenska varor, en startlista
+pnpm db:seed                  # 19 kategorier, 341 svenska varor, en startlista
 pnpm icons:build              # valfritt: hämtar OpenMoji-sprite (annars systememoji)
 pnpm dev
 ```
 
+I produktion seedas katalogen om vid varje start (`src/instrumentation.ts`), så
+`pnpm db:seed` är bara till för utveckling.
+
 ```bash
-pnpm test                     # 227 tester — motorerna är testdrivna
+pnpm test                     # 361 tester — motorerna är testdrivna
 pnpm tsc --noEmit
 pnpm lint
+pnpm test:e2e                 # Playwright, egen lista per test
 ```
 
 ## Struktur
@@ -69,9 +73,12 @@ förslagsmotorn att du köper saffran varje vecka.
 
 ## Deploy
 
-Ej uppsatt än — se DECISIONS.md. Planen följer longhaul: GitHub Actions bygger
-imagen till `registry.lindstromhome.cc/recipus`, Watchtower drar den, och NPM +
-Authelia står framför.
+Samma pipeline som longhaul: push till `master` → GitHub Actions kör tester och
+bygger imagen till `registry.lindstromhome.cc/recipus` → Watchtower drar och
+återskapar bara den containern. NPM + Authelia står framför.
+
+Hela runbooken — databasroll, NPM-host, Authelia-regel, första körningen och
+felsökning — finns i [`docs/deploy.md`](./docs/deploy.md).
 
 > ⚠️ **Authelias sessionstid måste vara lång** (veckor, med "remember me") innan
 > det här är användbart i en butik. Appen klarar en utgången session — den visar

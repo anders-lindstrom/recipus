@@ -48,6 +48,13 @@ function toSymbol(ref: string, svg: string): string | null {
   return `<symbol id="i${ref}" viewBox="${viewBox}">${body.trim()}</symbol>`;
 }
 
+// Image builds pass --strict: there, a partial fetch is a broken deploy waiting
+// to happen rather than a cosmetic shortfall, and a build that stops is far
+// cheaper than shipping a sprite and finding out in a shop which tiles it left
+// out. Interactively it stays lenient — a missing icon or two is not a reason
+// to refuse to produce the other 110.
+const STRICT = process.argv.includes("--strict");
+
 async function main() {
   const refs = [
     ...new Set([
@@ -91,6 +98,14 @@ async function main() {
     process.exit(1);
   }
 
+  if (STRICT && missing.length) {
+    console.error(
+      `--strict: ${missing.length} of ${refs.length} icons could not be fetched ` +
+        `(${missing.join(", ")}). Leaving the sprite untouched.`,
+    );
+    process.exit(1);
+  }
+
   await mkdir(dirname(OUT), { recursive: true });
   await writeFile(
     OUT,
@@ -100,9 +115,9 @@ async function main() {
 
   console.log(`Wrote ${OUT} with ${symbols.length} icons.`);
   if (missing.length) {
-    // Not a failure. These tiles keep their system emoji, which is a perfectly
-    // good outcome — but worth knowing which ones so the seed data can pick a
-    // codepoint OpenMoji actually covers.
+    // Not a failure: ItemIcon checks for the individual symbol, so these tiles
+    // keep their system emoji while the rest get OpenMoji art. Still worth
+    // naming them, so the seed data can pick a codepoint OpenMoji covers.
     console.warn(`No OpenMoji art for ${missing.length}: ${missing.join(", ")}`);
   }
 }

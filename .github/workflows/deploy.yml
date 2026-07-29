@@ -1,0 +1,165 @@
+name: deploy
+
+# Test -> build -> push to the beelink private registry -> trigger Watchtower.
+# Mirrors longhaul and hue-lights. Recipus lives on `master`.
+#
+# Required repo secrets:
+#   REGISTRY_USERNAME   github-ci
+#   REGISTRY_PASSWORD   that user's registry password
+#   WATCHTOWER_TOKEN    contents of ~/services/watchtower/api-token.txt on beelink
+
+on:
+  push:
+    branches: [master]
+    # None of these reach the runner image, so a commit touching only them would
+    # rebuild a byte-identical image and bounce production for nothing. A commit
+    # that touches these AND app code still deploys — the filter is over the
+    # changed files, not the commit.
+    #
+    # Consequence: not every master sha has an :sha image to roll back to. Roll
+    # back to the last sha that actually deployed (the registry's tag list).
+    paths-ignore:
+      - "docs/**"
+      - "deploy/**"
+      - "**.md"
+  workflow_dispatch:
+
+concurrency:
+  # A newer push supersedes an in-flight deploy; never race two deploys.
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: registry.lindstromhome.cc/recipus
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Match the beelink's major. The entrypoint's pg_dump refuses to dump a
+        # server newer than its client, so a mismatch found here is cheaper.
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: recipus
+          POSTGRES_PASSWORD: recipus
+          POSTGRES_DB: recipus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recipus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://recipus:recipus@localhost:5432/recipus
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm tsc --noEmit
+      - run: pnpm lint
+
+      # The entrypoint auto-migrates production on every deploy, so a migration
+      # that does not apply cleanly has to die here instead.
+      - name: Migrations apply to a fresh database
+        run: |
+          echo "DATABASE_URL=$DATABASE_URL" > .env
+          pnpm db:migrate
+      - name: Seed is idempotent and migrations re-run clean
+        # The server re-seeds on every boot (src/instrumentation.ts), so "runs
+        # twice without complaint" is a production invariant, not a nicety.
+        run: |
+          pnpm db:seed
+          pnpm db:seed
+          pnpm db:migrate
+
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: recipus
+          POSTGRES_PASSWORD: recipus
+          POSTGRES_DB: recipus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recipus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Read directly by tests/e2e/fixtures.ts, which creates and drops a list
+      # per test. The dev server started by playwright.config.ts picks it up
+      # from the .env written below.
+      DATABASE_URL: postgres://recipus:recipus@localhost:5432/recipus
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: npx playwright install --with-deps chromium
+      - name: Migrate and seed
+        run: |
+          echo "DATABASE_URL=$DATABASE_URL" > .env
+          echo "DEV_AUTH_USER=e2e" >> .env
+          pnpm db:migrate
+          pnpm db:seed
+      - run: pnpm test:e2e
+      - uses: actions/upload-artifact@v5
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  deploy:
+    needs: [test, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to the beelink registry
+        uses: docker/login-action@v4
+        with:
+          registry: registry.lindstromhome.cc
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          # :latest is what the compose file and Watchtower track.
+          # The :sha tag lets you roll back to an exact commit.
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trigger deploy on beelink
+        # POST only (GET returns 405). Scoped by ?image= so Watchtower recreates
+        # ONLY recipus and leaves every other container alone. If this step
+        # fails the deploy is not lost: Watchtower's ~10h scan is the fallback.
+        #
+        # On the very first deploy this logs `scanned=0 updated=0` — Watchtower
+        # updates containers, it never creates them. See docs/deploy.md.
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ secrets.WATCHTOWER_TOKEN }}" \
+            "https://watchtower.lindstromhome.cc/v1/update?image=${{ env.IMAGE }}"

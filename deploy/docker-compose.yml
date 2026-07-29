@@ -1,0 +1,92 @@
+# Recipus on the beelink — the app container, and nothing else.
+#
+# This mirrors what runs at `~/services/recipus/docker-compose.yml`. Postgres,
+# the reverse proxy and TLS are pre-existing homelab services: point
+# DATABASE_URL at the shared Postgres and let nginx-proxy-manager (NPM) do TLS.
+# Do NOT add nginx or postgres services here.
+#
+# Full runbook — creating the database role, the NPM host, the Authelia rule,
+# and the first-run ordering trap — is in docs/deploy.md.
+#
+# --- Before the first deploy -------------------------------------------------
+#   cp <repo>/.env.example .env      # fill in DATABASE_URL + PROXY_AUTH_SECRET
+#   mkdir -p backups && sudo chown -R 1001:1001 backups
+#
+# The image runs as uid 1001 (`nextjs`). If `backups` is not writable by it the
+# entrypoint takes the *warning* branch and migrates with no snapshot — a silent
+# loss of the only rollback path, since drizzle has no down migrations.
+#
+# --- Auth: the app authenticates every request itself ------------------------
+# `src/lib/auth.ts` requires BOTH the `X-Proxy-Auth` secret that NPM injects and
+# the `Remote-User` header Authelia populates. It FAILS CLOSED: with
+# PROXY_AUTH_SECRET unset, every request is rejected and the app looks dead. So:
+#
+#   1. `openssl rand -hex 32` → put it in this directory's `.env` as
+#      PROXY_AUTH_SECRET=… and configure the SAME value as an injected
+#      `X-Proxy-Auth` request header on NPM's `recipus.lindstromhome.cc` host.
+#      Never commit the value.
+#   2. Give that host an Authelia rule with a LONG session TTL — weeks, with
+#      "remember me". This app gets opened in a shop, on bad 4G, after three
+#      weeks of not being touched; a lapsed session there is a 2FA prompt at the
+#      checkout. No amount of code fixes that, only the Authelia config.
+#
+# --- Networking: NPM reaches the container, the LAN does not -----------------
+# Deliberately no published host port, following longhaul rather than the
+# generic beelink template. A `51NN:3000` mapping would be a second front door
+# that skips both NPM and Authelia; since the app's own auth gate rejects
+# anything without the proxy secret, that port would serve nothing but 401s
+# anyway. NPM's forward target is host `recipus`, port `3000`, scheme http.
+#
+# To debug from the LAN, add a `ports: ["5103:3000"]` block temporarily — 5103
+# is the next free slot after hue-lights/alberto/longhaul (5100–5102). Remove it
+# again afterwards.
+services:
+  recipus:
+    # what .github/workflows/deploy.yml pushes (private registry, not ghcr)
+    image: registry.lindstromhome.cc/recipus:latest
+    # required: without it `up -d` silently reuses the stale local image
+    pull_policy: always
+    # NPM forwards to host `recipus`, so the name is load-bearing
+    container_name: recipus
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Next's standalone server binds $HOSTNAME, which Docker sets to the
+      # container id — an unroutable name, so NPM gets connection refused.
+      - HOSTNAME=0.0.0.0
+      # The image already sets this; kept explicit because cadence suggestions
+      # are computed from day boundaries, and a base-image change that shifted
+      # the clock would quietly shift every purchase interval with it.
+      - TZ=Europe/Stockholm
+    volumes:
+      # Pre-migration pg_dumps (newest 10). Must be writable by uid 1001 — see
+      # the note above about how badly this degrades if it is not.
+      - ./backups:/backups
+    healthcheck:
+      # /api/health is public by design (registered before the auth gate), so
+      # this needs no credentials. It reports 503 when Postgres is unreachable.
+      # start_period covers the dump + migrations + the boot-time catalog seed.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    # No watchtower opt-in label: beelink's Watchtower runs without
+    # `--label-enable`, so it already watches every container. GitHub Actions
+    # pings its API scoped to this image after a push.
+    networks:
+      # BOTH are needed: db_net to reach the shared postgres by container name,
+      # NPM's network so it can route here without a published host port.
+      - db_net
+      - nginx-proxy-manager_proxy_net
+
+networks:
+  # Both already exist (shared postgres / NPM) — external so this file never
+  # creates them. The NPM one is named after its compose project, so it is
+  # `nginx-proxy-manager_proxy_net`, not `proxy_net`; a bare `proxy_net` fails
+  # `up -d` with "declared as external, but could not be found".
+  db_net:
+    external: true
+  nginx-proxy-manager_proxy_net:
+    external: true

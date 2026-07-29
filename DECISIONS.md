@@ -7,7 +7,9 @@ Read this first. Everything below happened while you were away.
 `pnpm build` green. Dev server on **port 3100** (3000 was taken by Travkollen),
 Postgres on **5434**.
 
-Only deploy is outstanding, which you scoped out.
+Deploy was scoped out of that session and has since been prepared — see
+**"Deploy preparation"** at the end, and [`docs/deploy.md`](./docs/deploy.md)
+for the runbook.
 
 ---
 
@@ -23,7 +25,7 @@ Only deploy is outstanding, which you scoped out.
 - Recipe URL import via schema.org JSON-LD, with an LLM fallback.
 - Contribution merging: two recipes wanting cream show one tile reading the
   merged total, with a breakdown sheet that explains it.
-- Cadence engine, seeded catalog (336 Swedish items, 19 aisle-ordered
+- Cadence engine, seeded catalog (341 Swedish items, 19 aisle-ordered
   categories), PWA manifest and offline-first service worker.
 
 ## Offline works, and is verified
@@ -215,7 +217,7 @@ data once (DevTools → Application → Storage) and it will not recur.
 ## Gotchas
 
 - `git_agent` reported LOCKED, so commits are unsigned. **Nothing is pushed** —
-  seven commits sit on the local `master`, per the away-mode contract.
+  everything sits on the local `master`, per the away-mode contract.
 - Dev Postgres is on **5434**; dev server on **3100**.
 - **Deploy note, learned the hard way:** `output: "standalone"` breaks
   `next start`'s static serving, and the standalone server must be run *from
@@ -223,3 +225,85 @@ data once (DevTools → Application → Storage) and it will not recur.
   it serves HTML and 404s every asset — including sw.js, so offline silently
   does not work. The Dockerfile has to do those copies.
 - I left a dev server running. `lsof -nP -iTCP:3100 -sTCP:LISTEN` to find it.
+
+---
+
+# Deploy preparation
+
+Everything needed to ship to the beelink now exists: `Dockerfile`,
+`docker-entrypoint.sh`, `.dockerignore`, `.github/workflows/deploy.yml`,
+`deploy/docker-compose.yml`, and the runbook in
+[`docs/deploy.md`](./docs/deploy.md). It follows longhaul, which is the
+reference for how apps reach that box.
+
+**Verified, not just written.** I built the image and ran it against a throwaway
+Postgres 17: the entrypoint took its pre-migration `pg_dump`, applied both
+migrations, seeded 341 catalog items, and served. With proxy headers `/` renders
+the real list; without them `/api/lists` is 401. `/sw.js`,
+`/manifest.webmanifest` and the icon sprite all return 200 from the standalone
+server — the check that matters, since that is exactly what silently breaks
+offline. Then I restarted the container to exercise the *redeploy* path: second
+dump taken, migrations a no-op, seed re-ran without touching anything. Cleaned
+up afterwards.
+
+## Three decisions worth knowing about
+
+**The catalog seeds itself on every boot.** The production image has no `tsx`
+and no `src/`, so `pnpm db:seed` cannot run inside the container — the standard
+workaround is a throwaway container built from the image's *builder* stage, run
+by hand. I did not want "the app is usable" to depend on someone remembering
+that after each deploy, because an empty catalog is a screen with nothing to tap
+and looks exactly like a broken deploy. So `src/db/seed.ts` now exports a
+function, and `src/instrumentation.ts` calls it at server startup.
+
+The seed was already idempotent and already preserves everything the household
+owns (`has_at_home`, `use_count`, `last_used_at`), so this is safe by
+construction — and it means a deploy that adds catalog items ships them.
+Off in dev, on in production, `SEED_ON_BOOT` to force either. It is never fatal:
+a failed seed logs and the app still boots, because losing catalog items is much
+cheaper than losing the app.
+
+The alternative I rejected was emitting the seed as SQL at build time. It would
+have avoided the runtime coupling, but at the price of a second implementation
+of "what belongs in the catalog" that has to stay in agreement with the first —
+the same trap the shared reducer exists to avoid.
+
+**No published host port.** The generic homelab pattern publishes `51NN:3000`;
+longhaul deliberately does not, and Recipus follows it. Traffic arrives only
+through NPM, on NPM's own network. A published port would be a second front
+door past Authelia, and since the app's auth gate rejects anything without the
+proxy secret it would serve nothing but 401s anyway. `5103` is the free slot if
+you ever want one for debugging.
+
+**The sprite is built into the image, with `--strict`.**
+`public/icons/openmoji-sprite.svg` is gitignored, so a clean CI checkout has
+none and production would silently fall back to system emoji — the
+inconsistent-across-phones look OpenMoji was chosen to avoid. The Docker build
+now fetches it, and `--strict` makes any missing icon fail the build: a blocked
+deploy you retry is far cheaper than an image that quietly ships half a sprite.
+All 112 icons fetched in the image build.
+
+## A bug found while wiring that up
+
+`ItemIcon` only checked whether the *sprite file* loaded, not whether the
+specific symbol was in it. Once the sprite existed, any codepoint OpenMoji has
+no art for rendered a **blank tile** rather than falling back to the system
+emoji — and the comment in the sprite builder cheerfully claimed the opposite.
+Invisible today because all 112 codepoints resolve, but a partial fetch in CI
+would have shipped blank tiles to the shop. It now checks for the individual
+symbol, which makes the fallback the builder always claimed to have.
+
+## Still needs you (nothing here is code)
+
+1. **Three GitHub repo secrets** — `REGISTRY_USERNAME`, `REGISTRY_PASSWORD`,
+   `WATCHTOWER_TOKEN`.
+2. **The database** — its own role, owning its own database, on the shared
+   Postgres.
+3. **NPM host + Authelia rule**, with the `X-Proxy-Auth` header injected and
+   `Remote-User` passed through. Both are required; get either wrong and every
+   request 401s.
+4. **Authelia's session TTL: weeks, with "remember me".** Still the single most
+   important setting, and still not something code can compensate for.
+5. **The first container must be created by hand.** Watchtower updates
+   containers, it never creates them — the first CI trigger will log
+   `scanned=0 updated=0`, which looks like a broken token and is not.
