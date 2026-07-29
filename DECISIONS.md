@@ -122,6 +122,23 @@ last-write-wins bookkeeping without the `deleted` marker even when tombstoning,
 so `pruneTombstones` — whose whole job is bounding that map — skipped every one
 of them. Found by the sync agent reading my code, not by a test.
 
+**The per-field clocks did not survive the database.** I fixed `amount` and
+`note` to carry independent clocks in the reducer, then persisted both through a
+single `updated_at` column. So they collapsed on write and came back identical
+on read, and the server could reconstruct a state the client never had — the two
+devices then disagreeing about a quantity, which is the whole thing this app
+exists to prevent. Fixing it in memory but not on disk meant it was not really
+fixed. `contributions` now carries `amount_updated_at`/`_by` and
+`note_updated_at`/`_by` (migration `drizzle/0001`), nullable, falling back to the
+row-level clock for recipe and scan contributions, which are written whole by a
+single op. Flagged by the API agent.
+
+**A stale `remove_item` could write a purchase it never caused.** The purchase
+write checked whether the entry was on the list *before* the op, not whether the
+op actually won the last-write-wins comparison — so a losing op still recorded a
+purchase and bumped the catalog ordering, corrupting the cadence engine's only
+input. Also flagged by the API agent.
+
 ---
 
 ## Open questions for you

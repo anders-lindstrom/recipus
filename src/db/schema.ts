@@ -154,6 +154,26 @@ export const contributions = pgTable(
     amountValue: doublePrecision("amount_value"),
     amountUnit: text("amount_unit"),
     note: text("note"),
+    /*
+     * The amount and the note carry SEPARATE last-write-wins clocks, and they
+     * have to survive the round trip through this table.
+     *
+     * The reducer already treats them as independent — an older `set_amount`
+     * arriving after a newer `set_note` must not take the quantity down with
+     * it. But with one `updated_at` for the whole row, both clocks collapse to
+     * the same value on write and come back identical on read, so the server
+     * reconstructs a state the client never had. You set 5 dl, your partner
+     * adds a note, and after a reload the server thinks the note's timestamp
+     * governs the amount too — the two devices then disagree about how much
+     * cream you need, which is the exact failure this app exists to prevent.
+     *
+     * Nullable because recipe/scan contributions never use them: those rows are
+     * written whole by a single op and the row-level clock is correct for them.
+     */
+    amountUpdatedAt: timestamp("amount_updated_at", { withTimezone: true }),
+    amountUpdatedBy: text("amount_updated_by"),
+    noteUpdatedAt: timestamp("note_updated_at", { withTimezone: true }),
+    noteUpdatedBy: text("note_updated_by"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
