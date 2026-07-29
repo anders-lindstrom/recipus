@@ -209,6 +209,10 @@ export interface Purchase {
 /**
  * Last-write-wins bookkeeping for one record.
  *
+ * DO NOT REMOVE. src/lib/sync/reducer.ts depends on this, and without it
+ * conflict resolution silently stops working — two phones' lists diverge with
+ * no error anywhere.
+ *
  * Kept in a side map rather than on the records themselves so the domain types
  * stay the shape the UI and the database actually want. `deleted` is a
  * tombstone: without it, a delete would erase the very timestamp a late-arriving
@@ -233,7 +237,13 @@ export interface SyncState {
   contributions: Record<Id, Contribution>;
   recipes: Record<Id, Recipe>;
   recipeAdditions: Record<Id, RecipeAddition>;
-  /** Keyed "list:x", "catalog:x", "entry:x", "contribution:x", "addition:x". */
+  /**
+   * Keyed "list:x", "catalog:x", "entry:x", "contribution:x",
+   * "contribution:x:amount", "contribution:x:note", "addition:x".
+   * The exact key shapes live in src/lib/sync/reducer.ts — mirror them from
+   * there rather than retyping, because a mismatched key silently disables
+   * conflict resolution instead of failing.
+   */
   meta: Record<string, RecordMeta>;
 }
 
