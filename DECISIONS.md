@@ -307,3 +307,82 @@ symbol, which makes the fallback the builder always claimed to have.
 5. **The first container must be created by hand.** Watchtower updates
    containers, it never creates them — the first CI trigger will log
    `scanned=0 updated=0`, which looks like a broken token and is not.
+
+# UI redesign
+
+The visual language was rebuilt. The core loop, the sync model and every engine
+are untouched; this is entirely presentation, and the 361 unit tests plus all 7
+Playwright flows pass unchanged.
+
+## Green means "on the list"
+
+The header used to be a solid brand-green bar. That made the most saturated
+thing on screen the *furniture*, competing with the green that carries the
+actual signal — which items you still have to buy. Chrome is now paper and ink,
+and green is spent only on items in "att handla" and on the one primary action
+per screen. The catalog sits in a sunken well below, so the boundary between
+"my list" and "everything we ever buy" is a change of ground rather than a
+heading you have to read.
+
+## The catalog got navigation
+
+The real friction was never search, it was that reaching "Skafferi" meant a
+dozen flicks past 341 items in 19 aisles. There is now an **aisle rail**: chips
+that jump to any aisle, placed *after* the "att handla" zone and `sticky`, so
+plain CSS gives it the right behaviour with no scroll handler — absent while
+you are looking at your list, pinned under the header the moment the catalog
+starts. Which chip is lit comes from an IntersectionObserver, not a scroll
+listener. The add bar scrolls away (two stacked pinned bars would eat a fifth
+of a phone screen), so the rail carries a "Sök" chip that brings it back.
+
+## Emoji stopped being chrome
+
+`🔍 📖 ▣ ➕ ✕ ✓ ‹ ▼` were doing the job of an icon set, and emoji-as-chrome has
+one fatal property: the phone picks the artwork. Nothing matched the text beside
+it and none of it could take the ink colour. Chrome is now lucide (already a
+dependency) behind one closed module, `ui-icon.tsx`, at one stroke weight.
+**Items are still OpenMoji** — a grid of little pictures is what makes the list
+scannable and it is half the app's character.
+
+## Contrast was measurably broken
+
+Catalog tiles receded via `opacity-60` on the whole tile, which dragged item
+names to about 2.5:1 — unreadable for anyone with mild low vision. Tiles now
+recede via a quieter ink colour and a desaturated icon. Every text/background
+pair in both schemes was checked against WCAG AA rather than eyeballed;
+`--color-ink-faint` in light mode is *solved* for, not picked — it is the
+lightest value that still clears 4.5:1 on `surface-sunken`, the darkest ground
+it ever sits on.
+
+## Type is a scale now
+
+Twenty hand-picked pixel values between 9.5px and 19px became seven named steps.
+The face is **Familjen Grotesk**, a Swedish public-information grotesk drawn to
+stay legible on signage at distance — close to this app's actual reading
+condition, and it means åäö were designed rather than adapted. Self-hosted by
+`next/font` (verified: woff2 under `/_next/static`, zero requests to Google), so
+there is nothing for the proxy to explain and nothing to fetch in a basement.
+Sizes skew larger than before; item names went 11px → 13px.
+
+## Things deliberately *not* done
+
+- **No animation library.** Motion is CSS keyframes: tiles arriving in "att
+  handla", sheets rising, a press-in squeeze that makes long-press
+  discoverable. Nothing loops, nothing is ambient.
+- **Pinned bars are opaque, not frosted.** Translucency ghosted high-contrast
+  tile labels through the header in dark mode, and `backdrop-filter` on a bar
+  pinned over a 341-tile scroller costs a GPU repaint every frame on exactly the
+  phones this must stay smooth on. The sheet backdrop keeps its blur — it
+  renders once.
+- **Instant removal was preserved.** An exit animation on "bought" would have
+  meant delaying the state change. A tap that waits is a tap that fails in a
+  shop; the toast already confirms.
+
+## Three copy bugs fixed on the way past
+
+"Lägg till 1 **varor**" now agrees. Dash placeholders for a missing amount were
+removed — an ingredient with no quantity ("salt efter smak") renders an empty
+column, because a dash looked like a parsed value. And the entry sheet's two
+foot buttons were equal-weight side by side, separated by a hairline, which is
+how "Ta bort" gets tapped by someone reaching for "Ändra mängd"; they are
+stacked now, with only the destructive one coloured.

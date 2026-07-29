@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ItemIcon } from "./icon";
+import { UiIcon } from "./ui-icon";
 
 /**
  * The tile.
@@ -11,6 +12,14 @@ import { ItemIcon } from "./icon";
  * the single most important property is that tapping one does its thing
  * immediately — no dialog, no confirm, no spinner. A tap that waits on the
  * network is a tap that fails in a shop.
+ *
+ * The two states have to be tellable apart in a fraction of a second, in bad
+ * light, at arm's length. So they differ on three axes at once — fill, border
+ * and icon saturation — rather than on opacity alone. Opacity was the old
+ * approach and it had a real cost: `opacity-60` on the whole tile dragged the
+ * item name down to a 2.5:1 contrast ratio, which is unreadable for anyone with
+ * even mild low vision. Catalog tiles now recede by using a quieter ink colour
+ * that still clears AA, and by desaturating the icon rather than the text.
  */
 
 export interface ItemTileProps {
@@ -21,7 +30,7 @@ export interface ItemTileProps {
   quantityLabel?: string;
   /** True when the item is in the "att handla" zone rather than the catalog. */
   onList?: boolean;
-  /** Shows the 📖 badge — a recipe asked for this. */
+  /** Shows the recipe badge — a recipe asked for this. */
   fromRecipe?: boolean;
   /** Cadence engine's reason, e.g. "6 dgr sen". Suggestion tiles only. */
   reason?: string;
@@ -29,6 +38,8 @@ export interface ItemTileProps {
   actorColor?: string;
   /** Dimmed while a pending change has not yet reached the server. */
   pending?: boolean;
+  /** Plays the arrival animation. Only the "att handla" zone sets this. */
+  animateIn?: boolean;
   onTap: () => void;
   onLongPress?: () => void;
 }
@@ -47,6 +58,7 @@ export function ItemTile({
   reason,
   actorColor,
   pending = false,
+  animateIn = false,
   onTap,
   onLongPress,
 }: ItemTileProps) {
@@ -56,17 +68,25 @@ export function ItemTile({
   // long-press after the user has already moved on.
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressed = useRef(false);
+  // Drives the press-in affordance. Without it, holding a tile looks identical
+  // to a tap that hasn't registered, so people let go at 400ms and conclude the
+  // gesture doesn't exist — which is how a long-press-only feature stays
+  // undiscovered forever.
+  const [holding, setHolding] = useState(false);
 
   const cancel = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
+    setHolding(false);
   }, []);
 
   const start = useCallback(() => {
     if (!onLongPress) return;
     longPressed.current = false;
+    setHolding(true);
     timer.current = setTimeout(() => {
       longPressed.current = true;
+      setHolding(false);
       // Haptic confirmation matters here: without it a long-press feels like a
       // tap that didn't register. Absent on iOS Safari — hence the optional call.
       navigator.vibrate?.(12);
@@ -79,16 +99,19 @@ export function ItemTile({
       type="button"
       aria-pressed={onList}
       className={cn(
-        "relative flex min-h-[78px] flex-col items-center justify-start",
-        "rounded-tile border px-1.5 pt-2.5 pb-2 text-center",
-        "transition-[transform,opacity] duration-100 active:scale-[0.96]",
+        "group relative flex min-h-[92px] flex-col items-center justify-start",
+        "rounded-tile border px-1.5 pt-3 pb-2.5 text-center",
+        "transition-[transform,background-color,border-color]",
         onList
           ? "border-brand-line bg-brand-tint"
-          // Catalog tiles recede so the shopping list reads first. Dark mode
-          // needs a lighter touch: the same 60%-plus-grayscale that looks
-          // right on paper turns icons into grey smudges against near-black.
-          : "border-line bg-paper-raised opacity-60 dark:opacity-80",
-        pending && "opacity-45",
+          : "border-line bg-surface-raised",
+        // Two different durations off one state: the slow squeeze is the
+        // long-press filling up, the fast one is the release or a plain tap.
+        holding
+          ? "scale-[0.93] duration-500 ease-linear"
+          : "duration-100 active:scale-[0.95]",
+        pending && "opacity-55",
+        animateIn && "animate-tile-in",
       )}
       onClick={() => {
         // The long-press already acted; the click that follows must not also
@@ -108,15 +131,15 @@ export function ItemTile({
       {fromRecipe && (
         <span
           aria-hidden
-          className="absolute top-1 right-1 flex h-[15px] w-[15px] items-center justify-center rounded-full bg-brand text-[9px] text-white"
+          className="absolute top-1.5 right-1.5 flex h-[17px] w-[17px] items-center justify-center rounded-full bg-brand text-on-brand"
         >
-          📖
+          <UiIcon name="recipes" size={10} />
         </span>
       )}
       {actorColor && (
         <span
           aria-hidden
-          className="absolute top-1 left-1 h-1.5 w-1.5 rounded-full"
+          className="absolute top-1.5 left-1.5 h-1.5 w-1.5 rounded-full"
           style={{ background: actorColor }}
         />
       )}
@@ -124,23 +147,30 @@ export function ItemTile({
       <ItemIcon
         iconRef={iconRef}
         className={cn(
-          "text-2xl leading-none",
-          !onList && "grayscale-[0.7] dark:grayscale-[0.2]",
+          "text-[26px] leading-none transition-[filter] duration-150",
+          // Catalog art is muted rather than hidden — enough to let the green
+          // zone win the eye, not so much that a red pepper stops being red.
+          !onList && "saturate-[0.55] dark:saturate-[0.75]",
         )}
       />
 
-      <span className="mt-1 text-[11px] leading-tight font-semibold text-ink">
+      <span
+        className={cn(
+          "mt-1.5 text-label text-balance",
+          onList ? "text-ink" : "text-ink-soft",
+        )}
+      >
         {name}
       </span>
 
       {quantityLabel ? (
-        <span className="mt-0.5 text-[10.5px] leading-none font-extrabold tracking-tight text-brand">
+        <span className="mt-1 text-caption font-bold text-brand-ink">
           {quantityLabel}
         </span>
       ) : null}
 
       {reason ? (
-        <span className="mt-0.5 text-[9.5px] leading-none font-bold text-warn">
+        <span className="mt-1 text-[0.6875rem] leading-none font-semibold text-warn">
           {reason}
         </span>
       ) : null}
@@ -150,29 +180,36 @@ export function ItemTile({
 
 /** Three tiles per row is the widest that keeps Swedish item names readable. */
 export function TileGrid({ children }: { children: React.ReactNode }) {
-  return <div className="grid grid-cols-3 gap-[7px]">{children}</div>;
+  return <div className="grid grid-cols-3 gap-2">{children}</div>;
 }
 
 export function SectionHeading({
   children,
   count,
   tone = "muted",
+  id,
 }: {
   children: React.ReactNode;
   count?: number;
   tone?: "muted" | "brand" | "warn";
+  /** Set on aisle headings so the rail can scroll to them. */
+  id?: string;
 }) {
   return (
-    <div
+    <h2
+      id={id}
       className={cn(
-        "mx-0.5 mt-3 mb-1.5 flex justify-between text-[10.5px] font-extrabold tracking-[0.11em] uppercase",
+        "mx-0.5 mt-5 mb-2 flex items-baseline justify-between text-overline uppercase",
+        id && "aisle-anchor",
         tone === "muted" && "text-ink-faint",
-        tone === "brand" && "text-brand",
+        tone === "brand" && "text-ink-soft",
         tone === "warn" && "text-warn",
       )}
     >
       <span>{children}</span>
-      {count !== undefined && <span>{count}</span>}
-    </div>
+      {count !== undefined && (
+        <span className="text-ink-faint tabular-nums">{count}</span>
+      )}
+    </h2>
   );
 }

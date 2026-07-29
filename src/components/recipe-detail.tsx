@@ -1,14 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import type { Amount, CatalogItem, Id, List, Recipe, RecipeIngredient } from "@/lib/domain";
 import { parseIngredientLine } from "@/lib/ingredients";
 import type { Op } from "@/lib/sync";
-import { codepointToEmoji, normalizeName, slugify } from "@/lib/utils";
+import { normalizeName, slugify } from "@/lib/utils";
+import { ItemIcon } from "./icon";
 import { RecipeAddSheet } from "./recipe-add-sheet";
+import { ScreenHeader } from "./screen-header";
+import { Sheet } from "./sheet";
+import { UiIcon } from "./ui-icon";
 
 /**
  * The recipe detail screen.
@@ -99,12 +102,20 @@ function hostnameOf(url: string | null): string | null {
   }
 }
 
+/**
+ * The photo, faded into the page at its foot.
+ *
+ * The title sits below rather than over the image: these photos come from
+ * whatever site the recipe was imported from, so there is no way to guarantee
+ * a legible contrast ratio behind overlaid text. A scrim deep enough to be safe
+ * on every possible photo would be deep enough to hide most of them.
+ */
 function RecipeHero({ title, imageUrl }: { title: string; imageUrl: string | null }) {
   const [failed, setFailed] = useState(false);
   const showImage = Boolean(imageUrl) && !failed;
 
   return (
-    <div className="flex h-48 w-full items-center justify-center overflow-hidden bg-brand-tint">
+    <div className="relative flex h-56 w-full items-center justify-center overflow-hidden bg-brand-tint">
       {showImage ? (
         // eslint-disable-next-line @next/next/no-img-element -- recipe photos come from arbitrary external sites; next/image would need every source domain allow-listed.
         <img
@@ -114,10 +125,14 @@ function RecipeHero({ title, imageUrl }: { title: string; imageUrl: string | nul
           className="h-full w-full object-cover"
         />
       ) : (
-        <span aria-hidden className="text-6xl font-extrabold text-brand">
+        <span aria-hidden className="text-6xl font-bold text-brand-ink">
           {(title.trim()[0] ?? "?").toUpperCase()}
         </span>
       )}
+      <div
+        aria-hidden
+        className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-b from-transparent to-surface"
+      />
     </div>
   );
 }
@@ -125,14 +140,14 @@ function RecipeHero({ title, imageUrl }: { title: string; imageUrl: string | nul
 function DetailSkeleton() {
   return (
     <div>
-      <div className="h-48 w-full animate-pulse bg-line" />
+      <div className="h-56 w-full animate-pulse bg-line" />
       <div className="space-y-2 px-4 pt-4">
-        <div className="h-5 w-2/3 animate-pulse rounded bg-line" />
-        <div className="h-3 w-1/3 animate-pulse rounded bg-line" />
+        <div className="h-6 w-2/3 animate-pulse rounded bg-line" />
+        <div className="h-3.5 w-1/3 animate-pulse rounded bg-line" />
       </div>
-      <div className="mt-4 space-y-1.5 px-3">
+      <div className="mt-6 space-y-4 px-4">
         {[0, 1, 2, 3, 4].map((i) => (
-          <div key={i} className="h-9 animate-pulse rounded-[10px] bg-line" />
+          <div key={i} className="h-4 animate-pulse rounded bg-line" />
         ))}
       </div>
     </div>
@@ -334,25 +349,26 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
 
   return (
     <div className="min-h-dvh pb-28">
-      <header className="safe-top sticky top-0 z-30 flex items-center gap-2 bg-brand px-4 py-3 text-white">
-        <Link href="/recept" aria-label="Till recepten" className="text-lg font-bold">
-          ‹
-        </Link>
-        <span className="flex-1 truncate text-[15px] font-bold tracking-tight">
-          {recipe?.title ?? "Recept"}
-        </span>
-      </header>
+      <ScreenHeader
+        title={recipe?.title ?? "Recept"}
+        backHref="/recept"
+        backLabel="Till recepten"
+      />
 
       {status === "loading" && <DetailSkeleton />}
 
       {status === "error" && (
         <div className="px-6 py-16 text-center">
-          <p className="text-[13px] font-semibold text-danger">{error}</p>
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-danger-tint text-danger">
+            <UiIcon name="warning" size={26} />
+          </div>
+          <p className="mt-4 text-body font-semibold text-ink">{error}</p>
           <button
             type="button"
             onClick={retry}
-            className="mt-3 rounded-full border border-line px-4 py-2 text-[12.5px] font-bold text-ink"
+            className="mt-4 inline-flex items-center gap-2 rounded-full border border-line-strong px-4 py-2.5 text-body-sm font-semibold text-ink"
           >
+            <UiIcon name="retry" size={15} />
             Försök igen
           </button>
         </div>
@@ -362,101 +378,98 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
         <>
           <RecipeHero title={recipe.title} imageUrl={recipe.imageUrl} />
 
-          <div className="px-4 pt-3">
-            <h1 className="text-[19px] font-extrabold tracking-tight text-ink">
-              {recipe.title}
-            </h1>
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-ink-soft">
+          <div className="px-4 pt-1">
+            <h1 className="text-display text-ink">{recipe.title}</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-body-sm text-ink-soft">
               <span>
                 {recipe.servings} {recipe.servingsUnit}
               </span>
+              <span aria-hidden>·</span>
+              <span>{recipe.ingredients.length} ingredienser</span>
               {recipe.sourceUrl && (
-                <>
-                  <span aria-hidden>·</span>
-                  <a
-                    href={recipe.sourceUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-semibold text-brand underline underline-offset-2"
-                  >
-                    {hostnameOf(recipe.sourceUrl)}
-                  </a>
-                </>
+                <a
+                  href={recipe.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-semibold text-brand"
+                >
+                  {hostnameOf(recipe.sourceUrl)}
+                  <UiIcon name="external" size={13} />
+                </a>
               )}
             </div>
           </div>
 
-          <div className="mx-4 mt-4 mb-2 flex justify-between text-[10.5px] font-extrabold tracking-[0.1em] text-ink-faint uppercase">
-            <span>Ingredienser</span>
-            <span>{recipe.ingredients.length}</span>
+          <div className="mx-4 mt-6 mb-1 text-overline text-ink-faint uppercase">
+            Ingredienser
           </div>
 
-          {recipe.ingredients.map((ing) => (
-            <div
-              key={ing.id}
-              className="mx-3 mb-1.5 flex items-center gap-2.5 rounded-[10px] border border-line bg-paper-raised px-3 py-2.5"
-            >
-              <span className="flex-1 text-[13px] font-semibold text-ink">
-                {ing.rawText}
+          {/* One hairline between lines, none around them. Twenty bordered
+              cards made a shopping-list-shaped thing out of what is really
+              just a paragraph broken into lines. */}
+          <ul className="mx-4 divide-y divide-line">
+            {recipe.ingredients.map((ing) => (
+              <li
+                key={ing.id}
+                className="flex items-baseline gap-2 py-2.5 text-body text-ink"
+              >
+                <span className="flex-1">{ing.rawText}</span>
                 {ing.catalogItemId === null && (
-                  <span className="ml-1.5 rounded-lg bg-warn/20 px-1.5 py-0.5 text-[9px] font-extrabold text-warn">
-                    NY VARA
+                  <span className="flex-none rounded-full bg-warn-tint px-2 py-0.5 text-badge text-warn uppercase">
+                    Ny vara
                   </span>
                 )}
-              </span>
-            </div>
-          ))}
+              </li>
+            ))}
+          </ul>
         </>
       )}
 
       {status === "ready" && recipe && (
-        <div className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-line bg-paper p-3">
+        <div className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-line bg-surface p-3">
           <button
             type="button"
             disabled={flow.step === "preparing"}
             onClick={startAddFlow}
-            className="w-full rounded-card bg-brand py-3.5 text-center text-sm font-extrabold text-white disabled:opacity-60"
+            className="flex w-full items-center justify-center gap-2 rounded-card bg-brand py-3.5 text-body font-semibold text-on-brand transition-transform duration-100 active:scale-[0.99] disabled:opacity-60"
           >
-            {flow.step === "preparing" ? "Förbereder…" : "Lägg till i lista"}
+            {flow.step === "preparing" ? (
+              <>
+                <UiIcon name="spinner" size={17} className="animate-spin" />
+                Förbereder…
+              </>
+            ) : (
+              <>
+                <UiIcon name="toList" size={17} />
+                Lägg till i lista
+              </>
+            )}
           </button>
         </div>
       )}
 
       {flow.step === "choosing-list" && (
-        <div
-          className="fixed inset-0 z-50 flex items-end bg-black/30"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Välj lista"
-          onClick={() => setFlow({ step: "idle" })}
+        <Sheet
+          title="Lägg till i vilken lista?"
+          onClose={() => setFlow({ step: "idle" })}
         >
-          <div
-            className="safe-bottom w-full rounded-t-2xl border-t border-line bg-paper-raised"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="border-b border-line px-4 pt-4 pb-3 text-[15px] font-extrabold text-ink">
-              Lägg till i vilken lista?
-            </div>
-            <ul>
-              {flow.lists.map((list) => (
-                <li key={list.id}>
-                  <button
-                    type="button"
-                    onClick={() => chooseList(list)}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left active:bg-brand-tint"
-                  >
-                    <span aria-hidden className="text-lg">
-                      {codepointToEmoji(list.icon)}
-                    </span>
-                    <span className="flex-1 text-[13.5px] font-semibold text-ink">
-                      {list.name}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
+          <ul className="px-2 pb-2">
+            {flow.lists.map((list) => (
+              <li key={list.id}>
+                <button
+                  type="button"
+                  onClick={() => chooseList(list)}
+                  className="flex w-full items-center gap-3 rounded-control px-2 py-3 text-left active:bg-brand-tint"
+                >
+                  <ItemIcon iconRef={list.icon} className="text-2xl" />
+                  <span className="flex-1 text-body font-semibold text-ink">
+                    {list.name}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Sheet>
       )}
 
       {flow.step === "sheet" && (

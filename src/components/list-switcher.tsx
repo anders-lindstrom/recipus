@@ -2,7 +2,10 @@
 
 import { useState } from "react";
 import type { Id, List } from "@/lib/domain";
+import { cn } from "@/lib/utils";
 import { ItemIcon } from "./icon";
+import { Sheet } from "./sheet";
+import { UiIcon } from "./ui-icon";
 
 /**
  * Switching between lists.
@@ -40,81 +43,70 @@ export function ListSwitcher({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end bg-black/30"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Byt lista"
-      onClick={onClose}
-    >
-      <div
-        className="safe-bottom w-full rounded-t-2xl border-t border-line bg-paper-raised"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="border-b border-line px-4 pt-4 pb-3 text-[10.5px] font-extrabold tracking-[0.11em] text-ink-faint uppercase">
-          Dina listor
-        </div>
-
-        <ul>
-          {lists.map((list) => (
+    <Sheet title="Dina listor" onClose={onClose}>
+      <ul className="px-2">
+        {lists.map((list) => {
+          const current = list.id === currentId;
+          return (
             <li key={list.id}>
               <button
                 type="button"
                 onClick={() => onSelect(list.id)}
-                aria-current={list.id === currentId}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left active:bg-brand-tint"
+                aria-current={current}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-control px-2 py-3 text-left",
+                  current && "bg-brand-tint",
+                )}
               >
-                <ItemIcon iconRef={list.icon} className="text-xl" />
-                <span className="flex-1 text-[14px] font-semibold text-ink">
+                <ItemIcon iconRef={list.icon} className="text-2xl" />
+                <span className="flex-1 text-body font-semibold text-ink">
                   {list.name}
                 </span>
-                {list.id === currentId && (
-                  <span aria-hidden className="text-brand">
-                    ✓
-                  </span>
+                {current && (
+                  <UiIcon name="check" size={18} className="text-brand-ink" />
                 )}
               </button>
             </li>
-          ))}
-        </ul>
+          );
+        })}
+      </ul>
 
-        <div className="border-t border-line px-4 py-3">
-          {creating ? (
-            <div className="flex gap-2">
-              <input
-                autoFocus
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submit();
-                  if (e.key === "Escape") setCreating(false);
-                }}
-                placeholder="Namn på listan"
-                aria-label="Namn på listan"
-                className="flex-1 rounded-lg border border-line bg-paper px-3 py-2 text-[14px] text-ink outline-none placeholder:text-ink-faint"
-              />
-              <button
-                type="button"
-                onClick={submit}
-                className="rounded-lg bg-brand px-4 py-2 text-[13px] font-bold text-white"
-              >
-                Skapa
-              </button>
-            </div>
-          ) : (
+      <div className="mt-1 border-t border-line p-3">
+        {creating ? (
+          <div className="flex gap-2">
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+                if (e.key === "Escape") setCreating(false);
+              }}
+              placeholder="Namn på listan"
+              aria-label="Namn på listan"
+              className="min-w-0 flex-1 rounded-control border border-line bg-surface px-3 py-2.5 text-body text-ink outline-none placeholder:text-ink-faint"
+            />
             <button
               type="button"
-              onClick={() => setCreating(true)}
-              className="flex w-full items-center gap-3 py-1 text-left text-[14px] font-semibold text-brand"
+              onClick={submit}
+              className="flex-none rounded-control bg-brand px-4 py-2.5 text-body font-semibold text-on-brand"
             >
-              <span aria-hidden className="text-xl">
-                ➕
-              </span>
-              Ny lista
+              Skapa
             </button>
-          )}
-        </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="flex w-full items-center gap-3 rounded-control px-2 py-2 text-left text-body font-semibold text-brand"
+          >
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand text-on-brand">
+              <UiIcon name="plus" size={15} />
+            </span>
+            Ny lista
+          </button>
+        )}
       </div>
-    </div>
+    </Sheet>
   );
 }

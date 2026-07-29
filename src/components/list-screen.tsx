@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type {
   Amount,
@@ -20,9 +20,11 @@ import {
   type EntryView,
   type RecipeAdditionInfo,
 } from "@/lib/services/entries";
-import { AddBar } from "./add-bar";
+import { AddBar, type AddBarHandle } from "./add-bar";
+import { AisleRail } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
 import { ItemTile, SectionHeading, TileGrid } from "./item-tile";
+import { UiIcon } from "./ui-icon";
 
 /**
  * The list screen.
@@ -30,6 +32,14 @@ import { ItemTile, SectionHeading, TileGrid } from "./item-tile";
  * Two zones: what you need to buy, and everything you ever buy. There are no
  * checkboxes — an item is on the list or it isn't, and one tap moves it between
  * the two. That is the entire core loop, and its speed is the product.
+ *
+ * The green is spent entirely on the first zone. The header used to be a solid
+ * brand-coloured bar, which meant the most saturated thing on screen was the
+ * furniture rather than the seven items you actually came here for; now the
+ * chrome is paper and ink, and the only green things are the items still to buy
+ * and the one primary action. The catalog sits in a sunken well beneath, so the
+ * boundary between "my list" and "everything" is a change of ground rather than
+ * a heading you have to read.
  */
 
 export interface ListScreenActions {
@@ -76,6 +86,7 @@ export function ListScreen({
   actions,
 }: ListScreenProps) {
   const [openEntry, setOpenEntry] = useState<Id | null>(null);
+  const addBar = useRef<AddBarHandle>(null);
 
   const byId = useMemo(
     () => new Map(catalog.map((c) => [c.id, c])),
@@ -123,6 +134,7 @@ export function ListScreen({
         quantityLabel={view?.totalLabel}
         fromRecipe={view?.hasRecipeSource}
         onList
+        animateIn
         onTap={() => tapOnList(item)}
         onLongPress={() => setOpenEntry(item.id)}
       />
@@ -146,88 +158,121 @@ export function ListScreen({
     [categories],
   );
 
+  // The rail only advertises aisles that actually have something in them —
+  // a chip that scrolls to an empty heading is a chip that looks broken.
+  const aisles = useMemo(
+    () =>
+      catalogByCategory.map((group) => ({
+        id: group.categoryId,
+        name: categoryName.get(group.categoryId) ?? "Övrigt",
+      })),
+    [catalogByCategory, categoryName],
+  );
+
+  const focusSearch = useCallback(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    addBar.current?.focus();
+  }, []);
+
   const openItem = openEntry ? byId.get(openEntry) : undefined;
   const openView = openEntry ? views.get(openEntry) : undefined;
 
   return (
-    <div className="min-h-dvh pb-24">
-      <header className="safe-top sticky top-0 z-30 bg-brand text-white">
-        <div className="flex items-center gap-2 px-4 py-3">
+    <div className="min-h-dvh pb-28">
+      {/* Opaque, not frosted. A translucent bar let high-contrast tile labels
+          ghost through it in dark mode, and `backdrop-filter` on a bar pinned
+          over a 341-tile scroller costs a GPU repaint every frame on exactly
+          the hardware this has to stay smooth on. */}
+      <header className="safe-top sticky top-0 z-30 border-b border-line bg-surface">
+        <div className="flex h-12 items-center gap-1 px-3">
           <button
             type="button"
             onClick={actions.switchList}
-            className="flex items-center gap-1.5"
+            className="-ml-1 flex items-center gap-1 rounded-control px-1 py-1"
           >
-            <span className="text-[16.5px] font-bold tracking-tight">
-              {list.name}
-            </span>
-            <span aria-hidden className="text-[11px] opacity-75">
-              ▼
-            </span>
+            <span className="text-title text-ink">{list.name}</span>
+            <UiIcon name="chevronDown" size={16} className="text-ink-faint" />
           </button>
+
           <div className="flex-1" />
-          {/* The only way into the recipe screens. Everything else in this
-              header is about the list you are standing in front of, so recipes
-              get one quiet icon rather than a nav bar competing with the tiles. */}
-          <Link
-            href="/recept"
-            aria-label="Recept"
-            className="mr-1 text-[17px] leading-none"
-          >
-            📖
-          </Link>
+
           {members.map((m) => (
             <span
               key={m.id}
               title={m.id}
-              className="-ml-1.5 flex h-[23px] w-[23px] items-center justify-center rounded-full border-[1.5px] border-brand text-[10px] font-bold text-white"
+              className="-ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-surface text-badge text-white"
               style={{ background: m.color }}
             >
               {m.initials}
             </span>
           ))}
+
+          {/* The only way into the recipe screens. Everything else up here is
+              about the list you are standing in front of, so recipes get one
+              quiet icon rather than a nav bar competing with the tiles. */}
+          <Link
+            href="/recept"
+            aria-label="Recept"
+            className="ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
+          >
+            <UiIcon name="recipes" size={20} />
+          </Link>
         </div>
 
         {/* Only ever appears when there is something to say. Never a modal,
             never a spinner over the list. */}
         {(sync.signedOut || !sync.online || sync.pendingCount > 0) && (
-          <div className="flex items-center gap-2 bg-black/20 px-4 py-1.5 text-[11.5px]">
+          <div className="flex items-center gap-2 border-t border-line bg-warn-tint px-3 py-1.5 text-caption text-warn">
             {sync.signedOut ? (
               <>
+                <UiIcon name="warning" size={14} className="flex-none" />
                 <span className="flex-1">Inloggningen har gått ut</span>
                 <button
                   type="button"
                   onClick={onReauthenticate}
-                  className="font-bold underline"
+                  className="font-bold underline underline-offset-2"
                 >
                   Logga in igen
                 </button>
               </>
             ) : (
-              <span>
-                {sync.online ? "Synkar" : "Offline"}
-                {sync.pendingCount > 0 &&
-                  ` · ${sync.pendingCount} ändringar väntar`}
-              </span>
+              <>
+                <UiIcon
+                  name={sync.online ? "retry" : "offline"}
+                  size={14}
+                  className="flex-none"
+                />
+                <span>
+                  {sync.online ? "Synkar" : "Offline"}
+                  {sync.pendingCount > 0 &&
+                    ` · ${sync.pendingCount} ändringar väntar`}
+                </span>
+              </>
             )}
           </div>
         )}
       </header>
 
-      <AddBar
-        catalog={catalog}
-        onListItemIds={onListIds}
-        onPick={(itemId, amountText) => actions.addItem(itemId, amountText)}
-        onCreate={actions.createItem}
-      />
+      <div className="px-3">
+        <AddBar
+          ref={addBar}
+          catalog={catalog}
+          onListItemIds={onListIds}
+          onPick={(itemId, amountText) => actions.addItem(itemId, amountText)}
+          onCreate={actions.createItem}
+        />
 
-      <section className="px-3">
-        <SectionHeading count={live.length}>Att handla</SectionHeading>
+        <SectionHeading count={live.length > 0 ? live.length : undefined}>
+          Att handla
+        </SectionHeading>
 
         {live.length === 0 ? (
-          <p className="px-1 py-6 text-center text-[13px] text-ink-faint">
-            Listan är tom. Sök eller tryck på en vara nedan.
-          </p>
+          <div className="rounded-card border border-dashed border-line-strong px-6 py-10 text-center">
+            <p className="text-body font-semibold text-ink">Listan är tom</p>
+            <p className="mx-auto mt-1 max-w-[26ch] text-body-sm text-ink-soft">
+              Sök efter en vara, eller tryck på något i katalogen nedan.
+            </p>
+          </div>
         ) : grouped ? (
           groupByCategory(
             toBuyTiles,
@@ -265,10 +310,17 @@ export function ListScreen({
             </TileGrid>
           </>
         )}
+      </div>
+
+      {/* The catalog gets its own ground. Everything above this line is the
+          household's current intent; everything below is the vocabulary it
+          draws on, and the two should not look like one long list. */}
+      <section className="mt-6 border-t border-line bg-surface-sunken px-3 pb-6">
+        <AisleRail aisles={aisles} onSearch={focusSearch} />
 
         {catalogByCategory.map((group) => (
           <div key={group.categoryId}>
-            <SectionHeading tone="brand">
+            <SectionHeading id={`aisle-${group.categoryId}`} tone="brand">
               {categoryName.get(group.categoryId) ?? "Övrigt"}
             </SectionHeading>
             <TileGrid>
@@ -289,9 +341,11 @@ export function ListScreen({
         type="button"
         onClick={actions.openScanner}
         aria-label="Skanna streckkod"
-        className="safe-bottom fixed right-4 bottom-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-brand text-xl text-white shadow-lg"
+        // Neutral shadow, not a brand-tinted one: a green glow under a green
+        // button reads as a neon halo in dark mode rather than as elevation.
+        className="safe-bottom fixed right-4 bottom-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-brand text-on-brand shadow-lg shadow-black/20 transition-transform duration-100 active:scale-95"
       >
-        ▣
+        <UiIcon name="scan" size={24} />
       </button>
 
       {openItem && openView && (

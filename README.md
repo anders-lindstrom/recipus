@@ -53,7 +53,8 @@ src/lib/barcode/      EAN-validering och Open Food Facts
 src/lib/services/     delad affärslogik (läsvägar, op-tillämpning på servern)
 src/lib/client/       IndexedDB, utkorg, SSE  (ej klar — se DECISIONS.md)
 src/db/               drizzle-schema, migrationer, seed-data
-src/components/       brickor, sökrad, receptblad, skanner
+src/components/       brickor, sökrad, avdelningsrad, receptblad, skanner
+src/app/globals.css   designtokens: färg, typskala, radier, rörelse
 ```
 
 ## Det som bär hela designen

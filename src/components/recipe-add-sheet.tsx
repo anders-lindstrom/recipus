@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import type { Amount, CatalogItem, Id, Recipe } from "@/lib/domain";
 import { formatAmount, scaleAmount } from "@/lib/units";
+import { cn } from "@/lib/utils";
+import { UiIcon } from "./ui-icon";
 
 /**
  * Adding a recipe to a list.
@@ -81,46 +83,51 @@ export function RecipeAddSheet({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-paper">
-      <div className="flex items-center gap-2 bg-brand px-4 py-3 text-white">
-        <span className="flex-1 text-base font-bold">
-          Lägg till i {listName}
-        </span>
-        <button type="button" onClick={onCancel} aria-label="Stäng">
-          ✕
-        </button>
+    <div className="fixed inset-0 z-50 flex flex-col bg-surface">
+      <div className="safe-top flex-none border-b border-line bg-surface">
+        <div className="flex h-12 items-center gap-2 px-2">
+          <span className="flex-1 truncate pl-2 text-title text-ink">
+            Lägg till i {listName}
+          </span>
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="Stäng"
+            className="flex h-9 w-9 flex-none items-center justify-center rounded-full text-ink-soft"
+          >
+            <UiIcon name="close" size={20} />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto pb-4">
-        <div className="px-4 pt-3 pb-1">
-          <h2 className="text-[17px] font-extrabold tracking-tight text-ink">
-            {recipe.title}
-          </h2>
+        <div className="px-4 pt-4 pb-1">
+          <h2 className="text-display text-ink">{recipe.title}</h2>
           {recipe.sourceUrl && (
-            <p className="mt-0.5 truncate text-[11px] text-ink-faint">
+            <p className="mt-1 truncate text-caption text-ink-faint">
               {new URL(recipe.sourceUrl).hostname.replace(/^www\./, "")}
             </p>
           )}
         </div>
 
-        <div className="mx-3 mb-3 rounded-card border border-line bg-paper-raised p-3">
-          <div className="mb-2 text-[10.5px] font-extrabold tracking-[0.1em] text-ink-faint uppercase">
+        <div className="mx-4 mt-4 rounded-card border border-line bg-surface-raised p-4">
+          <div className="mb-3 text-overline text-ink-faint uppercase">
             Hur många vill du göra?
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
             <button
               type="button"
               aria-label="Minska"
               onClick={() => setTarget((t) => Math.max(1, t - 1))}
-              className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-brand text-xl font-bold text-brand"
+              className="flex h-11 w-11 flex-none items-center justify-center rounded-full border border-line-strong text-ink transition-transform duration-100 active:scale-95"
             >
-              −
+              <UiIcon name="decrease" size={20} />
             </button>
             <div className="flex-1 text-center">
-              <div className="text-2xl leading-none font-extrabold tracking-tight text-ink">
+              <div className="text-[2rem] leading-none font-bold tracking-tight text-ink">
                 {target}
               </div>
-              <div className="mt-1 text-[11px] text-ink-soft">
+              <div className="mt-1.5 text-caption text-ink-soft">
                 {recipe.servingsUnit} · receptet ger {recipe.servings}
               </div>
             </div>
@@ -128,82 +135,99 @@ export function RecipeAddSheet({
               type="button"
               aria-label="Öka"
               onClick={() => setTarget((t) => t + 1)}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-brand text-xl font-bold text-white"
+              className="flex h-11 w-11 flex-none items-center justify-center rounded-full bg-brand text-on-brand transition-transform duration-100 active:scale-95"
             >
-              +
+              <UiIcon name="increase" size={20} />
             </button>
           </div>
           {factor !== 1 && (
-            <div className="mt-2 text-center">
-              <span className="inline-block rounded-full bg-brand-tint px-2 py-1 text-[10.5px] font-extrabold text-brand">
+            <div className="mt-3 text-center">
+              <span className="inline-block rounded-full bg-brand-tint px-2.5 py-1 text-caption font-semibold text-brand-ink">
                 alla mängder ×{Number(factor.toFixed(2))}
               </span>
             </div>
           )}
         </div>
 
-        <div className="mx-4 mb-2 flex justify-between text-[10.5px] font-extrabold tracking-[0.1em] text-ink-faint uppercase">
+        <div className="mx-4 mt-6 mb-1 flex items-baseline justify-between text-overline text-ink-faint uppercase">
           <span>Ingredienser</span>
           <span>
             {included.length} av {rows.length} läggs till
           </span>
         </div>
 
-        {rows.map((row) => {
-          const off = excluded.has(row.ingredientId);
-          return (
-            <button
-              key={row.ingredientId}
-              type="button"
-              onClick={() => toggle(row.ingredientId)}
-              aria-pressed={!off}
-              className={`mx-3 mb-1.5 flex w-[calc(100%-1.5rem)] items-center gap-2.5 rounded-[10px] border border-line bg-paper-raised px-3 py-2 text-left ${
-                off ? "opacity-45" : ""
-              }`}
-            >
-              <span
-                aria-hidden
-                className={`flex h-[19px] w-[19px] flex-none items-center justify-center rounded-md text-[11px] ${
-                  off
-                    ? "border-[1.5px] border-ink-faint"
-                    : "bg-brand text-white"
-                }`}
-              >
-                {off ? "" : "✓"}
-              </span>
-
-              <span className="flex-1 text-[13px] font-semibold text-ink">
-                {row.label}
-                {row.isNew && (
-                  <span className="ml-1.5 rounded-lg bg-warn/20 px-1.5 py-0.5 text-[9px] font-extrabold text-warn">
-                    NY VARA
+        {/* Rows, not cards: excluding a staple is a toggle on a line of text,
+            and the old bordered boxes made each one look like its own object
+            you had to consider separately. */}
+        <ul className="mx-4 divide-y divide-line">
+          {rows.map((row) => {
+            const off = excluded.has(row.ingredientId);
+            return (
+              <li key={row.ingredientId}>
+                <button
+                  type="button"
+                  onClick={() => toggle(row.ingredientId)}
+                  aria-pressed={!off}
+                  className="flex w-full items-center gap-3 py-3 text-left"
+                >
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "flex h-[22px] w-[22px] flex-none items-center justify-center rounded-md transition-colors duration-150",
+                      off
+                        ? "border-[1.5px] border-line-strong"
+                        : "bg-brand text-on-brand",
+                    )}
+                  >
+                    {!off && <UiIcon name="check" size={14} />}
                   </span>
-                )}
-                {row.isStaple && (
-                  <span className="ml-1.5 rounded-lg bg-line px-1.5 py-0.5 text-[9px] font-bold text-ink-soft">
-                    HAR HEMMA
-                  </span>
-                )}
-              </span>
 
-              {row.baseAmount && factor !== 1 && (
-                <span className="mr-1 text-[10px] font-semibold text-ink-faint line-through">
-                  {formatAmount(row.baseAmount)}
-                </span>
-              )}
-              <span
-                className={`text-[13px] font-extrabold tracking-tight ${
-                  off ? "text-ink" : "text-brand"
-                }`}
-              >
-                {row.scaledAmount ? formatAmount(row.scaledAmount) : "—"}
-              </span>
-            </button>
-          );
-        })}
+                  <span
+                    className={cn(
+                      "flex flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 text-body",
+                      // The excluded row stays fully legible — it is a choice
+                      // you might want to reverse, not a disabled control.
+                      off ? "text-ink-faint line-through" : "text-ink",
+                    )}
+                  >
+                    {row.label}
+                    {row.isNew && (
+                      <span className="rounded-full bg-warn-tint px-2 py-0.5 text-badge text-warn uppercase no-underline">
+                        Ny vara
+                      </span>
+                    )}
+                    {row.isStaple && (
+                      <span className="rounded-full bg-surface-sunken px-2 py-0.5 text-badge text-ink-soft uppercase no-underline">
+                        Har hemma
+                      </span>
+                    )}
+                  </span>
+
+                  {row.baseAmount && factor !== 1 && (
+                    <span className="flex-none text-caption text-ink-faint line-through">
+                      {formatAmount(row.baseAmount)}
+                    </span>
+                  )}
+                  {/* "salt efter smak" has no amount at all. An empty column is
+                      honest about that; a dash looked like a parsed value. */}
+                  {row.scaledAmount && (
+                    <span
+                      className={cn(
+                        "flex-none text-body font-bold",
+                        off ? "text-ink-faint" : "text-brand-ink",
+                      )}
+                    >
+                      {formatAmount(row.scaledAmount)}
+                    </span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       </div>
 
-      <div className="safe-bottom px-3 pb-3">
+      <div className="safe-bottom flex-none border-t border-line bg-surface p-3">
         <button
           type="button"
           disabled={included.length === 0}
@@ -221,9 +245,13 @@ export function RecipeAddSheet({
                 })),
             )
           }
-          className="w-full rounded-card bg-brand py-3.5 text-center text-sm font-extrabold text-white disabled:opacity-40"
+          // The list name lives in the header two lines up, so it is left out
+          // here: repeating it is what pushed this label onto a second line.
+          className="flex w-full items-center justify-center gap-2 rounded-card bg-brand py-3.5 text-body font-semibold text-on-brand transition-transform duration-100 active:scale-[0.99] disabled:opacity-40"
         >
-          Lägg till {included.length} varor i {listName}
+          <UiIcon name="toList" size={17} />
+          Lägg till {included.length}{" "}
+          {included.length === 1 ? "vara" : "varor"}
         </button>
       </div>
     </div>
