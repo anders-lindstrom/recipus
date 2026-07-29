@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useList } from "@/lib/client/use-list";
 import type { Op } from "@/lib/sync";
-import type { Amount, Id } from "@/lib/domain";
+import type { Amount, Id, List } from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import { parseAmount } from "@/lib/units";
 import { normalizeName, slugify } from "@/lib/utils";
 import { ListScreen } from "./list-screen";
+import { ListSwitcher } from "./list-switcher";
 import { Scanner } from "./scanner";
 
 /**
@@ -64,13 +65,16 @@ type OpDraft = DistributiveOmit<Op, "clientOpId" | "actor" | "at">;
 export interface ListClientProps {
   /** Null when the server could not authenticate — the client falls back to IndexedDB. */
   snapshot: ListSnapshot | null;
+  /** Every list in the household, for the switcher. Empty when offline. */
+  lists: List[];
   actor: string | null;
   members: Array<{ id: string; initials: string; color: string }>;
 }
 
-export function ListClient({ snapshot, actor, members }: ListClientProps) {
+export function ListClient({ snapshot, lists, actor, members }: ListClientProps) {
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   // Read once, on first render, so the offline path has a list name and
   // category names before anything async resolves.
@@ -199,7 +203,7 @@ export function ListClient({ snapshot, actor, members }: ListClientProps) {
       setScanResult(null);
       setScanning(true);
     },
-    switchList: () => toast("Fler listor kommer i nästa steg"),
+    switchList: () => setSwitching(true),
   };
 
   async function handleScan(ean: string) {
@@ -250,6 +254,32 @@ export function ListClient({ snapshot, actor, members }: ListClientProps) {
         onReauthenticate={() => location.reload()}
         actions={actions}
       />
+      {switching && (
+        <ListSwitcher
+          // Offline the server sent no lists, but the one you are looking at is
+          // always a valid choice — better than an empty sheet.
+          lists={lists.length ? lists : [list]}
+          currentId={listId}
+          onSelect={(id) => {
+            setSwitching(false);
+            if (id !== listId) window.location.href = `/?list=${encodeURIComponent(id)}`;
+          }}
+          onCreate={(name) => {
+            const id = slugify(name);
+            dispatch({
+              kind: "create_list",
+              listId: id,
+              name,
+              icon: "1F6D2",
+              position: lists.length,
+              categoryOrder: list.categoryOrder,
+            });
+            setSwitching(false);
+            window.location.href = `/?list=${encodeURIComponent(id)}`;
+          }}
+          onClose={() => setSwitching(false)}
+        />
+      )}
       {scanning && (
         <Scanner
           onScan={handleScan}

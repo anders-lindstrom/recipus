@@ -19,7 +19,12 @@ function initials(user: string): string {
   return user.slice(0, 2).toUpperCase();
 }
 
-export default async function ListPage() {
+export default async function ListPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ list?: string }>;
+}) {
+  const { list: requestedList } = await searchParams;
   // Auth failure must NOT render a different page. The service worker caches
   // this HTML, so an auth-gated render bakes "not logged in" into the cache and
   // serves it forever — which is exactly how an app that works offline stops
@@ -33,16 +38,20 @@ export default async function ListPage() {
   }
 
   let snapshot = null;
+  let lists: Awaited<ReturnType<typeof loadLists>> = [];
   if (actor) {
-    const lists = await loadLists();
-    const first = lists[0];
-    if (first) snapshot = await loadListSnapshot(first.id, new Date());
+    lists = await loadLists();
+    // An unknown ?list= falls back to the first rather than erroring — a stale
+    // bookmark or a deleted list should open something, not a dead end.
+    const chosen = lists.find((l) => l.id === requestedList) ?? lists[0];
+    if (chosen) snapshot = await loadListSnapshot(chosen.id, new Date());
   }
 
   return (
     <main>
       <ListClient
         snapshot={snapshot}
+        lists={lists}
         actor={actor}
         members={
           actor
