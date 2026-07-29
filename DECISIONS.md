@@ -105,9 +105,10 @@ ladder, where `2,5 l` is the natural reading anyway.
 emoji for the same codepoint. A fresh clone works with no network, and the
 build never depends on a volunteer-run CDN.
 
-**7. The service worker is offline-FIRST, inverting longhaul's posture** — and
-it refuses to cache a non-HTML navigation response, so one expired Authelia
-session cannot poison every cold start with a cached login page.
+**7. The service worker is network-first for navigations, cache as fallback.**
+It started cache-first, which was wrong — see the bug note below. It still
+refuses to cache a non-HTML or cross-origin navigation response, so an Authelia
+redirect cannot become the cached shell.
 
 **8. Anthropic model pinned to `claude-opus-5`**, structured output via
 `messages.parse()` with a zod schema. I did not wire refusal fallbacks: a recipe
@@ -175,6 +176,29 @@ picks `rågmjöl` for "mjöl" when a Swedish recipe means vetemjöl every time.
 Against 24 realistic weeknight recipe lines, matching went 9/24 → 23/24.
 
 ---
+
+**A cache-first service worker poisons its own origin.** The worker cached the
+app shell and served it in preference to the network. That means one production
+build on an origin breaks every later dev server on it: the cached HTML
+references build hashes the new server does not have, so the page never
+hydrates — and because the page never runs, the app can never unregister the
+worker. The origin cannot recover from inside itself. It cost me a confusing
+hour of a reload loop that looked like a bug in the recipe screens and wasn't.
+
+Fixed by making navigations network-first with a 2.5s timeout and cache
+fallback, plus a cache-tag bump so existing bad caches are discarded on
+activate. The cost is far smaller than it looks: when you are genuinely offline
+the fetch fails on connection setup in milliseconds, so the timeout only bites
+on a flaky signal — exactly where a slightly slower correct answer beats a fast
+stale one. The dev-mode registrar also now actively unregisters leftover
+workers, as a second line of defence.
+
+**Verification gap, stated plainly:** the offline *data* path (tap works, queues,
+drains) is covered by e2e and was verified by hand. The service-worker change
+itself is reasoned-through but NOT re-verified in a browser — my automation
+browser wedged while I was testing it. If you hit a stuck reload loop on an
+origin where you once ran a production build, clear the site data once
+(DevTools → Application → Storage → Clear site data) and it will not recur.
 
 ## Open questions for you
 

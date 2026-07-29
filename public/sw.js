@@ -1,12 +1,16 @@
 /*
  * Recipus service worker.
  *
- * The job here is narrow but important: the app must open, instantly and fully
- * usable, in a shop basement with no signal. That inverts the usual caching
- * posture — longhaul's worker is deliberately online-first and caches nothing
- * but an error page, because stale health data is worse than no data. A
- * shopping list is the opposite. The list lives in IndexedDB and the shell is
- * cached, so "offline" is an ordinary state rather than a failure.
+ * The job here is narrow but important: the app must open, fully usable, in a
+ * shop basement with no signal. The list itself lives in IndexedDB; this only
+ * has to make sure the shell that reads it is available, so "offline" is an
+ * ordinary state rather than a failure.
+ *
+ * The shell is cached but NOT served in preference to the network — see
+ * handleNavigation for why that distinction turned out to matter more than it
+ * sounds. longhaul's worker is online-first for a different reason (stale
+ * health data is worse than none); this one lands in a similar place by a
+ * different route.
  *
  * What this worker does NOT do: cache API responses, or retry writes. Reads are
  * served from IndexedDB by the app itself, and pending writes live in the
@@ -14,10 +18,12 @@
  * "what does this household's list look like", which is exactly the kind of
  * divergence this app cannot afford.
  *
- * Bump CACHE_TAG whenever the precache list or these strategies change.
+ * Bump CACHE_TAG whenever the precache list or these strategies change — the
+ * activate handler deletes every cache that does not match, which is what
+ * lets a bad cached shell be discarded rather than lingering.
  */
 
-const CACHE_TAG = "recipus-v1";
+const CACHE_TAG = "recipus-v2";
 const OFFLINE_URL = "/offline.html";
 
 // The shell is everything needed to render an empty app that then fills itself
@@ -55,41 +61,51 @@ self.addEventListener("activate", (event) => {
 });
 
 /**
- * Navigations are served from cache first, then revalidated in the background.
+ * Navigations race the network against a short timeout, falling back to cache.
  *
- * This is the single most important decision in the file. Network-first would
- * make every cold launch wait on a TLS handshake to a home server over 4G,
- * which is the difference between an app you open at the shop entrance and one
- * you give up on.
+ * This was cache-first, and that was wrong in a way that took a while to see.
+ * Cache-first means the shell you cached is the shell you get forever, so one
+ * production build on an origin poisons every later dev server on it: the
+ * cached HTML references build hashes the new server does not have, the page
+ * never hydrates, and the app can never unregister the worker because its own
+ * code never runs. A self-inflicted, unrecoverable-from-inside state.
+ *
+ * Network-first costs far less than it appears to. When you are genuinely
+ * offline the fetch fails on connection setup in milliseconds, not seconds —
+ * the timeout only bites on a flaky signal, which is exactly when a slightly
+ * slower correct answer beats a fast stale one.
  */
+const NAV_TIMEOUT_MS = 2500;
+
 async function handleNavigation(request) {
   const cache = await caches.open(CACHE_TAG);
-  const cached = await cache.match("/", { ignoreSearch: true });
 
-  const network = fetch(request)
-    .then((response) => {
-      // Only cache real HTML. An Authelia redirect to a login page must never
-      // become the thing we serve on every future cold start.
-      if (
-        response.ok &&
-        response.type === "basic" &&
-        (response.headers.get("content-type") || "").includes("text/html")
-      ) {
-        cache.put("/", response.clone());
-      }
-      return response;
-    })
-    .catch(() => null);
+  try {
+    const response = await Promise.race([
+      fetch(request),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("nav timeout")), NAV_TIMEOUT_MS),
+      ),
+    ]);
 
-  if (cached) return cached;
-
-  const fresh = await network;
-  if (fresh) return fresh;
-
-  return (
-    (await cache.match(OFFLINE_URL)) ||
-    new Response("Offline", { status: 503, statusText: "Offline" })
-  );
+    // Only cache real, same-origin HTML. An Authelia redirect to a login page
+    // must never become the thing we serve on every future cold start.
+    if (
+      response.ok &&
+      response.type === "basic" &&
+      (response.headers.get("content-type") || "").includes("text/html")
+    ) {
+      cache.put("/", response.clone());
+    }
+    return response;
+  } catch {
+    const cached = await cache.match("/", { ignoreSearch: true });
+    if (cached) return cached;
+    return (
+      (await cache.match(OFFLINE_URL)) ||
+      new Response("Offline", { status: 503, statusText: "Offline" })
+    );
+  }
 }
 
 /** Build assets are content-hashed, so a hit is always correct. */

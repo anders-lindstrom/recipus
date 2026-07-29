@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import type {
@@ -165,6 +166,16 @@ export function ListScreen({
             </span>
           </button>
           <div className="flex-1" />
+          {/* The only way into the recipe screens. Everything else in this
+              header is about the list you are standing in front of, so recipes
+              get one quiet icon rather than a nav bar competing with the tiles. */}
+          <Link
+            href="/recept"
+            aria-label="Recept"
+            className="mr-1 text-[17px] leading-none"
+          >
+            📖
+          </Link>
           {members.map((m) => (
             <span
               key={m.id}

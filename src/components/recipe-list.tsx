@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { Id } from "@/lib/domain";
 
@@ -24,6 +24,11 @@ interface RecipeSummary {
 }
 
 type Status = "loading" | "error" | "ready";
+
+/** One fetch attempt's outcome, tagged with which attempt it answers. */
+type Result =
+  | { attempt: number; kind: "ready"; recipes: RecipeSummary[] }
+  | { attempt: number; kind: "error"; message: string };
 
 async function readError(res: Response, fallback: string): Promise<string> {
   try {
@@ -89,31 +94,48 @@ function SkeletonCard() {
 }
 
 export function RecipeList() {
-  const [status, setStatus] = useState<Status>("loading");
-  const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
-  const [error, setError] = useState("");
+  // Bumped by the retry button to re-run the effect below. `status` is
+  // derived from `result` rather than written directly from the effect: the
+  // effect's body only ever sets state from inside the fetch's own
+  // continuation (a genuinely async callback), never synchronously at the
+  // top, which is what actually made a stale response — or one that resolves
+  // after the component unmounted — impossible to land on the wrong state.
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<Result | null>(null);
 
-  const load = useCallback(() => {
-    setStatus("loading");
-    setError("");
+  useEffect(() => {
+    let cancelled = false;
+
     fetch("/api/recipes")
       .then(async (res) => {
         if (!res.ok) throw new Error(await readError(res, "Kunde inte hämta recepten."));
         return (await res.json()) as RecipeSummary[];
       })
       .then((data) => {
-        setRecipes(data);
-        setStatus("ready");
+        if (cancelled) return;
+        setResult({ attempt, kind: "ready", recipes: data });
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Kunde inte hämta recepten.");
-        setStatus("error");
+        if (cancelled) return;
+        setResult({
+          attempt,
+          kind: "error",
+          message: err instanceof Error ? err.message : "Kunde inte hämta recepten.",
+        });
       });
-  }, []);
 
-  useEffect(() => {
-    void Promise.resolve().then(load);
-  }, [load]);
+    return () => {
+      cancelled = true;
+    };
+  }, [attempt]);
+
+  const retry = () => setAttempt((n) => n + 1);
+
+  // A result answering a superseded attempt reads as still loading — this is
+  // what makes hammering "Försök igen" safe without an extra guard.
+  const status: Status = !result || result.attempt !== attempt ? "loading" : result.kind;
+  const recipes = result?.kind === "ready" ? result.recipes : [];
+  const error = result?.kind === "error" ? result.message : "";
 
   return (
     <div className="min-h-dvh pb-10">
@@ -137,7 +159,7 @@ export function RecipeList() {
           <p className="text-[13px] font-semibold text-danger">{error}</p>
           <button
             type="button"
-            onClick={load}
+            onClick={retry}
             className="mt-3 rounded-full border border-line px-4 py-2 text-[12.5px] font-bold text-ink"
           >
             Försök igen

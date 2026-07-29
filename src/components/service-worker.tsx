@@ -18,8 +18,24 @@ import { useEffect } from "react";
  */
 export function ServiceWorkerRegistrar() {
   useEffect(() => {
-    if (process.env.NODE_ENV !== "production") return;
     if (!("serviceWorker" in navigator)) return;
+
+    if (process.env.NODE_ENV !== "production") {
+      // Actively tear down any worker left over from a production build on
+      // this origin. Otherwise it keeps serving its cached shell over the dev
+      // server, the hydration mismatch that follows puts the page into a
+      // reload loop, and the cause looks nothing like the effect — I lost real
+      // time to exactly this. Dev has to be self-healing here, because
+      // "localhost:3000 ran a prod build once" is a completely ordinary thing
+      // to have happened.
+      void navigator.serviceWorker
+        .getRegistrations()
+        .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+        .then(() => caches?.keys())
+        .then((keys) => Promise.all((keys ?? []).map((k) => caches.delete(k))))
+        .catch(() => undefined);
+      return;
+    }
 
     // Registering after load keeps the worker's install off the critical path
     // for the first paint, which is the one launch that has no cache to fall

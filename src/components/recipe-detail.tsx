@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -47,6 +47,11 @@ function toDomainRecipe(api: ApiRecipe): Recipe {
 }
 
 type LoadStatus = "loading" | "error" | "ready";
+
+/** One fetch attempt's outcome, tagged with which attempt it answers. */
+type LoadResult =
+  | { attempt: number; kind: "ready"; recipe: Recipe }
+  | { attempt: number; kind: "error"; message: string };
 
 /** A catalog item this screen is about to create for an unmatched ingredient. */
 interface PendingCreate {
@@ -142,14 +147,19 @@ export interface RecipeDetailProps {
 
 export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
   const router = useRouter();
-  const [status, setStatus] = useState<LoadStatus>("loading");
-  const [recipe, setRecipe] = useState<Recipe | null>(null);
-  const [error, setError] = useState("");
+  // As in recipe-list.tsx: `status`/`recipe`/`error` are derived from
+  // `result` rather than set directly in the effect, so the effect's body
+  // never calls setState outside the fetch's own async continuation. That is
+  // what actually stops a response for a stale recipeId/attempt — or one that
+  // resolves after the component unmounted — from landing on the wrong state,
+  // not just a way to satisfy the linter.
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<LoadResult | null>(null);
   const [flow, setFlow] = useState<AddFlow>({ step: "idle" });
 
-  const load = useCallback(() => {
-    setStatus("loading");
-    setError("");
+  useEffect(() => {
+    let cancelled = false;
+
     fetch(`/api/recipes/${encodeURIComponent(recipeId)}`)
       .then(async (res) => {
         if (!res.ok) {
@@ -162,18 +172,28 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
         return (await res.json()) as ApiRecipe;
       })
       .then((data) => {
-        setRecipe(toDomainRecipe(data));
-        setStatus("ready");
+        if (cancelled) return;
+        setResult({ attempt, kind: "ready", recipe: toDomainRecipe(data) });
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Kunde inte hämta receptet.");
-        setStatus("error");
+        if (cancelled) return;
+        setResult({
+          attempt,
+          kind: "error",
+          message: err instanceof Error ? err.message : "Kunde inte hämta receptet.",
+        });
       });
-  }, [recipeId]);
 
-  useEffect(() => {
-    void Promise.resolve().then(load);
-  }, [load]);
+    return () => {
+      cancelled = true;
+    };
+  }, [recipeId, attempt]);
+
+  const retry = () => setAttempt((n) => n + 1);
+
+  const status: LoadStatus = !result || result.attempt !== attempt ? "loading" : result.kind;
+  const recipe = result?.kind === "ready" ? result.recipe : null;
+  const error = result?.kind === "error" ? result.message : "";
 
   async function startAddFlow() {
     if (!recipe) return;
@@ -330,7 +350,7 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
           <p className="text-[13px] font-semibold text-danger">{error}</p>
           <button
             type="button"
-            onClick={load}
+            onClick={retry}
             className="mt-3 rounded-full border border-line px-4 py-2 text-[12.5px] font-bold text-ink"
           >
             Försök igen
