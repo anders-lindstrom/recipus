@@ -17,10 +17,19 @@ import type {
   Id,
   List,
   ListEntry,
+  RecipeAddition,
+  RecordMeta,
   Unit,
 } from "@/lib/domain";
 import { rankSuggestions, catalogOrderScore } from "@/lib/cadence";
-import type { RecipeAdditionInfo } from "./entries";
+import {
+  additionKey,
+  catalogKey,
+  contributionFieldKey,
+  contributionKey,
+  entryKey,
+  listKey,
+} from "@/lib/sync";
 
 /**
  * Reading a list's world out of Postgres.
@@ -36,7 +45,27 @@ export interface ListSnapshot {
   catalog: CatalogItem[];
   entries: ListEntry[];
   contributions: Contribution[];
-  recipeAdditions: Record<Id, RecipeAdditionInfo>;
+  /**
+   * Full records, in the shape the reducer needs — NOT display info.
+   *
+   * This carried `{recipeTitle, scaleFactor}` at first, which meant a client
+   * hydrating from a snapshot could not populate `SyncState.recipeAdditions`
+   * at all and had to leave it empty. Recipe-sourced tiles then lost their
+   * badge and their breakdown until an `add_recipe` op happened to arrive.
+   * Titles travel separately in `recipeTitles`.
+   */
+  recipeAdditions: Record<Id, RecipeAddition>;
+  /** recipeId → title, for the breakdown sheet. */
+  recipeTitles: Record<Id, string>;
+  /**
+   * Last-write-wins bookkeeping, rebuilt from the rows' own timestamps.
+   *
+   * Without this a hydrating client starts with empty meta, so a stale op
+   * replayed from its outbox beats a fresher server value — it looks like a
+   * won comparison because there is nothing to compare against. Keys come from
+   * the reducer's own builders so they cannot drift.
+   */
+  meta: Record<string, RecordMeta>;
   /** Cadence suggestions, already ranked and filtered. */
   suggestions: Array<{ catalogItemId: Id; reason: string }>;
 }
@@ -87,7 +116,13 @@ export async function loadListSnapshot(
   const additionRows = await db
     .select({
       id: recipeAdditions.id,
+      listId: recipeAdditions.listId,
+      recipeId: recipeAdditions.recipeId,
       scaleFactor: recipeAdditions.scaleFactor,
+      addedAt: recipeAdditions.addedAt,
+      addedBy: recipeAdditions.addedBy,
+      updatedAt: recipeAdditions.updatedAt,
+      updatedBy: recipeAdditions.updatedBy,
       title: recipes.title,
     })
     .from(recipeAdditions)
@@ -99,9 +134,54 @@ export async function loadListSnapshot(
       ),
     );
 
-  const additions: Record<Id, RecipeAdditionInfo> = {};
+  const meta: Record<string, RecordMeta> = {};
+  const additions: Record<Id, RecipeAddition> = {};
+  const recipeTitles: Record<Id, string> = {};
   for (const a of additionRows) {
-    additions[a.id] = { recipeTitle: a.title, scaleFactor: a.scaleFactor };
+    additions[a.id] = {
+      id: a.id,
+      listId: a.listId,
+      recipeId: a.recipeId,
+      scaleFactor: a.scaleFactor,
+      addedAt: a.addedAt.toISOString(),
+      addedBy: a.addedBy,
+    };
+    recipeTitles[a.recipeId] = a.title;
+    meta[additionKey(a.id)] = {
+      at: a.updatedAt.toISOString(),
+      by: a.updatedBy,
+    };
+  }
+
+  meta[listKey(listRow.id)] = {
+    at: listRow.updatedAt.toISOString(),
+    by: listRow.updatedBy,
+  };
+  for (const c of catalogRows) {
+    meta[catalogKey(c.id)] = {
+      at: c.updatedAt.toISOString(),
+      by: c.updatedBy,
+    };
+  }
+  for (const e of entryRows) {
+    meta[entryKey(e.id)] = {
+      at: e.updatedAt.toISOString(),
+      by: e.updatedBy,
+    };
+  }
+  for (const c of contributionRows) {
+    const row = { at: c.updatedAt.toISOString(), by: c.updatedBy };
+    meta[contributionKey(c.id)] = row;
+    // Per-field clocks fall back to the row clock: recipe and scan
+    // contributions never populate them, and neither do pre-migration rows.
+    meta[contributionFieldKey(c.id, "amount")] =
+      c.amountUpdatedAt && c.amountUpdatedBy
+        ? { at: c.amountUpdatedAt.toISOString(), by: c.amountUpdatedBy }
+        : row;
+    meta[contributionFieldKey(c.id, "note")] =
+      c.noteUpdatedAt && c.noteUpdatedBy
+        ? { at: c.noteUpdatedAt.toISOString(), by: c.noteUpdatedBy }
+        : row;
   }
 
   const catalog: CatalogItem[] = catalogRows.map((c) => ({
@@ -169,6 +249,8 @@ export async function loadListSnapshot(
       note: c.note,
     })),
     recipeAdditions: additions,
+    recipeTitles,
+    meta,
     suggestions: await loadSuggestions(listId, entries, now),
   };
 }

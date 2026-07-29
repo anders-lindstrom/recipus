@@ -22,7 +22,17 @@ import {
   type SyncState,
   type Unit,
 } from "@/lib/domain";
-import { applyOp, opListId, type Op } from "@/lib/sync";
+import {
+  additionKey,
+  applyOp,
+  catalogKey,
+  contributionFieldKey,
+  contributionKey,
+  entryKey,
+  listKey,
+  opListId,
+  type Op,
+} from "@/lib/sync";
 
 /**
  * Applying one client op to Postgres.
@@ -32,23 +42,13 @@ import { applyOp, opListId, type Op } from "@/lib/sync";
  * be a bug waiting to happen. This file's only job is the plumbing around it:
  * load just enough of the database to build the `SyncState` slice the op
  * touches, hand it to the reducer, and write back whatever changed.
+ *
+ * The LWW meta keys (listKey/catalogKey/entryKey/contributionKey/
+ * contributionFieldKey/additionKey) are imported from src/lib/sync rather
+ * than redefined here — they used to be duplicated locally, which is exactly
+ * the kind of thing that silently drifts. One definition, imported on both
+ * sides, cannot.
  */
-
-// ---------------------------------------------------------------------------
-// Meta key builders
-//
-// These mirror the *private* key functions in src/lib/sync/reducer.ts
-// (listKey/catalogKey/entryKey/contributionKey/additionKey) exactly. They are
-// not exported from that module, so this is a second definition of the same
-// string format — if reducer.ts ever changes its key shapes, this must change
-// with it, or conflict resolution silently breaks.
-// ---------------------------------------------------------------------------
-
-const listKey = (id: Id): string => `list:${id}`;
-const catalogKey = (id: Id): string => `catalog:${id}`;
-const entryKey = (id: Id): string => `entry:${id}`;
-const contributionKey = (id: Id): string => `contribution:${id}`;
-const additionKey = (id: Id): string => `addition:${id}`;
 
 function toAmount(value: number | null, unit: string | null): Amount | null {
   return value === null || unit === null ? null : { value, unit: unit as Unit };
@@ -285,11 +285,11 @@ async function loadStateSlice(
     // contributions, which are written whole by a single op and so never
     // populate the per-field columns at all.
     const rowClock: RecordMeta = { at: row.updatedAt.toISOString(), by: row.updatedBy };
-    state.meta[`${contributionKey(row.id)}:amount`] =
+    state.meta[contributionFieldKey(row.id, "amount")] =
       row.amountUpdatedAt && row.amountUpdatedBy
         ? { at: row.amountUpdatedAt.toISOString(), by: row.amountUpdatedBy }
         : rowClock;
-    state.meta[`${contributionKey(row.id)}:note`] =
+    state.meta[contributionFieldKey(row.id, "note")] =
       row.noteUpdatedAt && row.noteUpdatedBy
         ? { at: row.noteUpdatedAt.toISOString(), by: row.noteUpdatedBy }
         : rowClock;
@@ -483,7 +483,7 @@ async function writeManualContribution(
   next: SyncState,
 ): Promise<void> {
   const cid = manualContributionId(entryId);
-  const meta = next.meta[`${contributionKey(cid)}:${field}`];
+  const meta = next.meta[contributionFieldKey(cid, field)];
   if (!meta) return;
 
   const contribution = next.contributions[cid];

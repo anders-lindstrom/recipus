@@ -112,6 +112,18 @@ export const recipeAdditionInfoSchema = z
   .object({ recipeTitle: z.string(), scaleFactor: z.number() })
   .openapi("RecipeAdditionInfo");
 
+/** The reducer's shape, as carried in a snapshot. */
+export const recipeAdditionSchema = z
+  .object({
+    id: z.string(),
+    listId: z.string(),
+    recipeId: z.string(),
+    scaleFactor: z.number(),
+    addedAt: z.string(),
+    addedBy: z.string(),
+  })
+  .openapi("RecipeAddition");
+
 export const recipeIngredientSchema = z
   .object({
     id: z.string(),
@@ -157,7 +169,20 @@ export const listSnapshotSchema = z
     catalog: z.array(catalogItemSchema),
     entries: z.array(listEntrySchema),
     contributions: z.array(contributionSchema),
-    recipeAdditions: z.record(z.string(), recipeAdditionInfoSchema),
+    // Full records, in the reducer's shape — a hydrating client needs to
+    // populate SyncState.recipeAdditions, which display info cannot do.
+    recipeAdditions: z.record(z.string(), recipeAdditionSchema),
+    recipeTitles: z.record(z.string(), z.string()),
+    // Last-write-wins bookkeeping, so a hydrating client does not start blind
+    // and let a stale outbox op beat a fresher server value.
+    meta: z.record(
+      z.string(),
+      z.object({
+        at: z.string(),
+        by: z.string(),
+        deleted: z.boolean().optional(),
+      }),
+    ),
     suggestions: z.array(
       z.object({ catalogItemId: z.string(), reason: z.string() }),
     ),

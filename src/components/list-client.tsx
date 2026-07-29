@@ -1,18 +1,10 @@
 "use client";
 
-import { useCallback, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { submitOps } from "@/app/(app)/actions";
-import {
-  applyOps,
-  type Op,
-} from "@/lib/sync";
-import {
-  emptyState,
-  type Amount,
-  type Id,
-  type SyncState,
-} from "@/lib/domain";
+import { useList } from "@/lib/client/use-list";
+import type { Op } from "@/lib/sync";
+import type { Amount, Id } from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import { parseAmount } from "@/lib/units";
 import { normalizeName, slugify } from "@/lib/utils";
@@ -27,10 +19,35 @@ import { Scanner } from "./scanner";
  * trip, which is the whole point — a tap that waits is a tap that fails in a
  * shop.
  *
- * This holds state in memory. The IndexedDB-backed store replaces it without
- * touching this file's shape: same ops, same reducer, same optimistic timing —
- * it just survives a reload and a dead network too.
+ * It also has to survive being opened with no server at all. The service worker
+ * caches this shell, so the page that renders offline is whatever HTML was
+ * cached — which cannot be an auth-gated server render, or a lapsed session
+ * gets baked into the cache and served forever. So the shell is auth-agnostic:
+ * it renders from IndexedDB and from a small "shell context" (list name,
+ * category names) stashed in localStorage on each successful online load, and
+ * treats being signed out as a banner rather than a different page.
  */
+
+const SHELL_KEY = "recipus:shell";
+
+/** The bits ListScreen needs that do not live in SyncState. */
+interface ShellContext {
+  listId: Id;
+  actor: string;
+  list: ListSnapshot["list"];
+  categories: ListSnapshot["categories"];
+  recipeTitles: Record<Id, string>;
+}
+
+function readShellContext(): ShellContext | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SHELL_KEY);
+    return raw ? (JSON.parse(raw) as ShellContext) : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * An op minus the envelope this component fills in.
@@ -44,64 +61,103 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
   : never;
 type OpDraft = DistributiveOmit<Op, "clientOpId" | "actor" | "at">;
 
-function hydrate(snapshot: ListSnapshot): SyncState {
-  const state = emptyState();
-  state.lists[snapshot.list.id] = snapshot.list;
-  for (const c of snapshot.catalog) state.catalog[c.id] = c;
-  for (const e of snapshot.entries) {
-    state.entries[e.id] = e;
-    state.meta[`entry:${e.id}`] = { at: e.updatedAt, by: e.updatedBy };
-  }
-  for (const c of snapshot.contributions) state.contributions[c.id] = c;
-  return state;
-}
-
 export interface ListClientProps {
-  snapshot: ListSnapshot;
-  actor: string;
+  /** Null when the server could not authenticate — the client falls back to IndexedDB. */
+  snapshot: ListSnapshot | null;
+  actor: string | null;
   members: Array<{ id: string; initials: string; color: string }>;
 }
 
 export function ListClient({ snapshot, actor, members }: ListClientProps) {
-  const [state, setState] = useState<SyncState>(() => hydrate(snapshot));
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<string | null>(null);
-  const [signedOut, setSignedOut] = useState(false);
-  const [pending, setPending] = useState(0);
-  const [, startTransition] = useTransition();
+
+  // Read once, on first render, so the offline path has a list name and
+  // category names before anything async resolves.
+  const [cached] = useState<ShellContext | null>(() =>
+    snapshot ? null : readShellContext(),
+  );
+
+  // Remember enough to render the shell next time the server is unreachable.
+  useEffect(() => {
+    if (!snapshot || !actor) return;
+    try {
+      const ctx: ShellContext = {
+        listId: snapshot.list.id,
+        actor,
+        list: snapshot.list,
+        categories: snapshot.categories,
+        recipeTitles: snapshot.recipeTitles,
+      };
+      window.localStorage.setItem(SHELL_KEY, JSON.stringify(ctx));
+    } catch {
+      // A full or disabled localStorage costs offline chrome, nothing more.
+    }
+  }, [snapshot, actor]);
+
+  const listId = snapshot?.list.id ?? cached?.listId ?? null;
+  const effectiveActor = actor ?? cached?.actor ?? null;
+  const list = snapshot?.list ?? cached?.list ?? null;
+  const categories = snapshot?.categories ?? cached?.categories ?? [];
+  const recipeTitles = snapshot?.recipeTitles ?? cached?.recipeTitles ?? {};
+
+  // The store owns state, persistence and sync. It applies each op locally
+  // before the network hears about it, keeps everything in IndexedDB, and
+  // drains its outbox when a connection comes back — so the list opens and
+  // works in a shop with no signal.
+  const { state, status, dispatch: dispatchOp } = useList(
+    listId ?? "__none__",
+    effectiveActor ?? "__none__",
+    snapshot ?? undefined,
+  );
+
+  // Titles come from the snapshot; scale factors from live state, so a recipe
+  // added since hydration still labels its tiles correctly.
+  const recipeAdditionInfo = useMemo(() => {
+    const out: Record<Id, { recipeTitle: string; scaleFactor: number }> = {};
+    for (const addition of Object.values(state.recipeAdditions)) {
+      out[addition.id] = {
+        recipeTitle: recipeTitles[addition.recipeId] ?? "Recept",
+        scaleFactor: addition.scaleFactor,
+      };
+    }
+    return out;
+  }, [state.recipeAdditions, recipeTitles]);
 
   const dispatch = useCallback(
     (partial: OpDraft) => {
       const op = {
         ...partial,
         clientOpId: crypto.randomUUID(),
-        actor,
+        actor: effectiveActor ?? "okand",
         at: new Date().toISOString(),
       } as Op;
-
-      // Local first, always. The network is a detail that happens afterwards.
-      setState((prev) => applyOps(prev, [op]));
-      setPending((n) => n + 1);
-
-      startTransition(async () => {
-        try {
-          await submitOps([op]);
-          setSignedOut(false);
-        } catch (err) {
-          // A lapsed Authelia session must never cost you the list. Flag it,
-          // keep the local state, and let the banner offer a way back.
-          const message = err instanceof Error ? err.message : String(err);
-          if (/401|unauthor|auth/i.test(message)) setSignedOut(true);
-          else toast.error("Kunde inte synka ändringen");
-        } finally {
-          setPending((n) => Math.max(0, n - 1));
-        }
-      });
+      void dispatchOp(op).catch(() =>
+        // A lapsed session is reported through status.signedOut, not thrown —
+        // anything reaching here is a genuine failure worth surfacing.
+        toast.error("Kunde inte spara ändringen"),
+      );
     },
-    [actor],
+    [effectiveActor, dispatchOp],
   );
 
-  const listId = snapshot.list.id;
+
+  // Nothing cached and no server: the very first launch has to happen with a
+  // connection. Say so plainly instead of rendering an empty list that looks
+  // like everything was lost.
+  if (!list || !listId) {
+    return (
+      <main className="grid min-h-dvh place-items-center p-6 text-center">
+        <div>
+          <p className="text-base font-bold text-ink">Ingen lista sparad än</p>
+          <p className="mt-2 text-sm text-ink-soft">
+            Öppna Recipus en gång med täckning, så finns listan kvar i telefonen
+            även utan nät.
+          </p>
+        </div>
+      </main>
+    );
+  }
 
   const actions = {
     addItem: (catalogItemId: Id, amountText?: string) => {
@@ -178,15 +234,19 @@ export function ListClient({ snapshot, actor, members }: ListClientProps) {
   return (
     <>
       <ListScreen
-        list={snapshot.list}
-        categories={snapshot.categories}
+        list={list}
+        categories={categories}
         catalog={Object.values(state.catalog)}
         entries={Object.values(state.entries)}
         contributions={Object.values(state.contributions)}
-        recipeAdditions={snapshot.recipeAdditions}
-        suggestions={snapshot.suggestions}
+        recipeAdditions={recipeAdditionInfo}
+        suggestions={snapshot?.suggestions ?? []}
         members={members}
-        sync={{ online: true, pendingCount: pending, signedOut }}
+        sync={{
+          online: status.online,
+          pendingCount: status.pendingCount,
+          signedOut: status.signedOut,
+        }}
         onReauthenticate={() => location.reload()}
         actions={actions}
       />

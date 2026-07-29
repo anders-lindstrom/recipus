@@ -30,11 +30,26 @@ import type { Op } from "./ops";
 
 type MetaKey = string;
 
-const listKey = (id: Id): MetaKey => `list:${id}`;
-const catalogKey = (id: Id): MetaKey => `catalog:${id}`;
-const entryKey = (id: Id): MetaKey => `entry:${id}`;
-const contributionKey = (id: Id): MetaKey => `contribution:${id}`;
-const additionKey = (id: Id): MetaKey => `addition:${id}`;
+/**
+ * The last-write-wins key shapes, exported because three places need them.
+ *
+ * The server rebuilds these from database columns and the client rebuilds them
+ * from a snapshot, so for a while each kept its own copy with a comment saying
+ * "must stay in lockstep with reducer.ts". That is a latent bug rather than a
+ * safeguard: a mismatched key does not throw, it silently reads as "no prior
+ * record", so the newest write always wins and conflict resolution quietly
+ * stops working. One definition, imported everywhere, cannot drift.
+ */
+export const listKey = (id: Id): MetaKey => `list:${id}`;
+export const catalogKey = (id: Id): MetaKey => `catalog:${id}`;
+export const entryKey = (id: Id): MetaKey => `entry:${id}`;
+export const contributionKey = (id: Id): MetaKey => `contribution:${id}`;
+export const additionKey = (id: Id): MetaKey => `addition:${id}`;
+/** The amount and the note carry independent clocks — see setManualField. */
+export const contributionFieldKey = (
+  id: Id,
+  field: "amount" | "note",
+): MetaKey => `contribution:${id}:${field}`;
 
 /**
  * Does this op supersede what we already have?

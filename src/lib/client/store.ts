@@ -312,19 +312,17 @@ export function createListStore(
         by: entry.updatedBy,
       };
     }
-    // Contributions carry no timestamp of their own in the domain model, so
-    // no equivalent meta can be reconstructed for them here — a stale pending
-    // set_amount/set_note replayed below could in principle beat a fresher
-    // server value. A known, narrow gap (see report), not fixable from this
-    // module without a domain change.
+    // The snapshot now carries the rows' own last-write-wins timestamps, so a
+    // hydrating client is not blind: a stale op replayed from the outbox below
+    // is compared against real server clocks instead of winning by default
+    // because there was nothing to compare against.
     for (const contribution of snapshot.contributions) {
       base.contributions[contribution.id] = contribution;
     }
-    // `recipes` and full `recipeAdditions` cannot be reconstructed from a
-    // ListSnapshot — it carries only display info (title + scale factor),
-    // not the shape the reducer needs — and are left empty. Any
-    // add_recipe/remove_recipe op, whether replayed from the outbox below or
-    // arriving later via catch-up/stream, still applies correctly regardless.
+    for (const [id, addition] of Object.entries(snapshot.recipeAdditions)) {
+      base.recipeAdditions[id] = addition;
+    }
+    Object.assign(base.meta, snapshot.meta);
 
     const outboxOps = await outbox.pending();
     state = applyOps(base, outboxOps);

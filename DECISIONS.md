@@ -23,15 +23,39 @@ succeeds. Dev server is on **port 3100** (3000 was taken by Travkollen).
 - Cadence engine, seeded catalog (336 Swedish items, 19 aisle-ordered
   categories), PWA manifest and offline-first service worker.
 
+## Offline works, and is verified
+
+The headline requirement is done and proven end to end, not inferred:
+
+1. Loaded the app, killed the server outright (`kill -9` on the listener).
+2. Reloaded — the app opened and showed the real list from IndexedDB: banan,
+   grädde and ananas in *Att handla*, the full 341-item catalog by aisle.
+3. Tapped citron with the server still dead. It went on the list, persisted,
+   and queued in the outbox.
+4. Brought the server back. The outbox drained on its own and `hemkop:citron`
+   landed in Postgres.
+
+Two real bugs had to be fixed to get there, and both would have shipped silently:
+
+**The service worker was never registered.** `public/sw.js` existed, the
+manifest referenced it, and nothing ever called
+`navigator.serviceWorker.register`. The offline shell had never once been
+active. It is invisible until the single moment it matters, which is exactly
+how it survived this long unnoticed.
+
+**The cached shell was an auth-gated server render.** Registering the worker
+exposed it: in production the server cannot authenticate without the proxy, so
+it rendered "Inte inloggad" — and *that* got cached and served forever. An app
+that caches its own auth failure has not solved offline, it has broken it
+permanently. The page now always renders the client shell; being signed out is
+a banner over a working list, never a different page. A small shell context
+(list name, category names) is stashed in localStorage on each successful load
+so the offline render has chrome to work with.
+
 ## What is NOT done
 
 Be clear-eyed about this — the list is real:
 
-- **Offline storage.** The service worker caches the app shell, but list state
-  is in memory, not IndexedDB. Close the tab and local state is gone. **The app
-  does not yet work in a shop with no signal**, which was the headline
-  requirement. The store is being written now (`src/lib/client/`) — db, outbox
-  and store exist and are mid-refactor, not yet wired into the UI.
 - **Recipe UI.** Import, parsing, matching and scaling are all built and tested,
   and `POST /api/recipes/import` works. The pages to reach any of it from the
   app are not built, so recipes are currently API-only.
@@ -171,4 +195,9 @@ Against 24 realistic weeknight recipe lines, matching went 9/24 → 23/24.
 - `git_agent` reported LOCKED, so commits are unsigned. **Nothing is pushed** —
   seven commits sit on the local `master`, per the away-mode contract.
 - Dev Postgres is on **5434**; dev server on **3100**.
+- **Deploy note, learned the hard way:** `output: "standalone"` breaks
+  `next start`'s static serving, and the standalone server must be run *from
+  its own directory* with `.next/static` and `public/` copied in. Without that
+  it serves HTML and 404s every asset — including sw.js, so offline silently
+  does not work. The Dockerfile has to do those copies.
 - I left a dev server running. `lsof -nP -iTCP:3100 -sTCP:LISTEN` to find it.

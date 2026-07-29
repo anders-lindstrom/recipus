@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Toaster } from "sonner";
+import { ServiceWorkerRegistrar } from "@/components/service-worker";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -32,6 +33,7 @@ export default function RootLayout({
   return (
     <html lang="sv">
       <body>
+        <ServiceWorkerRegistrar />
         {children}
         <Toaster
           position="bottom-center"

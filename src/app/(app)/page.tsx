@@ -20,51 +20,35 @@ function initials(user: string): string {
 }
 
 export default async function ListPage() {
-  let actor: string;
+  // Auth failure must NOT render a different page. The service worker caches
+  // this HTML, so an auth-gated render bakes "not logged in" into the cache and
+  // serves it forever — which is exactly how an app that works offline stops
+  // working offline. The shell always renders; being signed out is a banner
+  // over a list the client loads from IndexedDB.
+  let actor: string | null = null;
   try {
     actor = authenticate(await headers()).autheliaUser;
   } catch (err) {
-    if (err instanceof AuthError) {
-      return (
-        <main className="grid min-h-dvh place-items-center p-6 text-center">
-          <div>
-            <p className="text-base font-bold">Inte inloggad</p>
-            <p className="mt-2 text-sm text-ink-soft">
-              Recipus nås genom hushållets proxy. Logga in där och försök igen.
-            </p>
-          </div>
-        </main>
-      );
-    }
-    throw err;
+    if (!(err instanceof AuthError)) throw err;
   }
 
-  const lists = await loadLists();
-  const first = lists[0];
-
-  if (!first) {
-    return (
-      <main className="grid min-h-dvh place-items-center p-6 text-center">
-        <div>
-          <p className="text-base font-bold">Ingen lista än</p>
-          <p className="mt-2 text-sm text-ink-soft">
-            Kör <code>pnpm db:seed</code> för att skapa katalogen och en
-            startlista.
-          </p>
-        </div>
-      </main>
-    );
+  let snapshot = null;
+  if (actor) {
+    const lists = await loadLists();
+    const first = lists[0];
+    if (first) snapshot = await loadListSnapshot(first.id, new Date());
   }
-
-  const snapshot = await loadListSnapshot(first.id, new Date());
-  if (!snapshot) throw new Error(`List ${first.id} vanished between queries`);
 
   return (
     <main>
       <ListClient
         snapshot={snapshot}
         actor={actor}
-        members={[{ id: actor, initials: initials(actor), color: "#c8622e" }]}
+        members={
+          actor
+            ? [{ id: actor, initials: initials(actor), color: "#c8622e" }]
+            : []
+        }
       />
     </main>
   );
