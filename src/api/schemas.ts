@@ -147,6 +147,19 @@ export const recipeSchema = z
   })
   .openapi("Recipe");
 
+/** GET /api/recipes row — the list view, without the full ingredient bodies. */
+export const recipeSummarySchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    imageUrl: z.string().nullable(),
+    servings: z.number(),
+    servingsUnit: z.string(),
+    sourceUrl: z.string().nullable(),
+    ingredientCount: z.number().int(),
+  })
+  .openapi("RecipeSummary");
+
 export const barcodeSchema = z
   .object({
     ean: z.string(),

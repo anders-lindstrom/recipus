@@ -20,6 +20,13 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  // Playwright fixtures call their second argument `use`, which the React hooks
+  // rule reads as the `use` hook being called outside a component. It is a
+  // false positive by name alone — there is no React in these files.
+  {
+    files: ["tests/**/*.ts"],
+    rules: { "react-hooks/rules-of-hooks": "off" },
+  },
   globalIgnores([
     ".next/**",
     "out/**",

@@ -310,3 +310,37 @@ describe("stream echoes", () => {
     );
   });
 });
+
+describe("online reachability", () => {
+  it("goes false after a failed round trip and true again after a successful one — not just navigator.onLine", async () => {
+    // In this (Node) test environment navigator.onLine is unavailable, so
+    // isOnline() defaults to true — meaning status().online here is driven
+    // entirely by consecutive network failures, exactly the signal
+    // navigator.onLine itself can't provide (an up interface, a dead server).
+    let shouldFail = true;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/snapshot")) return jsonResponse(emptySnapshot(LIST));
+      if (shouldFail) throw new Error("network down");
+      return jsonResponse([]);
+    }) as unknown as typeof fetch;
+
+    const store = createListStore(LIST, "anders", {
+      fetch: fetchMock,
+      createEventSource: () => new FakeEventSource(),
+    });
+    // Hydrated up front so the reconnect cycle goes straight to catch-up
+    // (the thing about to fail) rather than the snapshot bootstrap.
+    await store.hydrate(emptySnapshot(LIST));
+
+    store.connect();
+    await vi.waitFor(() => expect(store.status().online).toBe(false));
+    expect(store.status().signedOut).toBe(false); // a plain network error, not a lapse
+
+    shouldFail = false;
+    // Force an immediate retry rather than waiting out the real backoff timer.
+    store.disconnect();
+    store.connect();
+
+    await vi.waitFor(() => expect(store.status().online).toBe(true));
+  });
+});

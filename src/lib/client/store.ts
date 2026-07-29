@@ -54,13 +54,6 @@ export interface ListStoreDeps {
 const BASE_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
 
-/**
- * Must match reducer.ts's private `entryKey` exactly (`entry:<id>`) — that
- * module doesn't export its key helpers. Duplicated here on purpose; if
- * reducer.ts's format ever changes, this has to change with it.
- */
-const entryMetaKey = (id: Id): string => `entry:${id}`;
-
 class AutheliaLapseError extends Error {
   constructor() {
     super("Authelia session lapsed");
@@ -208,8 +201,17 @@ export function createListStore(
 
   let pendingCount = 0;
   let signedOut = false;
+  // `navigator.onLine` only reflects the network interface, not whether the
+  // server is actually reachable — it stays true when the machine has wifi
+  // but the API is down. Counting consecutive failed round trips catches
+  // exactly that gap, so the offline banner reflects reality rather than the
+  // OS's optimistic guess.
+  let consecutiveFailures = 0;
+  function computeOnline(): boolean {
+    return isOnline() && consecutiveFailures === 0;
+  }
   let cachedStatus: StoreStatus = {
-    online: isOnline(),
+    online: computeOnline(),
     pendingCount: 0,
     signedOut: false,
   };
@@ -232,7 +234,7 @@ export function createListStore(
   }
 
   function updateStatus(): void {
-    const next: StoreStatus = { online: isOnline(), pendingCount, signedOut };
+    const next: StoreStatus = { online: computeOnline(), pendingCount, signedOut };
     if (
       next.online === cachedStatus.online &&
       next.pendingCount === cachedStatus.pendingCount &&
@@ -296,26 +298,22 @@ export function createListStore(
    * Turn a read-optimized ListSnapshot into the reducer-shaped SyncState this
    * store actually runs on, with local edits made since the last sync replayed
    * on top rather than discarded.
+   *
+   * `snapshot.meta` — built server-side from the rows' own last-write-wins
+   * timestamps, using the reducer's own key builders — is what makes that
+   * replay safe: without it, a stale op replayed from the outbox below would
+   * win by default (nothing to compare against) instead of losing to a
+   * fresher server value. `recipes` is the one thing still not reconstructed
+   * here: a ListSnapshot carries `recipeTitles` (recipeId → title) for
+   * display, not full Recipe records, and no op ever creates a Recipe either
+   * (recipes arrive through their own import flow, not the op log) — so
+   * `SyncState.recipes` simply stays whatever it already was.
    */
   async function applySnapshot(snapshot: ListSnapshot): Promise<void> {
     const base = emptyState();
     base.lists[snapshot.list.id] = snapshot.list;
     for (const item of snapshot.catalog) base.catalog[item.id] = item;
-    for (const entry of snapshot.entries) {
-      base.entries[entry.id] = entry;
-      // A ListEntry's own updatedAt/updatedBy IS valid last-write-wins meta —
-      // it's exactly what applyOp would have recorded had it processed the
-      // op that produced this row. Seeding it protects the outbox replay
-      // below from a stale local op beating a fresher server value.
-      base.meta[entryMetaKey(entry.id)] = {
-        at: entry.updatedAt,
-        by: entry.updatedBy,
-      };
-    }
-    // The snapshot now carries the rows' own last-write-wins timestamps, so a
-    // hydrating client is not blind: a stale op replayed from the outbox below
-    // is compared against real server clocks instead of winning by default
-    // because there was nothing to compare against.
+    for (const entry of snapshot.entries) base.entries[entry.id] = entry;
     for (const contribution of snapshot.contributions) {
       base.contributions[contribution.id] = contribution;
     }
@@ -343,8 +341,7 @@ export function createListStore(
       await outbox.flush((ops) => postOps(fetchImpl, ops));
       const remaining = await outbox.pending();
       pendingCount = remaining.length;
-      resetBackoff();
-      updateStatus();
+      recordNetworkSuccess();
     } catch (err) {
       if (err instanceof AutheliaLapseError) {
         signedOut = true;
@@ -368,7 +365,7 @@ export function createListStore(
       syncMeta = { ...syncMeta, cursor };
       emit();
       await Promise.all([saveState(listId, state), saveMeta(syncMeta)]);
-      resetBackoff();
+      recordNetworkSuccess();
       return true;
     } catch (err) {
       if (!connected) return false;
@@ -434,7 +431,7 @@ export function createListStore(
       const snapshot = await fetchSnapshot(fetchImpl, listId);
       if (!connected) return false;
       await applySnapshot(snapshot);
-      resetBackoff();
+      recordNetworkSuccess();
       return true;
     } catch (err) {
       if (!connected) return false;
@@ -470,6 +467,13 @@ export function createListStore(
     backoffMs = BASE_BACKOFF_MS;
   }
 
+  /** Call after any successful round trip — catch-up, flush, or snapshot bootstrap. */
+  function recordNetworkSuccess(): void {
+    consecutiveFailures = 0;
+    resetBackoff();
+    updateStatus();
+  }
+
   function clearRetryTimer(): void {
     if (retryTimer !== null) {
       clearTimeout(retryTimer);
@@ -479,6 +483,11 @@ export function createListStore(
 
   function scheduleRetry(): void {
     if (!connected || signedOut) return;
+    // A round trip just failed (this is only ever called from a catch block
+    // or an SSE error) — one more data point toward "the server, not just the
+    // network interface, is unreachable".
+    consecutiveFailures += 1;
+    updateStatus();
     clearRetryTimer();
     const delay = backoffMs;
     // Never a tight retry loop: each failure backs off further, capped, so a
