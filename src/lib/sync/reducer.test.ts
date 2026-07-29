@@ -400,6 +400,33 @@ describe("lists and catalog", () => {
     });
     expect(state.entries[entryId(LIST, "unknown-item")]).toBeDefined();
   });
+
+  it("patches a catalog item that already exists", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 0), kind: "create_catalog_item", item: item(CREAM) },
+      {
+        ...base("anders", 1),
+        kind: "update_catalog_item",
+        itemId: CREAM,
+        patch: { hasAtHome: true },
+      },
+    ]);
+    expect(state.catalog[CREAM].hasAtHome).toBe(true);
+    // Untouched fields survive the patch.
+    expect(state.catalog[CREAM].categoryId).toBe("mejeri-agg");
+  });
+
+  it("ignores an update for a catalog item it has never seen", () => {
+    // Same reasoning as the list case: there is nothing derivable to conjure a
+    // whole item from (no name, no category), so the patch is dropped.
+    const state = applyOp(emptyState(), {
+      ...base("anders", 1),
+      kind: "update_catalog_item",
+      itemId: "unknown-item",
+      patch: { hasAtHome: true },
+    });
+    expect(state.catalog["unknown-item"]).toBeUndefined();
+  });
 });
 
 describe("amounts and notes", () => {
@@ -530,5 +557,21 @@ describe("pruneTombstones", () => {
 
     const pruned = pruneTombstones(state, new Date(at(10)));
     expect(pruned.entries[entryId(LIST, MILK)]).toBeDefined();
+  });
+
+  it("forgets the meta row for a pruned entry too", () => {
+    // Otherwise the meta map — the one thing this function exists to bound —
+    // grows forever even after the entry it describes is gone.
+    const state = applyOp(emptyState(), {
+      ...base("anders", 1),
+      kind: "remove_item",
+      listId: LIST,
+      catalogItemId: MILK,
+      bought: true,
+    });
+    expect(Object.keys(state.meta).length).toBeGreaterThan(0);
+
+    const pruned = pruneTombstones(state, new Date(at(30)));
+    expect(Object.keys(pruned.meta)).toHaveLength(0);
   });
 });

@@ -148,7 +148,10 @@ function writeEntry(
 
   return patch(state, {
     entries: { ...state.entries, [id]: entry },
-    meta: { ...state.meta, [key]: metaOf(op) },
+    // Marked deleted exactly when the entry itself is tombstoned, so that
+    // pruneTombstones can eventually forget this key too — otherwise the meta
+    // map would grow forever, even after the entry it describes is gone.
+    meta: { ...state.meta, [key]: metaOf(op, removed) },
   });
 }
 

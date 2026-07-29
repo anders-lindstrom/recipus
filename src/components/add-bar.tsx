@@ -3,7 +3,8 @@
 import { useMemo, useState } from "react";
 import type { CatalogItem, Id } from "@/lib/domain";
 import { rankMatches, splitQuery } from "@/lib/services/search";
-import { codepointToEmoji, normalizeName } from "@/lib/utils";
+import { normalizeName } from "@/lib/utils";
+import { ItemIcon } from "./icon";
 
 /**
  * The add bar.
@@ -96,9 +97,7 @@ export function AddBar({ catalog, onListItemIds, onPick, onCreate }: AddBarProps
                   onClick={() => pick(item.id)}
                   className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left active:bg-brand-tint"
                 >
-                  <span aria-hidden className="text-lg">
-                    {codepointToEmoji(item.iconRef)}
-                  </span>
+                  <ItemIcon iconRef={item.iconRef} className="text-lg" />
                   <span className="flex-1 text-[13.5px] font-semibold text-ink">
                     {item.name}
                   </span>

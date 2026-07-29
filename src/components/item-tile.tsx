@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useRef } from "react";
-import { cn, codepointToEmoji } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { ItemIcon } from "./icon";
 
 /**
  * The tile.
@@ -117,12 +118,10 @@ export function ItemTile({
         />
       )}
 
-      <span
-        aria-hidden
+      <ItemIcon
+        iconRef={iconRef}
         className={cn("text-2xl leading-none", !onList && "grayscale-[0.7]")}
-      >
-        {codepointToEmoji(iconRef)}
-      </span>
+      />
 
       <span className="mt-1 text-[11px] leading-tight font-semibold text-ink">
         {name}
