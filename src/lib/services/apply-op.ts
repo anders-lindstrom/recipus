@@ -1,4 +1,6 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   catalogItems,
@@ -11,7 +13,10 @@ import {
 } from "@/db/schema";
 import {
   emptyState,
-  entryId,
+  entryId as makeEntryId,
+  manualContributionId,
+  recipeContributionId,
+  type Amount,
   type Id,
   type RecordMeta,
   type SyncState,
@@ -20,400 +25,719 @@ import {
 import { applyOp, opListId, type Op } from "@/lib/sync";
 
 /**
- * Applying an operation on the server.
+ * Applying one client op to Postgres.
  *
- * The load-bearing decision here is that this uses the SAME reducer the browser
- * uses. It loads the slice of state an op can touch, runs `applyOp`, and writes
- * back the difference. Reimplementing op semantics in SQL would be faster to
- * write and would eventually disagree with the client in some corner nobody
- * tests — and a disagreement here means two people's shopping lists quietly
- * stop matching, with no error anywhere.
+ * This runs the SAME reducer the browser runs (`applyOp` from src/lib/sync) —
+ * see that module's header comment for why a second implementation here would
+ * be a bug waiting to happen. This file's only job is the plumbing around it:
+ * load just enough of the database to build the `SyncState` slice the op
+ * touches, hand it to the reducer, and write back whatever changed.
  */
+
+// ---------------------------------------------------------------------------
+// Meta key builders
+//
+// These mirror the *private* key functions in src/lib/sync/reducer.ts
+// (listKey/catalogKey/entryKey/contributionKey/additionKey) exactly. They are
+// not exported from that module, so this is a second definition of the same
+// string format — if reducer.ts ever changes its key shapes, this must change
+// with it, or conflict resolution silently breaks.
+// ---------------------------------------------------------------------------
+
+const listKey = (id: Id): string => `list:${id}`;
+const catalogKey = (id: Id): string => `catalog:${id}`;
+const entryKey = (id: Id): string => `entry:${id}`;
+const contributionKey = (id: Id): string => `contribution:${id}`;
+const additionKey = (id: Id): string => `addition:${id}`;
+
+function toAmount(value: number | null, unit: string | null): Amount | null {
+  return value === null || unit === null ? null : { value, unit: unit as Unit };
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
- * Rebuild the reducer's LWW keys from the database's own columns.
- *
- * These strings must match src/lib/sync/reducer.ts exactly. A typo does not
- * throw — it silently makes every comparison look like "no prior record", so
- * the newest write always wins and conflict resolution quietly stops working.
+ * Which rows this op could possibly touch, gathered while loading — reused
+ * verbatim by `persist` so "what did we load" and "what do we write back" can
+ * never drift apart into two separate lists that disagree.
  */
-const metaKeys = {
-  list: (id: Id) => `list:${id}`,
-  catalog: (id: Id) => `catalog:${id}`,
-  entry: (id: Id) => `entry:${id}`,
-  contribution: (id: Id) => `contribution:${id}`,
-  contributionField: (id: Id, field: "amount" | "note") =>
-    `contribution:${id}:${field}`,
-  addition: (id: Id) => `addition:${id}`,
-};
+interface Scope {
+  listIds: Set<Id>;
+  catalogIds: Set<Id>;
+  entryIds: Set<Id>;
+  /**
+   * set_amount/set_note touch exactly one manual contribution's ONE field —
+   * never both, and never more than one entry — so this is a single optional
+   * slot rather than a set.
+   */
+  manualContributionField: { entryId: Id; field: "amount" | "note" } | null;
+  contributionIds: Set<Id>;
+  additionIds: Set<Id>;
+}
 
-function meta(at: Date, by: string): RecordMeta {
-  return { at: at.toISOString(), by };
+function emptyScope(): Scope {
+  return {
+    listIds: new Set(),
+    catalogIds: new Set(),
+    entryIds: new Set(),
+    manualContributionField: null,
+    contributionIds: new Set(),
+    additionIds: new Set(),
+  };
 }
 
 /**
- * Load only what this op can touch.
- *
- * Loading the whole database would be correct and would also get slower every
- * week the household uses the app. The reducer only ever reads the entries and
- * contributions of one list, plus the catalog rows the op names by id.
+ * Load the affected slice of SyncState for one op — the op's list, its
+ * entries, their contributions, its recipe addition, plus the catalog rows it
+ * names. Deliberately NOT the whole database: every query here is scoped to
+ * ids the op itself names, or (delete_list / remove_recipe) a single indexed
+ * WHERE clause bounded to one list/addition.
  */
-async function loadSlice(op: Op): Promise<SyncState> {
-  const state = emptyState();
-  const listId = opListId(op);
+async function loadStateSlice(
+  tx: Tx,
+  op: Op,
+): Promise<{ state: SyncState; scope: Scope }> {
+  const scope = emptyScope();
 
-  const listIds = [
-    ...new Set(
-      [
-        listId,
-        op.kind === "move_item" ? op.fromListId : null,
-        op.kind === "move_item" ? op.toListId : null,
-      ].filter((v): v is Id => Boolean(v)),
-    ),
-  ];
-
-  if (listIds.length) {
-    const listRows = await db
-      .select()
-      .from(lists)
-      .where(inArray(lists.id, listIds));
-    for (const l of listRows) {
-      state.lists[l.id] = {
-        id: l.id,
-        name: l.name,
-        icon: l.icon,
-        position: l.position,
-        categoryOrder: l.categoryOrder,
+  switch (op.kind) {
+    case "create_list":
+    case "update_list":
+      scope.listIds.add(op.listId);
+      break;
+    case "delete_list":
+      scope.listIds.add(op.listId);
+      break;
+    case "create_catalog_item":
+      scope.catalogIds.add(op.item.id);
+      break;
+    case "update_catalog_item":
+      scope.catalogIds.add(op.itemId);
+      break;
+    case "add_item":
+    case "remove_item":
+      scope.entryIds.add(makeEntryId(op.listId, op.catalogItemId));
+      break;
+    case "set_amount":
+    case "set_note": {
+      const eid = makeEntryId(op.listId, op.catalogItemId);
+      scope.entryIds.add(eid);
+      scope.manualContributionField = {
+        entryId: eid,
+        field: op.kind === "set_amount" ? "amount" : "note",
       };
-      state.meta[metaKeys.list(l.id)] = l.deletedAt
-        ? { ...meta(l.updatedAt, l.updatedBy), deleted: true }
-        : meta(l.updatedAt, l.updatedBy);
+      break;
     }
-
-    const entryRows = await db
-      .select()
-      .from(listEntries)
-      .where(inArray(listEntries.listId, listIds));
-
-    for (const e of entryRows) {
-      state.entries[e.id] = {
-        id: e.id,
-        listId: e.listId,
-        catalogItemId: e.catalogItemId,
-        createdAt: e.createdAt.toISOString(),
-        createdBy: e.createdBy,
-        removedAt: e.removedAt?.toISOString() ?? null,
-        updatedAt: e.updatedAt.toISOString(),
-        updatedBy: e.updatedBy,
-      };
-      state.meta[metaKeys.entry(e.id)] = meta(e.updatedAt, e.updatedBy);
-    }
-
-    if (entryRows.length) {
-      const contribRows = await db
-        .select()
-        .from(contributions)
-        .where(
-          inArray(
-            contributions.entryId,
-            entryRows.map((e) => e.id),
-          ),
+    case "add_recipe": {
+      scope.additionIds.add(op.recipeAdditionId);
+      for (const item of op.items) {
+        scope.entryIds.add(makeEntryId(op.listId, item.catalogItemId));
+        scope.contributionIds.add(
+          recipeContributionId(op.recipeAdditionId, item.catalogItemId),
         );
-      for (const c of contribRows) {
-        state.contributions[c.id] = {
-          id: c.id,
-          entryId: c.entryId,
-          sourceKind: c.sourceKind,
-          recipeAdditionId: c.recipeAdditionId,
-          amount:
-            c.amountValue !== null && c.amountUnit !== null
-              ? { value: c.amountValue, unit: c.amountUnit as Unit }
-              : null,
-          note: c.note,
-        };
-        const m = meta(c.updatedAt, c.updatedBy);
-        state.meta[metaKeys.contribution(c.id)] = m;
-        // Manual contributions carry a clock per field — amount and note are
-        // independent facts and a shared clock loses one of them.
-        state.meta[metaKeys.contributionField(c.id, "amount")] = m;
-        state.meta[metaKeys.contributionField(c.id, "note")] = m;
       }
+      break;
     }
-
-    const additionRows = await db
-      .select()
-      .from(recipeAdditions)
-      .where(inArray(recipeAdditions.listId, listIds));
-    for (const a of additionRows) {
-      if (!a.removedAt) {
-        state.recipeAdditions[a.id] = {
-          id: a.id,
-          listId: a.listId,
-          recipeId: a.recipeId,
-          scaleFactor: a.scaleFactor,
-          addedAt: a.addedAt.toISOString(),
-          addedBy: a.addedBy,
-        };
-      }
-      state.meta[metaKeys.addition(a.id)] = a.removedAt
-        ? { ...meta(a.updatedAt, a.updatedBy), deleted: true }
-        : meta(a.updatedAt, a.updatedBy);
-    }
+    case "remove_recipe":
+      scope.additionIds.add(op.recipeAdditionId);
+      break;
+    case "move_item":
+      scope.entryIds.add(makeEntryId(op.fromListId, op.catalogItemId));
+      scope.entryIds.add(makeEntryId(op.toListId, op.catalogItemId));
+      break;
   }
 
-  // Catalog rows the op names directly.
-  const itemIds = new Set<Id>();
-  if ("catalogItemId" in op) itemIds.add(op.catalogItemId);
-  if (op.kind === "create_catalog_item") itemIds.add(op.item.id);
-  if (op.kind === "update_catalog_item") itemIds.add(op.itemId);
-  if (op.kind === "add_recipe") {
-    for (const i of op.items) itemIds.add(i.catalogItemId);
-  }
+  const state = emptyState();
 
-  if (itemIds.size) {
-    const rows = await db
-      .select()
-      .from(catalogItems)
-      .where(inArray(catalogItems.id, [...itemIds]));
-    for (const c of rows) {
-      state.catalog[c.id] = {
-        id: c.id,
-        name: c.name,
-        nameNorm: c.nameNorm,
-        categoryId: c.categoryId,
-        iconRef: c.iconRef,
-        isCustom: c.isCustom,
-        hasAtHome: c.hasAtHome,
-        useCount: c.useCount,
-        lastUsedAt: c.lastUsedAt?.toISOString() ?? null,
+  const [
+    listRows,
+    catalogRows,
+    entryRows,
+    deleteListEntryRows,
+    manualContribRows,
+    recipeContribRows,
+    additionRows,
+    removeRecipeContribRows,
+  ] = await Promise.all([
+    scope.listIds.size
+      ? tx.select().from(lists).where(inArray(lists.id, [...scope.listIds]))
+      : Promise.resolve([]),
+    scope.catalogIds.size
+      ? tx
+          .select()
+          .from(catalogItems)
+          .where(inArray(catalogItems.id, [...scope.catalogIds]))
+      : Promise.resolve([]),
+    scope.entryIds.size
+      ? tx
+          .select()
+          .from(listEntries)
+          .where(inArray(listEntries.id, [...scope.entryIds]))
+      : Promise.resolve([]),
+    // delete_list tombstones every ACTIVE entry on the list — the reducer
+    // skips ones already removed, so there is no need to load those too.
+    op.kind === "delete_list"
+      ? tx
+          .select()
+          .from(listEntries)
+          .where(
+            and(eq(listEntries.listId, op.listId), isNull(listEntries.removedAt)),
+          )
+      : Promise.resolve([]),
+    scope.manualContributionField
+      ? tx
+          .select()
+          .from(contributions)
+          .where(
+            eq(
+              contributions.id,
+              manualContributionId(scope.manualContributionField.entryId),
+            ),
+          )
+      : Promise.resolve([]),
+    scope.contributionIds.size
+      ? tx
+          .select()
+          .from(contributions)
+          .where(inArray(contributions.id, [...scope.contributionIds]))
+      : Promise.resolve([]),
+    scope.additionIds.size
+      ? tx
+          .select()
+          .from(recipeAdditions)
+          .where(inArray(recipeAdditions.id, [...scope.additionIds]))
+      : Promise.resolve([]),
+    // remove_recipe drops every contribution tied to this addition — the
+    // reducer discovers these by scanning state.contributions, so we must
+    // load exactly that set (one indexed query, bounded to one addition).
+    op.kind === "remove_recipe"
+      ? tx
+          .select()
+          .from(contributions)
+          .where(eq(contributions.recipeAdditionId, op.recipeAdditionId))
+      : Promise.resolve([]),
+  ]);
+
+  for (const row of listRows) {
+    const deleted = row.deletedAt !== null;
+    state.meta[listKey(row.id)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    if (!deleted) {
+      state.lists[row.id] = {
+        id: row.id,
+        name: row.name,
+        icon: row.icon,
+        position: row.position,
+        categoryOrder: row.categoryOrder,
       };
-      state.meta[metaKeys.catalog(c.id)] = meta(c.updatedAt, c.updatedBy);
     }
   }
 
-  return state;
+  for (const row of catalogRows) {
+    state.meta[catalogKey(row.id)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+    };
+    state.catalog[row.id] = {
+      id: row.id,
+      name: row.name,
+      nameNorm: row.nameNorm,
+      categoryId: row.categoryId,
+      iconRef: row.iconRef,
+      isCustom: row.isCustom,
+      hasAtHome: row.hasAtHome,
+      useCount: row.useCount,
+      lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
+    };
+  }
+
+  for (const row of [...entryRows, ...deleteListEntryRows]) {
+    scope.entryIds.add(row.id);
+    state.meta[entryKey(row.id)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+      deleted: row.removedAt !== null ? true : undefined,
+    };
+    // Entries stay in the map even when tombstoned — removedAt is a normal
+    // field on ListEntry, not an omission like lists/catalog/additions.
+    state.entries[row.id] = {
+      id: row.id,
+      listId: row.listId,
+      catalogItemId: row.catalogItemId,
+      createdAt: row.createdAt.toISOString(),
+      createdBy: row.createdBy,
+      removedAt: row.removedAt?.toISOString() ?? null,
+      updatedAt: row.updatedAt.toISOString(),
+      updatedBy: row.updatedBy,
+    };
+  }
+
+  for (const row of manualContribRows) {
+    // `amount` and `note` carry independent last-write-wins clocks — a single
+    // shared clock lets an older amount write lose to a newer note write and
+    // silently drop a quantity nobody touched (see reducer.ts's comment on
+    // setManualField). contributions.amount_updated_at/_by and
+    // note_updated_at/_by (migration drizzle/0001) hold those clocks for
+    // real. They are nullable and fall back to the row-level updated_at/by
+    // for rows written before the migration and for recipe/scan
+    // contributions, which are written whole by a single op and so never
+    // populate the per-field columns at all.
+    const rowClock: RecordMeta = { at: row.updatedAt.toISOString(), by: row.updatedBy };
+    state.meta[`${contributionKey(row.id)}:amount`] =
+      row.amountUpdatedAt && row.amountUpdatedBy
+        ? { at: row.amountUpdatedAt.toISOString(), by: row.amountUpdatedBy }
+        : rowClock;
+    state.meta[`${contributionKey(row.id)}:note`] =
+      row.noteUpdatedAt && row.noteUpdatedBy
+        ? { at: row.noteUpdatedAt.toISOString(), by: row.noteUpdatedBy }
+        : rowClock;
+    state.contributions[row.id] = {
+      id: row.id,
+      entryId: row.entryId,
+      sourceKind: "manual",
+      recipeAdditionId: null,
+      amount: toAmount(row.amountValue, row.amountUnit),
+      note: row.note,
+    };
+  }
+
+  for (const row of [...recipeContribRows, ...removeRecipeContribRows]) {
+    scope.contributionIds.add(row.id);
+    state.meta[contributionKey(row.id)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+    };
+    state.contributions[row.id] = {
+      id: row.id,
+      entryId: row.entryId,
+      sourceKind: row.sourceKind as SyncState["contributions"][string]["sourceKind"],
+      recipeAdditionId: row.recipeAdditionId,
+      amount: toAmount(row.amountValue, row.amountUnit),
+      note: row.note,
+    };
+  }
+
+  for (const row of additionRows) {
+    const deleted = row.removedAt !== null;
+    state.meta[additionKey(row.id)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    if (!deleted) {
+      state.recipeAdditions[row.id] = {
+        id: row.id,
+        listId: row.listId,
+        recipeId: row.recipeId,
+        scaleFactor: row.scaleFactor,
+        addedAt: row.addedAt.toISOString(),
+        addedBy: row.addedBy,
+      };
+    }
+  }
+
+  return { state, scope };
 }
 
-export interface ApplyResult {
-  clientOpId: string;
+// ---------------------------------------------------------------------------
+// Writing the result back. Each writer recomputes the row's target state from
+// `next` (the reducer's output) and unconditionally upserts it — never a
+// before/after diff. If the op lost the last-write-wins comparison, `next`
+// equals the loaded state exactly, so the "upsert" is a no-op write of
+// unchanged values. That is simpler and harder to get wrong than diffing, at
+// the cost of a few redundant UPDATEs on a losing op — cheap for a
+// household-sized shopping list.
+// ---------------------------------------------------------------------------
+
+async function writeList(tx: Tx, id: Id, next: SyncState): Promise<void> {
+  const meta = next.meta[listKey(id)];
+  if (!meta) return;
+  const list = next.lists[id];
+  if (list) {
+    await tx
+      .insert(lists)
+      .values({
+        id: list.id,
+        name: list.name,
+        icon: list.icon,
+        position: list.position,
+        categoryOrder: list.categoryOrder,
+        deletedAt: null,
+        updatedAt: new Date(meta.at),
+        updatedBy: meta.by,
+      })
+      .onConflictDoUpdate({
+        target: lists.id,
+        set: {
+          name: list.name,
+          icon: list.icon,
+          position: list.position,
+          categoryOrder: list.categoryOrder,
+          deletedAt: null,
+          updatedAt: new Date(meta.at),
+          updatedBy: meta.by,
+        },
+      });
+  } else {
+    // Tombstoned. Nothing to fabricate for a list we never had a row for, so
+    // this only has an effect when the row already exists.
+    await tx
+      .update(lists)
+      .set({ deletedAt: new Date(meta.at), updatedAt: new Date(meta.at), updatedBy: meta.by })
+      .where(eq(lists.id, id));
+  }
+}
+
+async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> {
+  const meta = next.meta[catalogKey(id)];
+  const item = next.catalog[id];
+  // Missing item with a meta entry means update_catalog_item targeted a row
+  // we don't have — the reducer no-ops that too (see reducer.ts), so there is
+  // nothing to write.
+  if (!meta || !item) return;
+  await tx
+    .insert(catalogItems)
+    .values({
+      id: item.id,
+      name: item.name,
+      nameNorm: item.nameNorm,
+      categoryId: item.categoryId,
+      iconRef: item.iconRef,
+      isCustom: item.isCustom,
+      hasAtHome: item.hasAtHome,
+      useCount: item.useCount,
+      lastUsedAt: item.lastUsedAt ? new Date(item.lastUsedAt) : null,
+      updatedAt: new Date(meta.at),
+      updatedBy: meta.by,
+    })
+    .onConflictDoUpdate({
+      target: catalogItems.id,
+      set: {
+        name: item.name,
+        nameNorm: item.nameNorm,
+        categoryId: item.categoryId,
+        iconRef: item.iconRef,
+        isCustom: item.isCustom,
+        hasAtHome: item.hasAtHome,
+        useCount: item.useCount,
+        lastUsedAt: item.lastUsedAt ? new Date(item.lastUsedAt) : null,
+        updatedAt: new Date(meta.at),
+        updatedBy: meta.by,
+      },
+    });
+}
+
+async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
+  const entry = next.entries[id];
+  if (!entry) return;
+  // NOTE: this insert can violate the catalog_item_id foreign key if the op
+  // references a catalog item this server has never heard of (e.g. a
+  // create_catalog_item op for it hasn't arrived yet). The reducer is
+  // deliberately permissive about that in memory — "referential integrity is
+  // the UI's problem" — but Postgres is not. That is intentional: within one
+  // POST /api/ops batch, ops are applied strictly in the client's own order
+  // (see routes/ops.ts), so a create-then-add-to-list batch always commits
+  // the catalog item first. A genuinely out-of-order arrival across two
+  // separate requests throws here, and the route reports that one op as a
+  // per-op failure rather than silently dropping or corrupting state.
+  await tx
+    .insert(listEntries)
+    .values({
+      id: entry.id,
+      listId: entry.listId,
+      catalogItemId: entry.catalogItemId,
+      createdAt: new Date(entry.createdAt),
+      createdBy: entry.createdBy,
+      removedAt: entry.removedAt ? new Date(entry.removedAt) : null,
+      updatedAt: new Date(entry.updatedAt),
+      updatedBy: entry.updatedBy,
+    })
+    .onConflictDoUpdate({
+      target: listEntries.id,
+      set: {
+        createdAt: new Date(entry.createdAt),
+        createdBy: entry.createdBy,
+        removedAt: entry.removedAt ? new Date(entry.removedAt) : null,
+        updatedAt: new Date(entry.updatedAt),
+        updatedBy: entry.updatedBy,
+      },
+    });
+}
+
+/**
+ * Write one field's worth of a manual contribution. `field` is exactly the
+ * one field the current op (set_amount or set_note) targets — the OTHER
+ * field's clock columns are never touched by this call, since a set_amount
+ * op has nothing true to say about when the note was last written (and vice
+ * versa). Only `updated_at`/`updated_by` (the informational "last touched,
+ * either field" columns recipe/scan contributions rely on) get stamped with
+ * this op's own at/actor unconditionally — that is unambiguous here, since
+ * this call IS the most recent touch by construction.
+ */
+async function writeManualContribution(
+  tx: Tx,
+  entryId: Id,
+  field: "amount" | "note",
+  next: SyncState,
+): Promise<void> {
+  const cid = manualContributionId(entryId);
+  const meta = next.meta[`${contributionKey(cid)}:${field}`];
+  if (!meta) return;
+
+  const contribution = next.contributions[cid];
+  if (!contribution) {
+    // Both fields cleared — setManualField drops the row entirely.
+    await tx.delete(contributions).where(eq(contributions.id, cid));
+    return;
+  }
+
+  const fieldColumns =
+    field === "amount"
+      ? { amountUpdatedAt: new Date(meta.at), amountUpdatedBy: meta.by }
+      : { noteUpdatedAt: new Date(meta.at), noteUpdatedBy: meta.by };
+
+  await tx
+    .insert(contributions)
+    .values({
+      id: cid,
+      entryId,
+      sourceKind: "manual",
+      recipeAdditionId: null,
+      amountValue: contribution.amount?.value ?? null,
+      amountUnit: contribution.amount?.unit ?? null,
+      note: contribution.note,
+      updatedAt: new Date(meta.at),
+      updatedBy: meta.by,
+      ...fieldColumns,
+    })
+    .onConflictDoUpdate({
+      target: contributions.id,
+      set: {
+        amountValue: contribution.amount?.value ?? null,
+        amountUnit: contribution.amount?.unit ?? null,
+        note: contribution.note,
+        updatedAt: new Date(meta.at),
+        updatedBy: meta.by,
+        ...fieldColumns,
+      },
+    });
+}
+
+async function writeContribution(tx: Tx, id: Id, next: SyncState): Promise<void> {
+  const meta = next.meta[contributionKey(id)];
+  if (!meta) return;
+  const c = next.contributions[id];
+  if (!c) {
+    await tx.delete(contributions).where(eq(contributions.id, id));
+    return;
+  }
+  await tx
+    .insert(contributions)
+    .values({
+      id: c.id,
+      entryId: c.entryId,
+      sourceKind: c.sourceKind,
+      recipeAdditionId: c.recipeAdditionId,
+      amountValue: c.amount?.value ?? null,
+      amountUnit: c.amount?.unit ?? null,
+      note: c.note,
+      updatedAt: new Date(meta.at),
+      updatedBy: meta.by,
+    })
+    .onConflictDoUpdate({
+      target: contributions.id,
+      set: {
+        amountValue: c.amount?.value ?? null,
+        amountUnit: c.amount?.unit ?? null,
+        note: c.note,
+        updatedAt: new Date(meta.at),
+        updatedBy: meta.by,
+      },
+    });
+}
+
+async function writeAddition(tx: Tx, id: Id, next: SyncState): Promise<void> {
+  const meta = next.meta[additionKey(id)];
+  if (!meta) return;
+  const addition = next.recipeAdditions[id];
+  if (addition) {
+    await tx
+      .insert(recipeAdditions)
+      .values({
+        id: addition.id,
+        listId: addition.listId,
+        recipeId: addition.recipeId,
+        scaleFactor: addition.scaleFactor,
+        addedAt: new Date(addition.addedAt),
+        addedBy: addition.addedBy,
+        removedAt: null,
+        updatedAt: new Date(meta.at),
+        updatedBy: meta.by,
+      })
+      .onConflictDoUpdate({
+        target: recipeAdditions.id,
+        set: {
+          scaleFactor: addition.scaleFactor,
+          removedAt: null,
+          updatedAt: new Date(meta.at),
+          updatedBy: meta.by,
+        },
+      });
+  } else {
+    await tx
+      .update(recipeAdditions)
+      .set({ removedAt: new Date(meta.at), updatedAt: new Date(meta.at), updatedBy: meta.by })
+      .where(eq(recipeAdditions.id, id));
+  }
+}
+
+async function persist(tx: Tx, next: SyncState, scope: Scope): Promise<void> {
+  for (const id of scope.listIds) await writeList(tx, id, next);
+  for (const id of scope.catalogIds) await writeCatalogItem(tx, id, next);
+  for (const id of scope.entryIds) await writeEntry(tx, id, next);
+  if (scope.manualContributionField) {
+    const { entryId, field } = scope.manualContributionField;
+    await writeManualContribution(tx, entryId, field, next);
+  }
+  for (const id of scope.contributionIds) await writeContribution(tx, id, next);
+  for (const id of scope.additionIds) await writeAddition(tx, id, next);
+}
+
+/**
+ * Did THIS op win the last-write-wins comparison for the given meta key?
+ * `applyOp` sets meta to exactly `{at: op.at, by: op.actor}` when an op wins,
+ * so comparing against that tells us whether the op actually took effect —
+ * as opposed to losing to a newer write already on the server.
+ */
+function wonThisOp(next: SyncState, key: string, op: Op): boolean {
+  const meta = next.meta[key];
+  return meta !== undefined && meta.at === op.at && meta.by === op.actor;
+}
+
+/**
+ * The one place purchase history is written. Only a `remove_item` with
+ * `bought: true` that ACTUALLY WON writes anything: `bought: false` must
+ * write nothing (a change of mind must not teach the cadence engine a lie),
+ * and a removal that LOST to a newer write never really happened, so
+ * recording a purchase for it would be a lie of a different kind — e.g. a
+ * stale offline "bought the milk" arriving after someone else already
+ * re-added milk with a newer timestamp must not count as a purchase.
+ */
+async function recordPurchaseIfBought(tx: Tx, op: Op, next: SyncState): Promise<void> {
+  if (op.kind !== "remove_item" || !op.bought) return;
+  const eid = makeEntryId(op.listId, op.catalogItemId);
+  if (!wonThisOp(next, entryKey(eid), op)) return;
+
+  await tx.insert(purchases).values({
+    id: randomUUID(),
+    catalogItemId: op.catalogItemId,
+    listId: op.listId,
+    purchasedAt: new Date(op.at),
+    actor: op.actor,
+  });
+
+  await tx
+    .update(catalogItems)
+    .set({ useCount: sql`${catalogItems.useCount} + 1`, lastUsedAt: new Date(op.at) })
+    .where(eq(catalogItems.id, op.catalogItemId));
+}
+
+// ---------------------------------------------------------------------------
+// Live fan-out
+//
+// A single container serves this app, so an in-process EventEmitter is the
+// right tool — Postgres LISTEN/NOTIFY would be solving a multi-instance
+// problem this deployment doesn't have. `listId` is null for household-wide
+// catalog ops, which every list's stream must still receive.
+// ---------------------------------------------------------------------------
+
+export interface OpAppliedEvent {
+  listId: Id | null;
   seq: number;
-  /** True when this op had already been applied and was skipped. */
-  duplicate: boolean;
+  op: Op;
 }
 
-export async function applyOpToDatabase(op: Op): Promise<ApplyResult> {
-  // Idempotency first. A client that retried after a flaky response must not
-  // apply its op twice — and it cannot tell whether the first attempt landed.
-  const [existing] = await db
-    .select({ seq: opsTable.seq })
-    .from(opsTable)
-    .where(eq(opsTable.clientOpId, op.clientOpId))
-    .limit(1);
-  if (existing) {
-    return { clientOpId: op.clientOpId, seq: existing.seq, duplicate: true };
-  }
+// Cached on globalThis for the same reason src/db/index.ts caches its pool:
+// Next's dev server reloads this module on every edit, and a fresh
+// EventEmitter each time would silently drop every open SSE connection's
+// listener on save.
+const globalForEvents = globalThis as unknown as { recipusOpEvents?: EventEmitter };
+export const opEvents = globalForEvents.recipusOpEvents ?? new EventEmitter();
+if (process.env.NODE_ENV !== "production") globalForEvents.recipusOpEvents = opEvents;
+// Every open SSE connection adds one listener; a household has a handful of
+// devices, not thousands, so there is no real cap to enforce here.
+opEvents.setMaxListeners(0);
 
-  const before = await loadSlice(op);
-  const after = applyOp(before, op);
-  const at = new Date(op.at);
+/**
+ * Apply one client op, using the SAME reducer the client uses.
+ *
+ * Flow, inside a single transaction:
+ *  1. `client_op_id` already logged → return its seq without re-applying
+ *     (idempotent retry). Checked INSIDE the transaction, not before it, so a
+ *     genuinely concurrent retry of the same clientOpId can't both pass the
+ *     check before either commits (the loser hits the table's unique
+ *     constraint and the whole transaction rolls back cleanly instead of
+ *     double-applying).
+ *  2. Load the affected SyncState slice.
+ *  3. Run the shared reducer.
+ *  4. Persist whatever changed (and the purchases side effect).
+ *  5. Append to the catch-up log and return the new seq.
+ *
+ * `actor` is the AUTHENTICATED caller (from src/lib/auth.ts), not whatever the
+ * op's own `actor` field says. The op's `actor` is client-supplied and reused
+ * for display/attribution once trusted, but trusting it directly here would
+ * let one household member's client silently attribute a change to somebody
+ * else — so the authenticated identity always overrides it before anything is
+ * applied or logged.
+ */
+export async function applyOpToDatabase(
+  op: Op,
+  actor: string,
+): Promise<{ seq: number }> {
+  const safeOp: Op = { ...op, actor };
 
-  return await db.transaction(async (tx) => {
-    // --- lists ---------------------------------------------------------
-    for (const [id, list] of Object.entries(after.lists)) {
-      if (before.lists[id] === list) continue;
-      await tx
-        .insert(lists)
-        .values({ ...list, updatedAt: at, updatedBy: op.actor })
-        .onConflictDoUpdate({
-          target: lists.id,
-          set: {
-            name: list.name,
-            icon: list.icon,
-            position: list.position,
-            categoryOrder: list.categoryOrder,
-            deletedAt: null,
-            updatedAt: at,
-            updatedBy: op.actor,
-          },
-        });
-    }
-    for (const id of Object.keys(before.lists)) {
-      if (!after.lists[id]) {
-        await tx
-          .update(lists)
-          .set({ deletedAt: at, updatedAt: at, updatedBy: op.actor })
-          .where(eq(lists.id, id));
-      }
-    }
+  const result = await db.transaction(async (tx) => {
+    const [existingRow] = await tx
+      .select({ seq: opsTable.seq })
+      .from(opsTable)
+      .where(eq(opsTable.clientOpId, safeOp.clientOpId))
+      .limit(1);
+    if (existingRow) return { seq: existingRow.seq, applied: false as const };
 
-    // --- catalog -------------------------------------------------------
-    for (const [id, cat] of Object.entries(after.catalog)) {
-      if (before.catalog[id] === cat) continue;
-      await tx
-        .insert(catalogItems)
-        .values({
-          ...cat,
-          lastUsedAt: cat.lastUsedAt ? new Date(cat.lastUsedAt) : null,
-          updatedAt: at,
-          updatedBy: op.actor,
-        })
-        .onConflictDoUpdate({
-          target: catalogItems.id,
-          set: {
-            name: cat.name,
-            nameNorm: cat.nameNorm,
-            categoryId: cat.categoryId,
-            iconRef: cat.iconRef,
-            hasAtHome: cat.hasAtHome,
-            updatedAt: at,
-            updatedBy: op.actor,
-          },
-        });
-    }
+    const { state: prev, scope } = await loadStateSlice(tx, safeOp);
+    const next = applyOp(prev, safeOp);
 
-    // --- entries -------------------------------------------------------
-    for (const [id, entry] of Object.entries(after.entries)) {
-      if (before.entries[id] === entry) continue;
-      await tx
-        .insert(listEntries)
-        .values({
-          id,
-          listId: entry.listId,
-          catalogItemId: entry.catalogItemId,
-          createdAt: new Date(entry.createdAt),
-          createdBy: entry.createdBy,
-          removedAt: entry.removedAt ? new Date(entry.removedAt) : null,
-          updatedAt: new Date(entry.updatedAt),
-          updatedBy: entry.updatedBy,
-        })
-        .onConflictDoUpdate({
-          target: listEntries.id,
-          set: {
-            createdAt: new Date(entry.createdAt),
-            createdBy: entry.createdBy,
-            removedAt: entry.removedAt ? new Date(entry.removedAt) : null,
-            updatedAt: new Date(entry.updatedAt),
-            updatedBy: entry.updatedBy,
-          },
-        });
-    }
+    await persist(tx, next, scope);
+    await recordPurchaseIfBought(tx, safeOp, next);
 
-    // --- contributions --------------------------------------------------
-    for (const [id, c] of Object.entries(after.contributions)) {
-      if (before.contributions[id] === c) continue;
-      await tx
-        .insert(contributions)
-        .values({
-          id,
-          entryId: c.entryId,
-          sourceKind: c.sourceKind,
-          recipeAdditionId: c.recipeAdditionId,
-          amountValue: c.amount?.value ?? null,
-          amountUnit: c.amount?.unit ?? null,
-          note: c.note,
-          updatedAt: at,
-          updatedBy: op.actor,
-        })
-        .onConflictDoUpdate({
-          target: contributions.id,
-          set: {
-            amountValue: c.amount?.value ?? null,
-            amountUnit: c.amount?.unit ?? null,
-            note: c.note,
-            updatedAt: at,
-            updatedBy: op.actor,
-          },
-        });
-    }
-    const goneContributions = Object.keys(before.contributions).filter(
-      (id) => !after.contributions[id],
-    );
-    if (goneContributions.length) {
-      await tx
-        .delete(contributions)
-        .where(inArray(contributions.id, goneContributions));
-    }
-
-    // --- recipe additions -----------------------------------------------
-    for (const [id, a] of Object.entries(after.recipeAdditions)) {
-      if (before.recipeAdditions[id] === a) continue;
-      await tx
-        .insert(recipeAdditions)
-        .values({
-          id,
-          listId: a.listId,
-          recipeId: a.recipeId,
-          scaleFactor: a.scaleFactor,
-          addedAt: new Date(a.addedAt),
-          addedBy: a.addedBy,
-          updatedAt: at,
-          updatedBy: op.actor,
-        })
-        .onConflictDoNothing();
-    }
-    for (const id of Object.keys(before.recipeAdditions)) {
-      if (!after.recipeAdditions[id]) {
-        await tx
-          .update(recipeAdditions)
-          .set({ removedAt: at, updatedAt: at, updatedBy: op.actor })
-          .where(eq(recipeAdditions.id, id));
-      }
-    }
-
-    // --- purchase history ------------------------------------------------
-    // The ONLY place purchases are written, and the cadence engine's entire
-    // input. `bought: false` deliberately writes nothing — that path exists so
-    // a change of mind cannot teach the engine that you buy saffran weekly.
-    if (op.kind === "remove_item" && op.bought) {
-      const eid = entryId(op.listId, op.catalogItemId);
-      const wasOnList = before.entries[eid]?.removedAt === null;
-      if (wasOnList) {
-        await tx.insert(purchases).values({
-          id: `${op.clientOpId}:purchase`,
-          catalogItemId: op.catalogItemId,
-          listId: op.listId,
-          purchasedAt: at,
-          actor: op.actor,
-        });
-        await tx
-          .update(catalogItems)
-          .set({
-            useCount: sql`${catalogItems.useCount} + 1`,
-            lastUsedAt: at,
-          })
-          .where(eq(catalogItems.id, op.catalogItemId));
-      }
-    }
-
-    const [row] = await tx
+    const [inserted] = await tx
       .insert(opsTable)
       .values({
-        clientOpId: op.clientOpId,
-        listId: opListId(op),
-        actor: op.actor,
-        kind: op.kind,
-        payload: op,
-        at,
+        clientOpId: safeOp.clientOpId,
+        listId: opListId(safeOp),
+        actor: safeOp.actor,
+        kind: safeOp.kind,
+        payload: safeOp,
+        at: new Date(safeOp.at),
       })
       .returning({ seq: opsTable.seq });
 
-    return { clientOpId: op.clientOpId, seq: row.seq, duplicate: false };
+    return { seq: inserted.seq, applied: true as const };
   });
-}
 
-/** Catch-up feed: everything after a client's cursor. */
-export async function opsSince(seq: number, listId?: Id): Promise<
-  Array<{ seq: number; op: Op }>
-> {
-  const rows = await db
-    .select({ seq: opsTable.seq, payload: opsTable.payload })
-    .from(opsTable)
-    .where(
-      listId
-        ? and(sql`${opsTable.seq} > ${seq}`, eq(opsTable.listId, listId))
-        : sql`${opsTable.seq} > ${seq}`,
-    )
-    .orderBy(opsTable.seq);
+  // Fired only for a genuinely new application, never for an idempotent
+  // replay — and only after the transaction has committed, never before, so a
+  // listener can never observe an op that then rolls back.
+  if (result.applied) {
+    const event: OpAppliedEvent = {
+      listId: opListId(safeOp),
+      seq: result.seq,
+      op: safeOp,
+    };
+    opEvents.emit("op", event);
+  }
 
-  return rows.map((r) => ({ seq: r.seq, op: r.payload as Op }));
+  return { seq: result.seq };
 }

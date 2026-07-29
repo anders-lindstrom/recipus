@@ -38,8 +38,9 @@ export interface ListStore {
 }
 
 export interface EventSourceLike {
-  onmessage: ((event: { data: string }) => void) | null;
-  onerror: ((event: unknown) => void) | null;
+  /** The server sends a named "op" SSE event, never the default "message". */
+  onOp: ((event: { data: string }) => void) | null;
+  onError: ((event: unknown) => void) | null;
   close(): void;
 }
 
@@ -77,16 +78,19 @@ function defaultCreateEventSource(url: string): EventSourceLike {
     throw new Error("EventSource is not available in this environment");
   }
   const es = new EventSource(url);
-  // A thin adapter, not a direct cast: the real EventSource's onmessage
-  // handler is typed to receive a full MessageEvent, which is not what
-  // EventSourceLike promises its caller.
+  // A thin adapter, not a direct cast: the real EventSource's handlers are
+  // typed to receive a full MessageEvent, which is not what EventSourceLike
+  // promises its caller, and the server's payload arrives on a named "op"
+  // event rather than the default "message".
   const adapter: EventSourceLike = {
-    onmessage: null,
-    onerror: null,
+    onOp: null,
+    onError: null,
     close: () => es.close(),
   };
-  es.onmessage = (event) => adapter.onmessage?.({ data: event.data });
-  es.onerror = (event) => adapter.onerror?.(event);
+  es.addEventListener("op", (event) => {
+    adapter.onOp?.({ data: (event as MessageEvent<string>).data });
+  });
+  es.addEventListener("error", (event) => adapter.onError?.(event));
   return adapter;
 }
 
@@ -122,45 +126,72 @@ async function apiFetch(
   return response.json();
 }
 
-interface CatchUpResponse {
-  ops: Op[];
-  cursor: number;
+/** Matches src/api/schemas.ts's opEnvelopeSchema. */
+interface OpEnvelope {
+  seq: number;
+  op: Op;
 }
 
-interface PostOpsResponse {
-  accepted: Array<{ clientOpId: string }>;
+/** Matches src/api/schemas.ts's opResultSchema. */
+interface OpResult {
+  clientOpId: string;
+  seq?: number;
+  error?: string;
 }
 
-// The three network shapes below are a placeholder pending confirmation from
-// the API-layer agent building src/api/**. Isolated into these three small
-// functions (plus `apiFetch` above) so the real contract, once confirmed, is
-// a small local patch rather than a rewrite.
+async function fetchSnapshot(fetchImpl: typeof fetch, listId: Id): Promise<ListSnapshot> {
+  return (await apiFetch(fetchImpl, `/api/lists/${listId}/snapshot`)) as ListSnapshot;
+}
+
+/**
+ * GET /api/ops returns a bare array of envelopes, oldest first — no cursor of
+ * its own. The client's cursor is just the highest `seq` seen; an empty
+ * response means nothing new, so the cursor doesn't move.
+ */
 async function fetchCatchUp(
   fetchImpl: typeof fetch,
   listId: Id,
   since: number,
-): Promise<CatchUpResponse> {
-  return (await apiFetch(
+): Promise<{ ops: Op[]; cursor: number }> {
+  const rows = (await apiFetch(
     fetchImpl,
-    `/api/lists/${listId}/ops?since=${since}`,
-  )) as CatchUpResponse;
+    `/api/ops?since=${since}&listId=${encodeURIComponent(listId)}`,
+  )) as OpEnvelope[];
+  const cursor = rows.reduce((max, row) => Math.max(max, row.seq), since);
+  return { ops: rows.map((row) => row.op), cursor };
 }
 
+/**
+ * POST /api/ops applies the batch and reports a result per op — partial
+ * success is normal (one stale reference doesn't abort the rest). Only ops
+ * with a `seq` (accepted) are handed back to ack; a rejected op is left
+ * queued and retried. A permanently-invalid op would then retry forever —
+ * an accepted tradeoff here, since silently dropping the user's edit would
+ * be worse.
+ */
 async function postOps(
   fetchImpl: typeof fetch,
-  listId: Id,
   ops: Op[],
 ): Promise<Array<{ clientOpId: string }>> {
-  const body = (await apiFetch(fetchImpl, `/api/lists/${listId}/ops`, {
+  const body = (await apiFetch(fetchImpl, `/api/ops`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ops }),
-  })) as PostOpsResponse;
-  return body.accepted;
+  })) as { results: OpResult[] };
+
+  const accepted: Array<{ clientOpId: string }> = [];
+  for (const result of body.results) {
+    if (result.error) {
+      console.warn("[client-store] op rejected by server", result.clientOpId, result.error);
+      continue;
+    }
+    accepted.push({ clientOpId: result.clientOpId });
+  }
+  return accepted;
 }
 
-function streamUrl(listId: Id): string {
-  return `/api/lists/${listId}/stream`;
+function streamUrl(listId: Id, since: number): string {
+  return `/api/stream?listId=${encodeURIComponent(listId)}&since=${since}`;
 }
 
 export function createListStore(
@@ -261,9 +292,12 @@ export function createListStore(
     void attemptFlush();
   }
 
-  async function hydrate(snapshot: ListSnapshot): Promise<void> {
-    await ensureLoaded();
-
+  /**
+   * Turn a read-optimized ListSnapshot into the reducer-shaped SyncState this
+   * store actually runs on, with local edits made since the last sync replayed
+   * on top rather than discarded.
+   */
+  async function applySnapshot(snapshot: ListSnapshot): Promise<void> {
     const base = emptyState();
     base.lists[snapshot.list.id] = snapshot.list;
     for (const item of snapshot.catalog) base.catalog[item.id] = item;
@@ -292,8 +326,6 @@ export function createListStore(
     // add_recipe/remove_recipe op, whether replayed from the outbox below or
     // arriving later via catch-up/stream, still applies correctly regardless.
 
-    // Local edits made since this client last synced must survive a fresh
-    // snapshot rather than being silently discarded.
     const outboxOps = await outbox.pending();
     state = applyOps(base, outboxOps);
 
@@ -302,10 +334,15 @@ export function createListStore(
     emit();
   }
 
+  async function hydrate(snapshot: ListSnapshot): Promise<void> {
+    await ensureLoaded();
+    await applySnapshot(snapshot);
+  }
+
   async function attemptFlush(): Promise<void> {
     if (signedOut) return;
     try {
-      await outbox.flush((ops) => postOps(fetchImpl, listId, ops));
+      await outbox.flush((ops) => postOps(fetchImpl, ops));
       const remaining = await outbox.pending();
       pendingCount = remaining.length;
       resetBackoff();
@@ -348,18 +385,24 @@ export function createListStore(
   }
 
   function attachStream(): void {
-    const es = createEventSource(streamUrl(listId));
+    // Pass the current cursor: the server's own stream handler re-does its
+    // own backfill from `since` before going live (see routes/stream.ts), so
+    // this closes the remaining gap between our catch-up response and the
+    // stream opening even if the two calls are seconds apart. Any op it
+    // therefore delivers twice is harmless — see the dedupe/idempotency notes
+    // in this file and in reducer.ts's `wins`.
+    const es = createEventSource(streamUrl(listId, syncMeta.cursor ?? 0));
     eventSource = es;
 
-    es.onmessage = (event) => {
-      const incoming = JSON.parse(event.data) as Op & { seq: number };
-      if (!originatedClientOpIds.has(incoming.clientOpId)) {
-        state = applyOp(state, incoming);
+    es.onOp = (event) => {
+      const envelope = JSON.parse(event.data) as OpEnvelope;
+      if (!originatedClientOpIds.has(envelope.op.clientOpId)) {
+        state = applyOp(state, envelope.op);
         emit();
       }
       syncMeta = {
         ...syncMeta,
-        cursor: Math.max(syncMeta.cursor ?? 0, incoming.seq),
+        cursor: Math.max(syncMeta.cursor ?? 0, envelope.seq),
       };
       void (async () => {
         try {
@@ -371,7 +414,7 @@ export function createListStore(
       })();
     };
 
-    es.onerror = () => {
+    es.onError = () => {
       es.close();
       if (eventSource !== es) return; // superseded by a later attach/disconnect
       eventSource = null;
@@ -380,8 +423,41 @@ export function createListStore(
     };
   }
 
+  /**
+   * A device that has never hydrated this list needs the full snapshot, not
+   * just catch-up: `ops` is a 30-day catch-up log, not the source of truth
+   * (see design doc 3.2), so a list older than that would come back
+   * incomplete if bootstrapped from ops alone. Skipped whenever `hydrate()`
+   * has already run — from the hook's `initialSnapshot`, or from a previous
+   * session's persisted `syncMeta` — so this only ever fires once per device.
+   */
+  async function tryBootstrapFromSnapshot(): Promise<boolean> {
+    try {
+      const snapshot = await fetchSnapshot(fetchImpl, listId);
+      if (!connected) return false;
+      await applySnapshot(snapshot);
+      resetBackoff();
+      return true;
+    } catch (err) {
+      if (!connected) return false;
+      if (err instanceof AutheliaLapseError) {
+        signedOut = true;
+        updateStatus();
+        return false;
+      }
+      scheduleRetry();
+      return false;
+    }
+  }
+
   async function reconnectCycle(): Promise<void> {
     if (!connected) return;
+
+    if (syncMeta.lastHydratedAt === null) {
+      const bootstrapped = await tryBootstrapFromSnapshot();
+      if (!bootstrapped || !connected) return;
+    }
+
     // Catch-up MUST finish before the stream attaches. Attaching first would
     // leave a gap — anything the server processed between the catch-up
     // response and the stream opening — that neither call would ever cover.

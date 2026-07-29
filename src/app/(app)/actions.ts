@@ -23,8 +23,8 @@ export async function submitOps(
     // Ops are applied in the order the client queued them. They are individually
     // order-independent by construction, but preserving submission order keeps
     // the op log readable when something needs debugging later.
-    const result = await applyOpToDatabase({ ...op, actor: user.autheliaUser });
-    results.push({ clientOpId: result.clientOpId, seq: result.seq });
+    const { seq } = await applyOpToDatabase(op, user.autheliaUser);
+    results.push({ clientOpId: op.clientOpId, seq });
   }
   return { results };
 }
