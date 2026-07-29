@@ -41,10 +41,17 @@ Be clear-eyed about this — the list is real:
   switcher is a stub that shows a toast.
 - **Playwright e2e**, and deploy.
 
-Three subagents (API layer, client store, ingredient parser) produced nothing
-over a long stretch, so I built the critical path myself and left those three
-gaps rather than block. They are all well-specified — the specs are in the
-design doc and the module contracts are already written.
+The subagents were slower than my polling assumed rather than idle. Units,
+cadence, barcode, seed data and recipe import all landed and are in use. The
+API and client-store agents are still writing (`src/api/schemas.ts`,
+`src/lib/client/db.ts`, `outbox.ts`, `store.ts` exist but are incomplete), so
+their work is not yet wired in. Only the ingredient parser is genuinely empty.
+
+The sync reducer was built twice — theirs and mine, concurrently, which is my
+scheduling mistake, not theirs. The merged result is mine plus **their fix to a
+real bug in it**: `writeEntry` never marked its meta row `deleted`, so
+`pruneTombstones` kept the meta row of every tombstoned entry forever. The one
+map pruning exists to bound grew without bound. Fixed, with a regression test.
 
 ---
 
@@ -96,8 +103,9 @@ Scaling up from too little beats buying for six when you needed four.
 
 ## Two bugs worth knowing about
 
-Both were found by exhaustively testing all 720 orderings of a six-op set, and
-neither would have shown up under hand-picked orderings:
+The first two were found by exhaustively testing all 720 orderings of a six-op
+set, and neither would have shown up under hand-picked orderings. The third was
+found by the sync agent reviewing my code:
 
 **`createdAt` depended on arrival order.** A losing op returns early and never
 lowers it, so `add_item@T1` then `add_recipe@T2` kept T1 while the reverse kept
@@ -108,6 +116,11 @@ arriving after a newer `set_note` lost the comparison and took the quantity with
 it — you set 5 dl, your partner adds a note, the 5 dl silently becomes nothing.
 That is *the* failure this app exists to prevent, arriving through the sync layer
 instead of the recipe layer. Manual contributions now carry a clock per field.
+
+**Tombstoned entries leaked their meta rows.** `writeEntry` wrote its
+last-write-wins bookkeeping without the `deleted` marker even when tombstoning,
+so `pruneTombstones` — whose whole job is bounding that map — skipped every one
+of them. Found by the sync agent reading my code, not by a test.
 
 ---
 
