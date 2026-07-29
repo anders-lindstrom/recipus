@@ -43,3 +43,6 @@ next-env.d.ts
 # uses. Regenerable, network-dependent, and ~300 SVGs of vendor art — not ours
 # to commit. The app renders system emoji when it is absent.
 /public/icons/openmoji-sprite.svg
+
+# Playwright/dev screenshots taken while checking the UI
+/*.png

@@ -84,7 +84,10 @@ export function ItemTile({
         "transition-[transform,opacity] duration-100 active:scale-[0.96]",
         onList
           ? "border-brand-line bg-brand-tint"
-          : "border-line bg-paper-raised opacity-60",
+          // Catalog tiles recede so the shopping list reads first. Dark mode
+          // needs a lighter touch: the same 60%-plus-grayscale that looks
+          // right on paper turns icons into grey smudges against near-black.
+          : "border-line bg-paper-raised opacity-60 dark:opacity-80",
         pending && "opacity-45",
       )}
       onClick={() => {
@@ -120,7 +123,10 @@ export function ItemTile({
 
       <ItemIcon
         iconRef={iconRef}
-        className={cn("text-2xl leading-none", !onList && "grayscale-[0.7]")}
+        className={cn(
+          "text-2xl leading-none",
+          !onList && "grayscale-[0.7] dark:grayscale-[0.2]",
+        )}
       />
 
       <span className="mt-1 text-[11px] leading-tight font-semibold text-ink">
