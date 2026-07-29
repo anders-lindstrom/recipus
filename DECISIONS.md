@@ -193,12 +193,15 @@ on a flaky signal — exactly where a slightly slower correct answer beats a fas
 stale one. The dev-mode registrar also now actively unregisters leftover
 workers, as a second line of defence.
 
-**Verification gap, stated plainly:** the offline *data* path (tap works, queues,
-drains) is covered by e2e and was verified by hand. The service-worker change
-itself is reasoned-through but NOT re-verified in a browser — my automation
-browser wedged while I was testing it. If you hit a stuck reload loop on an
-origin where you once ran a production build, clear the site data once
-(DevTools → Application → Storage → Clear site data) and it will not recur.
+**Both halves verified in a browser**, on a clean origin so the test was honest:
+served a production build, confirmed the worker installed and cached the shell,
+killed the server, and reloaded — the app still opened. Then started a *dev*
+server on that same origin, the scenario that had poisoned port 3100: no reload
+loop, the leftover worker unregistered itself, caches emptied, and the real list
+rendered.
+
+If you do hit a stuck loop on an origin poisoned before this fix, clear site
+data once (DevTools → Application → Storage) and it will not recur.
 
 ## Open questions for you
 
