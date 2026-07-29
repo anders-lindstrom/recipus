@@ -28,18 +28,20 @@ succeeds. Dev server is on **port 3100** (3000 was taken by Travkollen).
 Be clear-eyed about this — the list is real:
 
 - **Offline storage.** The service worker caches the app shell, but list state
-  is in memory, not IndexedDB. Close the tab and local state is gone; a reload
-  re-fetches from the server. **The app does not yet work in a shop with no
-  signal**, which was the headline requirement.
-- **Live sharing.** No SSE stream yet. Two phones will not see each other's
-  changes until a reload.
-- **Recipe UI.** The import and scaling logic is built and tested; the pages to
-  reach it from the app are not.
-- **The ingredient parser** (`src/lib/ingredients/`) is specified and empty, so
-  recipe lines are not yet matched to catalog items.
-- **Multiple lists.** The data model and reducer support them fully; the
-  switcher is a stub that shows a toast.
+  is in memory, not IndexedDB. Close the tab and local state is gone. **The app
+  does not yet work in a shop with no signal**, which was the headline
+  requirement. The store is being written now (`src/lib/client/`) — db, outbox
+  and store exist and are mid-refactor, not yet wired into the UI.
+- **Recipe UI.** Import, parsing, matching and scaling are all built and tested,
+  and `POST /api/recipes/import` works. The pages to reach any of it from the
+  app are not built, so recipes are currently API-only.
+- **Multiple lists.** The data model, reducer and API support them fully; the
+  switcher in the UI is a stub that shows a toast.
 - **Playwright e2e**, and deploy.
+
+Since built and working: the full Hono API at `/api` (lists, snapshot, ops,
+SSE stream, recipe import, barcode), the ingredient parser and catalog matcher
+(97 tests), and server-side op application with real test coverage.
 
 The subagents were slower than my polling assumed rather than idle. Units,
 cadence, barcode, seed data and recipe import all landed and are in use. The
@@ -138,6 +140,20 @@ write checked whether the entry was on the list *before* the op, not whether the
 op actually won the last-write-wins comparison — so a losing op still recorded a
 purchase and bumped the catalog ordering, corrupting the cadence engine's only
 input. Also flagged by the API agent.
+
+**The idempotency check sat outside its transaction.** `applyOpToDatabase` read
+`ops` for an existing `clientOpId` and then opened a transaction, so two truly
+concurrent submissions of the same op could both read "not seen" and both apply.
+Found and fixed by the API agent.
+
+**Recipes named ingredients the catalog didn't have.** `grädde`, `mjöl`, `lök`,
+`olja` and `köttfärs` existed only as compounds (`vispgrädde`, `vetemjöl`,
+`gul lök`), so the terms Swedish recipes actually use matched nothing and every
+recipe imported its commonest ingredients as NY VARA. Fixed in data rather than
+in the matcher: matching a generic to a specific compound would put something
+more precise on the list than the recipe asked for, and the natural tie-break
+picks `rågmjöl` for "mjöl" when a Swedish recipe means vetemjöl every time.
+Against 24 realistic weeknight recipe lines, matching went 9/24 → 23/24.
 
 ---
 
