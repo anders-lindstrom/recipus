@@ -21,6 +21,14 @@ export interface SeedItem {
   hasAtHome?: boolean;
 }
 
+/*
+ * Generic heads (lök, grädde, olja, mjöl) sit alongside their compounds on
+ * purpose. Swedish recipes overwhelmingly say "3 dl grädde", not
+ * "3 dl vispgrädde", and matching the generic to a specific compound would put
+ * something more precise on your list than the recipe actually asked for —
+ * which matters, because matlagningsgrädde and vispgrädde are not
+ * interchangeable. They are also real purchases in their own right.
+ */
 export const CATALOG_ITEMS: SeedItem[] = [
   { name: "äpple", categorySlug: "frukt-gront", iconRef: "1F34E", emoji: "🍎" },
   { name: "banan", categorySlug: "frukt-gront", iconRef: "1F34C", emoji: "🍌" },
@@ -51,6 +59,7 @@ export const CATALOG_ITEMS: SeedItem[] = [
   { name: "isbergssallad", categorySlug: "frukt-gront", iconRef: "1F96C", emoji: "🥬" },
   { name: "morot", categorySlug: "frukt-gront", iconRef: "1F955", emoji: "🥕" },
   { name: "gul lök", categorySlug: "frukt-gront", iconRef: "1F9C5", emoji: "🧅" },
+  { name: "lök", categorySlug: "frukt-gront", iconRef: "1F9C5", emoji: "🧅" },
   { name: "rödlök", categorySlug: "frukt-gront", iconRef: "1F9C5", emoji: "🧅" },
   { name: "vitlök", categorySlug: "frukt-gront", iconRef: "1F9C4", emoji: "🧄" },
   { name: "potatis", categorySlug: "frukt-gront", iconRef: "1F954", emoji: "🥔" },
@@ -88,6 +97,7 @@ export const CATALOG_ITEMS: SeedItem[] = [
   { name: "havredryck", categorySlug: "mejeri-agg", iconRef: "1F95B", emoji: "🥛" },
   { name: "mandeldryck", categorySlug: "mejeri-agg", iconRef: "1F95B", emoji: "🥛" },
   { name: "vispgrädde", categorySlug: "mejeri-agg", iconRef: "1F95B", emoji: "🥛" },
+  { name: "grädde", categorySlug: "mejeri-agg", iconRef: "1F95B", emoji: "🥛" },
   { name: "matlagningsgrädde", categorySlug: "mejeri-agg", iconRef: "1F95B", emoji: "🥛" },
   { name: "crème fraiche", categorySlug: "mejeri-agg", iconRef: "1F95B", emoji: "🥛" },
   { name: "gräddfil", categorySlug: "mejeri-agg", iconRef: "1F95B", emoji: "🥛" },
@@ -128,6 +138,7 @@ export const CATALOG_ITEMS: SeedItem[] = [
   { name: "kycklinglårfilé", categorySlug: "kott-fagel", iconRef: "1F357", emoji: "🍗" },
   { name: "hel kyckling", categorySlug: "kott-fagel", iconRef: "1F357", emoji: "🍗" },
   { name: "nötfärs", categorySlug: "kott-fagel", iconRef: "1F969", emoji: "🥩" },
+  { name: "köttfärs", categorySlug: "kott-fagel", iconRef: "1F969", emoji: "🥩" },
   { name: "fläskfärs", categorySlug: "kott-fagel", iconRef: "1F969", emoji: "🥩" },
   { name: "blandfärs", categorySlug: "kott-fagel", iconRef: "1F969", emoji: "🥩" },
   { name: "köttbullar", categorySlug: "kott-fagel", iconRef: "1F958", emoji: "🥘" },
@@ -190,6 +201,7 @@ export const CATALOG_ITEMS: SeedItem[] = [
   { name: "kokosmjölk", categorySlug: "skafferi", iconRef: "1F965", emoji: "🥥" },
   { name: "buljongtärningar", categorySlug: "skafferi", iconRef: "1F9C2", emoji: "🧂", hasAtHome: true },
   { name: "matolja", categorySlug: "skafferi", iconRef: "1FAD7", emoji: "🫗", hasAtHome: true },
+  { name: "olja", categorySlug: "skafferi", iconRef: "1FAD7", emoji: "🫗", hasAtHome: true },
   { name: "olivolja", categorySlug: "skafferi", iconRef: "1FAD7", emoji: "🫗", hasAtHome: true },
   { name: "ättika", categorySlug: "skafferi", iconRef: "1F376", emoji: "🍶", hasAtHome: true },
   { name: "soja", categorySlug: "skafferi", iconRef: "1FAD7", emoji: "🫗" },
@@ -241,6 +253,7 @@ export const CATALOG_ITEMS: SeedItem[] = [
   { name: "nudlar", categorySlug: "pasta-ris-gryn", iconRef: "1F35C", emoji: "🍜" },
   { name: "glasnudlar", categorySlug: "pasta-ris-gryn", iconRef: "1F35C", emoji: "🍜" },
   { name: "vetemjöl", categorySlug: "bak-mjol", iconRef: "1F33E", emoji: "🌾", hasAtHome: true },
+  { name: "mjöl", categorySlug: "bak-mjol", iconRef: "1F33E", emoji: "🌾", hasAtHome: true },
   { name: "rågmjöl", categorySlug: "bak-mjol", iconRef: "1F33E", emoji: "🌾" },
   { name: "havremjöl", categorySlug: "bak-mjol", iconRef: "1F33E", emoji: "🌾" },
   { name: "potatismjöl", categorySlug: "bak-mjol", iconRef: "1F33E", emoji: "🌾" },

@@ -42,7 +42,10 @@ describe("seed categories", () => {
 describe("seed catalog", () => {
   it("has an item count within the seeded range", () => {
     expect(CATALOG_ITEMS.length).toBeGreaterThanOrEqual(280);
-    expect(CATALOG_ITEMS.length).toBeLessThanOrEqual(340);
+    // Ceiling raised from 340: generic heads Swedish recipes actually use
+    // (lök, grädde, olja, mjöl, köttfärs) were missing, so every recipe naming
+    // them imported as NY VARA instead of matching a real item.
+    expect(CATALOG_ITEMS.length).toBeLessThanOrEqual(380);
   });
 
   it("has no duplicate item names", () => {
