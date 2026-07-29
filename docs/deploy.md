@@ -107,8 +107,10 @@ docker logs -f recipus
 ```
 
 Expect, in order: the pre-migration dump warning-or-success, `drizzle-kit`
-applying `0000` and `0001`, `Seeding 19 categories…`, `Seeding 341 catalog
-items…`, then `Ready`. Only after this does `git push` → Watchtower → recreate
+applying `0000` and `0001`, `Ready`, then `Seeding categories… / Seeding 341
+catalog items… / Done. Catalog holds 341 items.` The seed runs after the server
+starts listening, which is why the healthcheck has a generous `start_period`.
+Only after this first container exists does `git push` → Watchtower → recreate
 work.
 
 Do **not** `docker push :latest` from the box to bootstrap. It works, but it
