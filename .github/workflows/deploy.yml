@@ -71,10 +71,16 @@ jobs:
       # it is the first thing in the job to touch postgres. The entrypoint
       # auto-migrates production on every deploy, so a migration that does not
       # apply cleanly has to die here instead.
-      - name: Migrations apply to a fresh database
+      - name: Migrations and seed apply to a fresh database
+        # The seed is not optional scaffolding for the suite: apply-op.test.ts
+        # attaches its fixture to the real category `frukt-gront`, so an
+        # unseeded database fails it on a foreign-key violation rather than on
+        # anything the test is actually asserting. Matches what the e2e job
+        # already does.
         run: |
           echo "DATABASE_URL=$DATABASE_URL" > .env
           pnpm db:migrate
+          pnpm db:seed
 
       - run: pnpm test
       - run: pnpm tsc --noEmit
@@ -83,6 +89,7 @@ jobs:
       - name: Seed is idempotent and migrations re-run clean
         # The server re-seeds on every boot (src/instrumentation.ts), so "runs
         # twice without complaint" is a production invariant, not a nicety.
+        # This is the second and third seed of the job — the first ran above.
         run: |
           pnpm db:seed
           pnpm db:seed
