@@ -172,7 +172,7 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
   }, [recipeId]);
 
   useEffect(() => {
-    load();
+    void Promise.resolve().then(load);
   }, [load]);
 
   async function startAddFlow() {

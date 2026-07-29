@@ -62,6 +62,21 @@ test("the list survives a reload, from IndexedDB", async ({ freshPage: page, lis
   await expect(onListTile(page, "gurka")).toBeVisible();
 });
 
+test("the offline banner appears when the server is unreachable", async ({
+  freshPage: page,
+  context,
+}) => {
+  // navigator.onLine alone is not enough: wifi can be perfectly healthy while
+  // the home server is unreachable, and an indicator that says "online" then
+  // is lying at exactly the moment you need to trust it.
+  await expect(page.getByText(/Offline|väntar/)).toHaveCount(0);
+
+  await context.setOffline(true);
+  await catalogTile(page, "paprika").click();
+
+  await expect(page.getByText(/Offline|väntar/).first()).toBeVisible();
+});
+
 test("the list works with the network gone, and drains on reconnect", async ({
   freshPage: page,
   listId,

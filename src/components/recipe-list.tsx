@@ -112,7 +112,7 @@ export function RecipeList() {
   }, []);
 
   useEffect(() => {
-    load();
+    void Promise.resolve().then(load);
   }, [load]);
 
   return (

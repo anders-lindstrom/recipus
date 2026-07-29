@@ -105,8 +105,10 @@ export function RecipeImport({ initialUrl, initialText }: RecipeImportProps) {
     const resolved = resolveShareUrl(initialUrl, initialText);
     if (!resolved) return;
     autoTried.current = true;
-    setUrl(resolved);
-    void doImport(resolved);
+    void Promise.resolve().then(() => {
+      setUrl(resolved);
+      void doImport(resolved);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
