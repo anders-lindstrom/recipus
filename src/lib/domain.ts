@@ -207,6 +207,20 @@ export interface Purchase {
 // ---------------------------------------------------------------------------
 
 /**
+ * Last-write-wins bookkeeping for one record.
+ *
+ * Kept in a side map rather than on the records themselves so the domain types
+ * stay the shape the UI and the database actually want. `deleted` is a
+ * tombstone: without it, a delete would erase the very timestamp a late-arriving
+ * create needs to lose against, and the record would silently come back.
+ */
+export interface RecordMeta {
+  at: string;
+  by: string;
+  deleted?: boolean;
+}
+
+/**
  * Everything that syncs, as plain maps. The client holds one of these in memory
  * (mirrored to IndexedDB); the server derives the same shape from Postgres when
  * it needs to apply an op. Purchases and barcodes are deliberately absent —
@@ -219,6 +233,8 @@ export interface SyncState {
   contributions: Record<Id, Contribution>;
   recipes: Record<Id, Recipe>;
   recipeAdditions: Record<Id, RecipeAddition>;
+  /** Keyed "list:x", "catalog:x", "entry:x", "contribution:x", "addition:x". */
+  meta: Record<string, RecordMeta>;
 }
 
 export function emptyState(): SyncState {
@@ -229,5 +245,6 @@ export function emptyState(): SyncState {
     contributions: {},
     recipes: {},
     recipeAdditions: {},
+    meta: {},
   };
 }

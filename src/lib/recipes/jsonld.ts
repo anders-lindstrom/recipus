@@ -35,6 +35,14 @@ const NAMED_ENTITIES: Record<string, string> = {
   apos: "'",
   lt: "<",
   gt: ">",
+  // Named forms of å/ä/ö turn up often enough on Swedish sites to be worth a
+  // direct entry, rather than relying only on the numeric form.
+  aring: "å",
+  Aring: "Å",
+  auml: "ä",
+  Auml: "Ä",
+  ouml: "ö",
+  Ouml: "Ö",
   nbsp: " ",
 };
 

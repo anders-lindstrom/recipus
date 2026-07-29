@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { parseMock, ctorMock } = vi.hoisted(() => ({
-  parseMock: vi.fn(),
-  ctorMock: vi.fn(),
-}));
+const { parseMock, ctorMock } = vi.hoisted(() => {
+  const parseMock = vi.fn();
+  // A plain function (not an arrow) so `new Anthropic()` can invoke it as a
+  // constructor.
+  const ctorMock = vi.fn(function (this: { messages: { parse: typeof parseMock } }) {
+    this.messages = { parse: parseMock };
+  });
+  return { parseMock, ctorMock };
+});
 
 vi.mock("@anthropic-ai/sdk", () => ({
-  default: ctorMock.mockImplementation(() => ({ messages: { parse: parseMock } })),
+  default: ctorMock,
 }));
 
 const { extractRecipeWithLlm } = await import("./llm");
