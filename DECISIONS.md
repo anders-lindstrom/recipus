@@ -2,9 +2,12 @@
 
 Read this first. Everything below happened while you were away.
 
-**Where it stands:** the app runs and the core loop works, verified in a browser
-and in the database. 227 tests pass, `pnpm tsc --noEmit` is clean, `pnpm build`
-succeeds. Dev server is on **port 3100** (3000 was taken by Travkollen).
+**Where it stands:** everything in the design is built and verified.
+**361 unit tests + 7 end-to-end**, `pnpm tsc --noEmit` clean, `pnpm lint` clean,
+`pnpm build` green. Dev server on **port 3100** (3000 was taken by Travkollen),
+Postgres on **5434**.
+
+Only deploy is outstanding, which you scoped out.
 
 ---
 
@@ -56,16 +59,8 @@ so the offline render has chrome to work with.
 
 Be clear-eyed about this — the list is real:
 
-- **Recipe UI.** Import, parsing, matching and scaling are all built and tested,
-  and `POST /api/recipes/import` works. The pages to reach any of it from the
-  app are not built, so recipes are currently API-only.
-- **Multiple lists.** The data model, reducer and API support them fully; the
-  switcher in the UI is a stub that shows a toast.
-- **Playwright e2e**, and deploy.
-
-Since built and working: the full Hono API at `/api` (lists, snapshot, ops,
-SSE stream, recipe import, barcode), the ingredient parser and catalog matcher
-(97 tests), and server-side op application with real test coverage.
+- **Deploy.** Explicitly out of scope for this session. See the standalone-build
+  gotcha at the bottom before writing the Dockerfile — it will bite you.
 
 The subagents were slower than my polling assumed rather than idle. Units,
 cadence, barcode, seed data and recipe import all landed and are in use. The

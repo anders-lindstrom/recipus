@@ -103,7 +103,13 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   const effectiveActor = actor ?? cached?.actor ?? null;
   const list = snapshot?.list ?? cached?.list ?? null;
   const categories = snapshot?.categories ?? cached?.categories ?? [];
-  const recipeTitles = snapshot?.recipeTitles ?? cached?.recipeTitles ?? {};
+  // Memoised, not a bare `?? {}`: that allocates a fresh object every render,
+  // so the useMemo below would recompute on every render and never memoise
+  // anything.
+  const recipeTitles = useMemo(
+    () => snapshot?.recipeTitles ?? cached?.recipeTitles ?? {},
+    [snapshot?.recipeTitles, cached?.recipeTitles],
+  );
 
   // The store owns state, persistence and sync. It applies each op locally
   // before the network hears about it, keeps everything in IndexedDB, and
