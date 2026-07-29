@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="sv">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Recipus — offline</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0; min-height: 100dvh; display: grid; place-items: center;
+        padding: 24px; background: #f6f5f1; color: #1b1c1a;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { background: #14161a; color: #eceef0; }
+        .card { background: #1d2026 !important; border-color: rgb(255 255 255 / .09) !important; }
+      }
+      .card {
+        max-width: 380px; text-align: center; background: #fff; border-radius: 18px;
+        border: 1px solid rgb(0 0 0 / .07); padding: 30px 26px;
+      }
+      .mark { font-size: 40px; line-height: 1; }
+      h1 { font-size: 19px; margin: 14px 0 8px; letter-spacing: -.015em; }
+      p { font-size: 14px; line-height: 1.55; opacity: .72; margin: 0 0 20px; }
+      button {
+        width: 100%; padding: 13px; border: 0; border-radius: 12px;
+        background: #1f6f4f; color: #fff; font-size: 15px; font-weight: 700;
+        font-family: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="mark">🧺</div>
+      <h1>Kunde inte öppna Recipus</h1>
+      <!--
+        This page is the last resort — it only appears when even the cached app
+        shell is missing, i.e. before the first successful load. Once the shell
+        is cached, being offline shows the real list instead, which is the whole
+        point of the caching strategy in sw.js.
+      -->
+      <p>
+        Listan finns kvar på telefonen så fort appen har öppnats en gång.
+        Just nu saknas den — försök igen när du har täckning.
+      </p>
+      <button onclick="location.replace('/')">Försök igen</button>
+    </div>
+  </body>
+</html>

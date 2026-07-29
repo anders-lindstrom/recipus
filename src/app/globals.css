@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+/*
+ * Recipus design tokens.
+ *
+ * The palette comes from the approved mockup: a warm off-white paper, one
+ * confident green, and almost nothing else. A shopping list is glanced at in
+ * bad light while walking, so contrast and tile legibility beat decoration —
+ * there are deliberately no gradients and no shadows below the FAB.
+ */
+@theme {
+  --color-paper: #f6f5f1;
+  --color-paper-raised: #ffffff;
+  --color-ink: #1b1c1a;
+  --color-ink-soft: #6b6d67;
+  --color-ink-faint: #9b9d97;
+  --color-line: rgb(0 0 0 / 0.07);
+
+  --color-brand: #1f6f4f;
+  --color-brand-ink: #14523a;
+  --color-brand-tint: #e6f2ea;
+  --color-brand-line: rgb(31 111 79 / 0.2);
+
+  --color-warn: #a06a1f;
+  --color-danger: #a3332c;
+
+  --radius-tile: 12px;
+  --radius-card: 15px;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-paper: #14161a;
+    --color-paper-raised: #1d2026;
+    --color-ink: #eceef0;
+    --color-ink-soft: #a3a8b0;
+    --color-ink-faint: #6f757e;
+    --color-line: rgb(255 255 255 / 0.09);
+
+    --color-brand: #3f9c74;
+    --color-brand-ink: #6fc39c;
+    --color-brand-tint: #1b3a2e;
+    --color-brand-line: rgb(63 156 116 / 0.32);
+
+    --color-warn: #d3a355;
+    --color-danger: #e0706a;
+  }
+}
+
+html,
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+body {
+  /* The list is a single scrolling column that must not rubber-band
+     horizontally when a tile row is one pixel too wide. */
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: contain;
+}
+
+/* Tapping a tile must feel instantaneous. The 300ms synthetic click delay and
+   text selection on double-tap both read as lag on a grid you tap quickly. */
+button,
+[role="button"] {
+  touch-action: manipulation;
+  user-select: none;
+}
+
+/* Respect the notch and the home indicator — this runs as a standalone PWA,
+   where nothing else will. */
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

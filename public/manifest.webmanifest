@@ -1,0 +1,62 @@
+{
+  "id": "/",
+  "name": "Recipus",
+  "short_name": "Recipus",
+  "description": "Handlingslistan för hushållet — recept, varor och streckkoder",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "lang": "sv",
+  "dir": "ltr",
+  "categories": ["food", "shopping", "lifestyle"],
+  "background_color": "#f6f5f1",
+  "theme_color": "#f6f5f1",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Skanna streckkod",
+      "short_name": "Skanna",
+      "url": "/?scan=1"
+    },
+    {
+      "name": "Recept",
+      "short_name": "Recept",
+      "url": "/recept"
+    }
+  ],
+  "share_target": {
+    "action": "/recept/importera",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}
