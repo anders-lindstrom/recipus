@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { Amount } from "@/lib/domain";
 import {
   analyzeCadence,
   catalogOrderScore,
+  isCondimentScale,
+  probablyStillHave,
   rankSuggestions,
   type SuggestionInput,
 } from "@/lib/cadence";
@@ -289,5 +292,81 @@ describe("catalogOrderScore", () => {
     const now = addDays(START, 30);
     const score = catalogOrderScore(10, START, now);
     expect(score).toBeCloseTo(5, 5);
+  });
+});
+
+describe("probablyStillHave", () => {
+  /**
+   * The gates are asymmetric on purpose: a redundant tile is a glance, a missing
+   * ingredient is discovered while cooking. These tests pin that asymmetry rather
+   * than the individual numbers, so tuning the thresholds later cannot quietly
+   * widen the rule into the dangerous direction.
+   */
+  const now = new Date("2026-03-30T12:00:00.000Z");
+
+  /** Weekly-ish purchases, so median ≈ 7 days and confidence is high. */
+  function weekly(count: number, daysSinceLast: number): Date[] {
+    const out: Date[] = [];
+    for (let i = count - 1; i >= 0; i--) {
+      out.push(new Date(now.getTime() - (daysSinceLast + i * 7) * 86400000));
+    }
+    return out;
+  }
+
+  const soy: Amount = { value: 1, unit: "msk" };
+  const cream: Amount = { value: 5, unit: "dl" };
+  const mince: Amount = { value: 500, unit: "g" };
+
+  it("excludes a condiment bought well inside its normal interval", () => {
+    const stats = analyzeCadence(weekly(8, 2), now);
+    expect(probablyStillHave(stats, soy)).toBe(true);
+  });
+
+  it("does not exclude one bought more than half an interval ago", () => {
+    const stats = analyzeCadence(weekly(8, 5), now);
+    expect(probablyStillHave(stats, soy)).toBe(false);
+  });
+
+  it("never excludes a bulk quantity, however strong the history", () => {
+    // The load-bearing test. Bought yesterday, years of weekly history — and it
+    // must STILL go on the list, because the recipe wants five decilitres.
+    const stats = analyzeCadence(weekly(50, 1), now);
+    expect(stats.confidence).toBeGreaterThan(0.9);
+    expect(probablyStillHave(stats, cream)).toBe(false);
+    expect(probablyStillHave(stats, mince)).toBe(false);
+  });
+
+  it("excludes an ingredient with no stated amount", () => {
+    // "salt och peppar" — the case the amount gate exists to allow.
+    const stats = analyzeCadence(weekly(8, 1), now);
+    expect(probablyStillHave(stats, null)).toBe(true);
+  });
+
+  it("excludes nothing without enough history", () => {
+    // Fresh install: inert by construction, which is the graceful degradation.
+    expect(probablyStillHave(analyzeCadence([], now), soy)).toBe(false);
+    expect(probablyStillHave(analyzeCadence(weekly(1, 1), now), soy)).toBe(false);
+    expect(probablyStillHave(analyzeCadence(weekly(2, 1), now), soy)).toBe(false);
+  });
+
+  it("respects the per-item interval rather than a flat window", () => {
+    // Three weeks since the last bottle. Yoghurt bought weekly: you are out.
+    // Soy sauce bought yearly: you certainly are not. A flat "within a week"
+    // rule would get both wrong, in opposite directions.
+    const yearly: Date[] = [];
+    for (let i = 4; i >= 0; i--) {
+      yearly.push(new Date(now.getTime() - (21 + i * 365) * 86400000));
+    }
+    expect(probablyStillHave(analyzeCadence(weekly(10, 21), now), soy)).toBe(false);
+    expect(probablyStillHave(analyzeCadence(yearly, now), soy)).toBe(true);
+  });
+
+  it("treats the condiment ceiling by unit family, not raw number", () => {
+    expect(isCondimentScale({ value: 1, unit: "dl" })).toBe(true);
+    expect(isCondimentScale({ value: 2, unit: "dl" })).toBe(false);
+    expect(isCondimentScale({ value: 100, unit: "g" })).toBe(true);
+    expect(isCondimentScale({ value: 1, unit: "hg" })).toBe(true);
+    expect(isCondimentScale({ value: 2, unit: "st" })).toBe(true);
+    expect(isCondimentScale({ value: 3, unit: "st" })).toBe(false);
   });
 });
