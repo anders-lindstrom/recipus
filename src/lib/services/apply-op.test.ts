@@ -9,10 +9,13 @@ import {
   lists,
   ops as opsTable,
   purchases,
+  recipeAdditions,
+  recipes,
 } from "@/db/schema";
 import { entryId, manualContributionId } from "@/lib/domain";
 import type { Op } from "@/lib/sync";
 import { applyOpToDatabase } from "./apply-op";
+import { loadListSnapshot } from "./list-data";
 
 /**
  * These need the dev database (Postgres on 5434, see .env). Every row this
@@ -42,6 +45,8 @@ function op(kind: string, at: string, fields: Record<string, unknown>): Op {
  * database, and an item left behind shows up as a stray tile in the app.
  */
 const extraItems: string[] = [];
+/** Recipes created by individual tests, for the same cleanup reason. */
+const extraRecipes: string[] = [];
 
 async function seedItem(id: string): Promise<void> {
   extraItems.push(id);
@@ -102,6 +107,7 @@ afterAll(async () => {
   await db.delete(listEntries).where(eq(listEntries.listId, listId));
   await db.delete(catalogItems).where(inArray(catalogItems.id, allItems));
   await db.delete(lists).where(eq(lists.id, listId));
+  await db.delete(recipes).where(inArray(recipes.id, extraRecipes));
 });
 
 describe("applyOpToDatabase", () => {
@@ -464,3 +470,100 @@ describe("undo retracts the purchase", () => {
   });
 });
 
+describe("snapshot meta for removed records", () => {
+  /**
+   * A hydrating client must learn that a record was DELETED, not merely that it
+   * is absent.
+   *
+   * `loadListSnapshot` filtered removed recipe additions out of its query, so
+   * neither the row nor its `addition:x` clock reached the client. A stale
+   * `add_recipe` replayed from an outbox — reachable whenever an ack write fails
+   * after a successful post — then had nothing to lose against, because
+   * `wins(op, undefined)` is true regardless of the op's timestamp. The removed
+   * recipe and every contribution it asked for came back.
+   *
+   * The reducer half of this was already right: `apply-op`'s own loader emits
+   * `deleted: true`. Only the snapshot disagreed, which is exactly the kind of
+   * drift the two-loaders-one-reducer design is supposed to make impossible.
+   */
+  it("marks a removed recipe addition as deleted rather than omitting it", async () => {
+    const recipeId = `${catalogItemId}-recipe`;
+    extraRecipes.push(recipeId);
+    await db.insert(recipes).values({
+      id: recipeId,
+      title: "Testkaka",
+      servings: 4,
+      servingsUnit: "portioner",
+      createdBy: ACTOR,
+      updatedBy: ACTOR,
+    });
+
+    const additionId = `${listId}-addition`;
+    await applyOpToDatabase(
+      op("add_recipe", "2026-05-01T00:00:00.000Z", {
+        listId,
+        recipeId,
+        recipeAdditionId: additionId,
+        scaleFactor: 1,
+        items: [{ catalogItemId, amount: { value: 2, unit: "dl" } }],
+      }),
+      ACTOR,
+    );
+
+    // A live addition must still arrive as a record with an UNdeleted clock.
+    // Asserted because the first version of the fix got this exactly backwards:
+    // `removedAt` was missing from the query's projection, so `undefined !== null`
+    // was true and every addition — live ones included — was marked deleted. The
+    // removed-addition assertion below passed anyway, for the wrong reason.
+    const before = await loadListSnapshot(listId, new Date());
+    expect(before!.recipeAdditions[additionId]).toBeDefined();
+    expect(before!.meta[`addition:${additionId}`].deleted).toBeUndefined();
+    expect(before!.recipeTitles[recipeId]).toBe("Testkaka");
+
+    await applyOpToDatabase(
+      op("remove_recipe", "2026-05-01T01:00:00.000Z", {
+        listId,
+        recipeAdditionId: additionId,
+      }),
+      ACTOR,
+    );
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    expect(snapshot).not.toBeNull();
+
+    // Absent from the records, which was already true...
+    expect(snapshot!.recipeAdditions[additionId]).toBeUndefined();
+    // ...but its clock must still be there, carrying the tombstone. Without this
+    // the client has no timestamp for a replayed add_recipe to lose against.
+    const clock = snapshot!.meta[`addition:${additionId}`];
+    expect(clock).toBeDefined();
+    expect(clock.deleted).toBe(true);
+
+    await db.delete(recipeAdditions).where(eq(recipeAdditions.id, additionId));
+  });
+
+  it("marks a tombstoned entry as deleted in its clock too", async () => {
+    const item = `${catalogItemId}-tombstone-meta`;
+    await seedItem(item);
+
+    await applyOpToDatabase(
+      op("add_item", "2026-06-01T00:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-06-01T01:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        bought: false,
+      }),
+      ACTOR,
+    );
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const clock = snapshot!.meta[`entry:${entryId(listId, item)}`];
+    expect(clock).toBeDefined();
+    // Harmless while nothing prunes client-side, and a resurrection bug the
+    // moment anything does — the same shape already fixed once for writeEntry.
+    expect(clock.deleted).toBe(true);
+  });
+});

@@ -121,23 +121,38 @@ export async function loadListSnapshot(
       scaleFactor: recipeAdditions.scaleFactor,
       addedAt: recipeAdditions.addedAt,
       addedBy: recipeAdditions.addedBy,
+      removedAt: recipeAdditions.removedAt,
       updatedAt: recipeAdditions.updatedAt,
       updatedBy: recipeAdditions.updatedBy,
       title: recipes.title,
     })
     .from(recipeAdditions)
     .innerJoin(recipes, eq(recipes.id, recipeAdditions.recipeId))
-    .where(
-      and(
-        eq(recipeAdditions.listId, listId),
-        isNull(recipeAdditions.removedAt),
-      ),
-    );
+    // Removed additions are loaded too, deliberately. Filtering them out here
+    // meant a hydrating client received neither the row NOR its clock — and a
+    // missing clock is not "no opinion", it is "anything wins": `wins(op,
+    // undefined)` is true whatever the op's timestamp. So a stale `add_recipe`
+    // replayed from an outbox resurrected the removed recipe and every
+    // contribution it asked for. The row is still withheld below; only the
+    // tombstone travels.
+    .where(eq(recipeAdditions.listId, listId));
 
   const meta: Record<string, RecordMeta> = {};
   const additions: Record<Id, RecipeAddition> = {};
   const recipeTitles: Record<Id, string> = {};
   for (const a of additionRows) {
+    const deleted = a.removedAt !== null;
+    // The clock travels for every addition; the record and its title only for
+    // the ones still on the list. Same shape as `apply-op`'s own loader, which
+    // has always done this correctly — the two must agree, since one reducer
+    // resolves against both.
+    meta[additionKey(a.id)] = {
+      at: a.updatedAt.toISOString(),
+      by: a.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    if (deleted) continue;
+
     additions[a.id] = {
       id: a.id,
       listId: a.listId,
@@ -147,10 +162,6 @@ export async function loadListSnapshot(
       addedBy: a.addedBy,
     };
     recipeTitles[a.recipeId] = a.title;
-    meta[additionKey(a.id)] = {
-      at: a.updatedAt.toISOString(),
-      by: a.updatedBy,
-    };
   }
 
   meta[listKey(listRow.id)] = {
@@ -167,6 +178,13 @@ export async function loadListSnapshot(
     meta[entryKey(e.id)] = {
       at: e.updatedAt.toISOString(),
       by: e.updatedBy,
+      // Tombstoned entries already travel as records (removedAt is a normal
+      // field on ListEntry), so this is harmless today — `wins()` ignores
+      // `deleted`. It stops being harmless the moment anything calls
+      // `pruneTombstones` client-side, which prunes on exactly this flag: an
+      // entry whose clock never said "deleted" would be kept, then resurrected.
+      // Same shape as the bug already fixed once in `writeEntry`.
+      deleted: e.removedAt !== null ? true : undefined,
     };
   }
   for (const c of contributionRows) {

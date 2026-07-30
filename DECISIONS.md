@@ -51,6 +51,22 @@ runtime to place its jump offsets). "Markera som köpt" reuses the existing
 `remove_item{bought:true}` rather than adding a purchase-only op, so it ships
 without waiting for a new op kind to reach every device.
 
+**The recipe-resurrection bug is fixed.** `loadListSnapshot` filtered removed
+recipe additions out of its query, so a hydrating client got neither the row nor
+its clock — and a missing clock is not "no opinion", it is "anything wins", since
+`wins(op, undefined)` is true whatever the op's timestamp. A stale `add_recipe`
+replayed from an outbox therefore brought a deleted recipe back, with every
+contribution it had asked for. The clock now travels for every addition and the
+record only for live ones, matching what `apply-op`'s own loader always did
+correctly. Tombstoned entries now carry `deleted` in their clock too — harmless
+today, a resurrection bug the moment anything prunes client-side.
+
+Worth knowing how nearly that fix shipped broken: `removedAt` was missing from the
+query's projection, so `undefined !== null` evaluated true and **every** addition
+was marked deleted, live ones included. The removed-addition test still passed —
+for the wrong reason. `tsc` caught it, and there is now an explicit assertion that
+a live addition arrives with an undeleted clock.
+
 ## Gotchas worth your attention
 
 **The generated migration would have broken the deploy.** `drizzle-kit` emitted
