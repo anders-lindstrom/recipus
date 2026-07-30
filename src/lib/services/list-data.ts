@@ -30,12 +30,14 @@ import {
 } from "@/lib/cadence";
 import {
   additionKey,
+  catalogFieldKey,
   catalogKey,
   contributionFieldKey,
   contributionKey,
   entryKey,
   listKey,
 } from "@/lib/sync";
+import { catalogFieldClocks } from "./clocks";
 
 /**
  * Reading a list's world out of Postgres.
@@ -192,6 +194,15 @@ export async function loadListSnapshot(
       at: c.updatedAt.toISOString(),
       by: c.updatedBy,
     };
+    // The four editable facts each resolve against their own clock — see the
+    // reducer's update_catalog_item. Emitted here as well as in `apply-op`'s
+    // loader because a hydrating client resolves the same ops against the same
+    // reducer, and a clock the two loaders disagree about is worse than one
+    // neither has: a missing key reads as "no prior record", so the newest
+    // write always wins and conflict resolution silently stops working.
+    for (const [field, clock] of catalogFieldClocks(c)) {
+      meta[catalogFieldKey(c.id, field)] = clock;
+    }
   }
   for (const e of entryRows) {
     meta[entryKey(e.id)] = {
@@ -209,16 +220,24 @@ export async function loadListSnapshot(
   for (const c of contributionRows) {
     const row = { at: c.updatedAt.toISOString(), by: c.updatedBy };
     meta[contributionKey(c.id)] = row;
-    // Per-field clocks fall back to the row clock: recipe and scan
-    // contributions never populate them, and neither do pre-migration rows.
-    meta[contributionFieldKey(c.id, "amount")] =
-      c.amountUpdatedAt && c.amountUpdatedBy
-        ? { at: c.amountUpdatedAt.toISOString(), by: c.amountUpdatedBy }
-        : row;
-    meta[contributionFieldKey(c.id, "note")] =
-      c.noteUpdatedAt && c.noteUpdatedBy
-        ? { at: c.noteUpdatedAt.toISOString(), by: c.noteUpdatedBy }
-        : row;
+    // An unset per-field clock emits NOTHING, rather than falling back to the
+    // row clock — see the column comment in src/db/schema.ts. The row clock
+    // moves on every write to either field, so the fallback silently handed one
+    // field the other's timestamp and cost a genuinely newer write, in one
+    // arrival order only. Absent is what the reducer holds for a field no op has
+    // touched, and absent is what must be reconstructed.
+    if (c.amountUpdatedAt && c.amountUpdatedBy) {
+      meta[contributionFieldKey(c.id, "amount")] = {
+        at: c.amountUpdatedAt.toISOString(),
+        by: c.amountUpdatedBy,
+      };
+    }
+    if (c.noteUpdatedAt && c.noteUpdatedBy) {
+      meta[contributionFieldKey(c.id, "note")] = {
+        at: c.noteUpdatedAt.toISOString(),
+        by: c.noteUpdatedBy,
+      };
+    }
   }
 
   const catalog: CatalogItem[] = catalogRows.map((c) => ({

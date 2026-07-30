@@ -4,6 +4,7 @@ import {
   manualContributionId,
   recipeContributionId,
   type Amount,
+  type CatalogItem,
   type Contribution,
   type Id,
   type ListEntry,
@@ -50,6 +51,33 @@ export const contributionFieldKey = (
   id: Id,
   field: "amount" | "note",
 ): MetaKey => `contribution:${id}:${field}`;
+
+/**
+ * The editable facts about a catalog item, each with its own clock.
+ *
+ * Not one clock per column: `name` covers `name` and `nameNorm` together,
+ * because they are one fact in two representations and an item findable under a
+ * name it no longer displays is worse than either.
+ *
+ * `isCustom`, `useCount` and `lastUsedAt` are deliberately absent, and
+ * `update_catalog_item` ignores them in a patch. They are not household
+ * opinions: `isCustom` is a fact about how the item was born, and the two
+ * counters are derived from purchase history by the server. A client asserting
+ * an absolute `useCount` would clobber a concurrent increment, which is a lost
+ * update rather than a conflict — last-write-wins has nothing useful to say
+ * about it.
+ */
+export type CatalogField = "name" | "category" | "icon" | "home";
+export const CATALOG_FIELDS: readonly CatalogField[] = [
+  "name",
+  "category",
+  "icon",
+  "home",
+];
+export const catalogFieldKey = (id: Id, field: CatalogField): MetaKey =>
+  `catalog:${id}:${field}`;
+
+type CatalogItemPatch = Partial<Omit<CatalogItem, "id">>;
 
 /**
  * Does this op supersede what we already have?
@@ -239,6 +267,40 @@ function setManualField(
   });
 }
 
+/**
+ * The part of a patch that speaks to one field, or null if it says nothing.
+ *
+ * The null matters: an op that does not mention the icon must not stamp the
+ * icon's clock, or it would beat a later op that actually changes the icon.
+ * Distinguishing "sets this to X" from "is silent about this" is the whole job.
+ */
+function catalogFieldPatch(
+  update: CatalogItemPatch,
+  field: CatalogField,
+): CatalogItemPatch | null {
+  switch (field) {
+    case "name": {
+      // One fact, two columns: whichever the patch carries, both clocks move
+      // together, so a display name can never drift from the string search
+      // matches against.
+      const out: CatalogItemPatch = {};
+      if (update.name !== undefined) out.name = update.name;
+      if (update.nameNorm !== undefined) out.nameNorm = update.nameNorm;
+      return Object.keys(out).length > 0 ? out : null;
+    }
+    case "category":
+      return update.categoryId !== undefined
+        ? { categoryId: update.categoryId }
+        : null;
+    case "icon":
+      return update.iconRef !== undefined ? { iconRef: update.iconRef } : null;
+    case "home":
+      return update.hasAtHome !== undefined
+        ? { hasAtHome: update.hasAtHome }
+        : null;
+  }
+}
+
 function dropContribution(state: SyncState, op: Op, id: Id): SyncState {
   const key = contributionKey(id);
   if (!wins(op, state.meta[key])) return state;
@@ -303,23 +365,63 @@ export function applyOp(state: SyncState, op: Op): SyncState {
     case "create_catalog_item": {
       const key = catalogKey(op.item.id);
       if (!wins(op, state.meta[key])) return state;
+      // Every field clock is set too. A create writes all four facts at once, so
+      // this op is honestly the last write for each of them — and leaving them
+      // unset would mean a later `update_catalog_item` had nothing to lose
+      // against, however stale it was.
+      const meta = { ...state.meta, [key]: metaOf(op) };
+      for (const field of CATALOG_FIELDS) {
+        meta[catalogFieldKey(op.item.id, field)] = metaOf(op);
+      }
       return patch(state, {
         catalog: { ...state.catalog, [op.item.id]: op.item },
-        meta: { ...state.meta, [key]: metaOf(op) },
+        meta,
       });
     }
 
+    /**
+     * Each fact resolved against its own clock.
+     *
+     * With one clock for the whole row, a rename at 17:00 and a re-filing into
+     * another aisle at 14:00 converge differently depending on arrival order:
+     * applied 14:00-then-17:00 both stick, applied the other way the re-filing
+     * loses and the item silently walks back to its old aisle. Same ops, two
+     * states — the divergence this module exists to rule out. Verified by
+     * execution before this was split.
+     *
+     * Note what is NOT here: the row-level `catalog:${id}` clock is neither
+     * consulted nor written. It means "last touched by anyone", which the seed
+     * guard and `create_catalog_item` both need, but it is the wrong thing to
+     * resolve a single field against — that is precisely the moving clock the
+     * split removes. The database's `updated_at` is recomputed as the latest of
+     * all the field clocks, which is order-independent.
+     */
     case "update_catalog_item": {
-      const key = catalogKey(op.itemId);
-      if (!wins(op, state.meta[key])) return state;
       const existing = state.catalog[op.itemId];
+      // An update for an item we have never seen is dropped rather than used to
+      // conjure a partial row, exactly as `update_list` is. Reachable only if an
+      // update overtook its own create, which the per-device op order and the
+      // server's sequencing both rule out.
       if (!existing) return state;
+
+      let item = existing;
+      let meta = state.meta;
+      for (const field of CATALOG_FIELDS) {
+        const fieldPatch = catalogFieldPatch(op.patch, field);
+        // Silent about this fact: no claim, so no clock to stamp. Stamping it
+        // anyway would let an op that says nothing about the icon beat one that
+        // does.
+        if (!fieldPatch) continue;
+        const key = catalogFieldKey(op.itemId, field);
+        if (!wins(op, meta[key])) continue;
+        item = { ...item, ...fieldPatch };
+        meta = { ...meta, [key]: metaOf(op) };
+      }
+
+      if (item === existing) return state;
       return patch(state, {
-        catalog: {
-          ...state.catalog,
-          [op.itemId]: { ...existing, ...op.patch },
-        },
-        meta: { ...state.meta, [key]: metaOf(op) },
+        catalog: { ...state.catalog, [op.itemId]: item },
+        meta,
       });
     }
 

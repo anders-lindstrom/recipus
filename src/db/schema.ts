@@ -63,9 +63,55 @@ export const catalogItems = pgTable(
     isCustom: boolean("is_custom").notNull().default(false),
     // Staples a recipe should not put on your list: salt, mjöl, olja.
     hasAtHome: boolean("has_at_home").notNull().default(false),
-    // Drive recency/frequency ordering of the catalog.
+    // Drive recency/frequency ordering of the catalog. Derived from purchases,
+    // never from an op's patch — see the reducer's update_catalog_item.
     useCount: integer("use_count").notNull().default(0),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    /*
+     * Four independent last-write-wins clocks, one per editable fact.
+     *
+     * The name, the aisle, the icon and "we always have this" are separate
+     * opinions that happen to share a row. With one clock for the lot, renaming
+     * an item at 17:00 and re-filing it into another aisle at 14:00 converge
+     * differently depending on which op the server sees first: applied in that
+     * order both stick, applied in the other the re-filing loses and the item
+     * silently walks back to its old aisle. Verified by execution.
+     *
+     * This matters more than it looks. Every one of these fields becomes
+     * editable with the item registry, and two people tidying the catalog on a
+     * Sunday afternoon is exactly the shape that produces concurrent edits to
+     * different fields of the same item.
+     *
+     * `name` and `name_norm` deliberately share the `name` clock: they are one
+     * fact in two representations, and letting them diverge would leave an item
+     * findable under a name it no longer displays.
+     */
+    nameUpdatedAt: timestamp("name_updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    nameUpdatedBy: text("name_updated_by").notNull(),
+    categoryUpdatedAt: timestamp("category_updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    categoryUpdatedBy: text("category_updated_by").notNull(),
+    iconUpdatedAt: timestamp("icon_updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    iconUpdatedBy: text("icon_updated_by").notNull(),
+    homeUpdatedAt: timestamp("home_updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    homeUpdatedBy: text("home_updated_by").notNull(),
+    /*
+     * "Last touched by anyone", not a conflict-resolution clock.
+     *
+     * Two things read it: `create_catalog_item`'s own LWW comparison, and the
+     * seed guard (`upsertSeedCatalogItem`), which refuses to overwrite a row
+     * whose `updated_by` is no longer the seed actor. That second one is why
+     * every field write must still stamp this — otherwise a household rename
+     * would leave `updated_by = 'system'` and the next deploy would quietly
+     * revert it.
+     */
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -167,8 +213,25 @@ export const contributions = pgTable(
      * governs the amount too — the two devices then disagree about how much
      * cream you need, which is the exact failure this app exists to prevent.
      *
-     * Nullable because recipe/scan contributions never use them: those rows are
-     * written whole by a single op and the row-level clock is correct for them.
+     * NULL means "nobody has ever written this field", and that is the whole
+     * meaning — it must NOT fall back to the row clock.
+     *
+     * It used to. The row clock MOVES: writing the amount at 05:00 pushed
+     * `updated_at` to 05:00, so the note's fallback clock silently advanced to
+     * 05:00 too, and a note genuinely written at 03:00 arriving afterwards lost
+     * a comparison it should have won. In the other arrival order it won, and
+     * the two devices ended up with different notes, each correct by its own
+     * reckoning. Reproduced by execution.
+     *
+     * A fallback that moves is not a default, it is a second clock nobody
+     * declared. Absent meta is what the reducer itself produces for a field no
+     * op has touched — `wins(op, undefined)` is true, so any write lands — and
+     * NULL here reconstructs exactly that. Rows written before drizzle/0003 were
+     * backfilled from the row clock, which preserves the behaviour they already
+     * had rather than retroactively opening them up.
+     *
+     * Recipe and scan contributions resolve on the row-level key instead, and
+     * keep these equal to it.
      */
     amountUpdatedAt: timestamp("amount_updated_at", { withTimezone: true }),
     amountUpdatedBy: text("amount_updated_by"),

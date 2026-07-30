@@ -77,6 +77,14 @@ export async function upsertSeedCatalogItem(item: {
       useCount: 0,
       lastUsedAt: null,
       updatedBy: SEED_ACTOR,
+      // The per-field clocks are stamped with the seed actor too, so a later
+      // `update_catalog_item` from a phone always wins on timestamp — a seeded
+      // row has never been edited by anyone, and the clocks should say so
+      // rather than defaulting to whenever the container happened to boot.
+      nameUpdatedBy: SEED_ACTOR,
+      categoryUpdatedBy: SEED_ACTOR,
+      iconUpdatedBy: SEED_ACTOR,
+      homeUpdatedBy: SEED_ACTOR,
     })
     .onConflictDoUpdate({
       target: catalogItems.id,

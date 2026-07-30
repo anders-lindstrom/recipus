@@ -719,6 +719,199 @@ describe("clearing an amount keeps its clock", () => {
   });
 });
 
+describe("per-field clocks survive the database", () => {
+  /**
+   * The bug this whole split exists for, driven through Postgres rather than
+   * the pure reducer.
+   *
+   * The reducer keeps its clocks in a map, so it converges on its own. What can
+   * still go wrong is the round trip: the server rebuilds that map from columns,
+   * and if two fields end up sharing a column — or falling back to one that
+   * moves — the reconstruction is a state no client ever had.
+   *
+   * Two items, identical ops, opposite arrival orders. Anything that reads the
+   * same clock for two different facts makes these disagree.
+   */
+  it("converges when a rename and a re-filing arrive in either order", async () => {
+    const first = `${catalogItemId}-order-a`;
+    const second = `${catalogItemId}-order-b`;
+    await seedItem(first);
+    await seedItem(second);
+
+    const rename = (id: string) =>
+      applyOpToDatabase(
+        op("update_catalog_item", "2026-09-01T17:00:00.000Z", {
+          itemId: id,
+          patch: { name: "vispgrädde", nameNorm: "vispgradde" },
+        }),
+        ACTOR,
+      );
+    const refile = (id: string) =>
+      applyOpToDatabase(
+        op("update_catalog_item", "2026-09-01T14:00:00.000Z", {
+          itemId: id,
+          patch: { categoryId: "skafferi" },
+        }),
+        ACTOR,
+      );
+
+    // Newer rename first, then the older re-filing — the order that used to
+    // lose the re-filing, because it lost to the rename's row-level clock.
+    await rename(first);
+    await refile(first);
+
+    await refile(second);
+    await rename(second);
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const read = (id: string) => {
+      const c = snapshot!.catalog.find((x) => x.id === id)!;
+      return { name: c.name, nameNorm: c.nameNorm, categoryId: c.categoryId };
+    };
+
+    expect(read(first)).toEqual(read(second));
+    // And both edits actually stuck, rather than converging on having lost both.
+    expect(read(first)).toEqual({
+      name: "vispgrädde",
+      nameNorm: "vispgradde",
+      categoryId: "skafferi",
+    });
+  });
+
+  /**
+   * The same failure, one layer down, in the clocks that already existed.
+   *
+   * `amount_updated_at`/`note_updated_at` were nullable and fell back to the
+   * row's `updated_at` when unset — and the row clock moves whenever EITHER
+   * field is written. So setting the amount at 05:00 silently advanced the
+   * note's clock to 05:00, and a note genuinely written at 03:00 arriving
+   * afterwards lost a comparison it should have won. In one arrival order only.
+   *
+   * Reproduced by execution before the fix: order A dropped the note, order B
+   * kept it. A fallback that moves is not a default, it is a second clock nobody
+   * declared.
+   */
+  it("converges when an amount and an older note arrive in either order", async () => {
+    const first = `${catalogItemId}-fields-a`;
+    const second = `${catalogItemId}-fields-b`;
+    await seedItem(first);
+    await seedItem(second);
+
+    const setAmount = (id: string) =>
+      applyOpToDatabase(
+        op("set_amount", "2026-09-02T05:00:00.000Z", {
+          listId,
+          catalogItemId: id,
+          amount: { value: 5, unit: "dl" },
+        }),
+        ACTOR,
+      );
+    const setNote = (id: string) =>
+      applyOpToDatabase(
+        op("set_note", "2026-09-02T03:00:00.000Z", {
+          listId,
+          catalogItemId: id,
+          note: "helst ekologisk",
+        }),
+        ACTOR,
+      );
+
+    await setAmount(first);
+    await setNote(first);
+
+    await setNote(second);
+    await setAmount(second);
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const read = (id: string) => {
+      const cid = manualContributionId(entryId(listId, id));
+      const c = snapshot!.contributions.find((x) => x.id === cid);
+      return { amount: c?.amount ?? null, note: c?.note ?? null };
+    };
+
+    expect(read(first)).toEqual(read(second));
+    expect(read(first)).toEqual({
+      amount: { value: 5, unit: "dl" },
+      note: "helst ekologisk",
+    });
+  });
+
+  /**
+   * The seed guard has to keep working after a field edit.
+   *
+   * It refuses to overwrite a row whose `updated_by` is no longer the seed
+   * actor, so if a per-field write stopped stamping the row-level columns, a
+   * household rename would leave `updated_by = 'system'` and the next deploy
+   * would quietly revert it — in production only, with no error. That is exactly
+   * the failure profile the guard was written for, so the interaction is
+   * asserted rather than assumed.
+   */
+  it("stamps the row clock so the seed guard still sees a human edit", async () => {
+    const item = `${catalogItemId}-seed-guard`;
+    await seedItem(item);
+
+    await applyOpToDatabase(
+      op("update_catalog_item", "2026-09-03T09:00:00.000Z", {
+        itemId: item,
+        patch: { hasAtHome: true },
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db
+      .select({ updatedBy: catalogItems.updatedBy, updatedAt: catalogItems.updatedAt })
+      .from(catalogItems)
+      .where(eq(catalogItems.id, item));
+
+    expect(row.updatedBy).toBe(ACTOR);
+    // Derived as the latest of the field clocks, so it reflects the edit rather
+    // than whichever op happened to be written last.
+    expect(row.updatedAt.toISOString()).toBe("2026-09-03T09:00:00.000Z");
+  });
+
+  /**
+   * Buying something must not be undone by a catalog edit landing afterwards.
+   *
+   * `use_count` is incremented atomically by the purchase path. The catalog
+   * writer used to rewrite it from an absolute value loaded earlier in the
+   * transaction, which is a lost update rather than a conflict — last-write-wins
+   * has nothing useful to say about a counter.
+   */
+  it("does not roll back a purchase count when a field is edited", async () => {
+    const item = `${catalogItemId}-counter`;
+    await seedItem(item);
+
+    await applyOpToDatabase(
+      op("add_item", "2026-09-04T09:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-09-04T10:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        bought: true,
+      }),
+      ACTOR,
+    );
+
+    await applyOpToDatabase(
+      op("update_catalog_item", "2026-09-04T11:00:00.000Z", {
+        itemId: item,
+        patch: { iconRef: "1F9C0" },
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db
+      .select({ useCount: catalogItems.useCount, iconRef: catalogItems.iconRef })
+      .from(catalogItems)
+      .where(eq(catalogItems.id, item));
+
+    expect(row.iconRef).toBe("1F9C0");
+    expect(row.useCount).toBe(1);
+  });
+});
+
 describe("seed corrections versus household edits", () => {
   /**
    * The seed runs on every server boot in production (src/instrumentation.ts)

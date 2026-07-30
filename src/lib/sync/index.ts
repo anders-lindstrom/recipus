@@ -5,9 +5,12 @@ export { applyOp, applyOps, pruneTombstones } from "./reducer";
 // reducer's own idea of what a key looks like.
 export {
   additionKey,
+  catalogFieldKey,
   catalogKey,
   contributionFieldKey,
   contributionKey,
   entryKey,
   listKey,
+  CATALOG_FIELDS,
 } from "./reducer";
+export type { CatalogField } from "./reducer";

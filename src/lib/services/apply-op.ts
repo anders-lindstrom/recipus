@@ -27,14 +27,22 @@ import {
 import {
   additionKey,
   applyOp,
+  catalogFieldKey,
   catalogKey,
   contributionFieldKey,
   contributionKey,
   entryKey,
   listKey,
   opListId,
+  CATALOG_FIELDS,
+  type CatalogField,
   type Op,
 } from "@/lib/sync";
+import {
+  catalogClockColumns,
+  catalogFieldClocks,
+  latestClock,
+} from "./clocks";
 
 /**
  * Applying one client op to Postgres.
@@ -242,6 +250,13 @@ async function loadStateSlice(
       at: row.updatedAt.toISOString(),
       by: row.updatedBy,
     };
+    // Four independent clocks, read straight from their own columns. No
+    // fallback to the row clock: that clock moves whenever ANY field is
+    // written, so a field that fell back to it would silently inherit an
+    // unrelated write's timestamp and start beating ops it should lose to.
+    for (const [field, clock] of catalogFieldClocks(row)) {
+      state.meta[catalogFieldKey(row.id, field)] = clock;
+    }
     state.catalog[row.id] = {
       id: row.id,
       name: row.name,
@@ -280,21 +295,22 @@ async function loadStateSlice(
     // `amount` and `note` carry independent last-write-wins clocks — a single
     // shared clock lets an older amount write lose to a newer note write and
     // silently drop a quantity nobody touched (see reducer.ts's comment on
-    // setManualField). contributions.amount_updated_at/_by and
-    // note_updated_at/_by (migration drizzle/0001) hold those clocks for
-    // real. They are nullable and fall back to the row-level updated_at/by
-    // for rows written before the migration and for recipe/scan
-    // contributions, which are written whole by a single op and so never
-    // populate the per-field columns at all.
-    const rowClock: RecordMeta = { at: row.updatedAt.toISOString(), by: row.updatedBy };
-    state.meta[contributionFieldKey(row.id, "amount")] =
-      row.amountUpdatedAt && row.amountUpdatedBy
-        ? { at: row.amountUpdatedAt.toISOString(), by: row.amountUpdatedBy }
-        : rowClock;
-    state.meta[contributionFieldKey(row.id, "note")] =
-      row.noteUpdatedAt && row.noteUpdatedBy
-        ? { at: row.noteUpdatedAt.toISOString(), by: row.noteUpdatedBy }
-        : rowClock;
+    // setManualField).
+    //
+    // Read straight from their own columns, and an UNSET column emits no meta at
+    // all rather than falling back to the row clock. That fallback was the bug:
+    // the row clock moves whenever either field is written, so it quietly told
+    // the note it had been written at the amount's timestamp. Emitting nothing
+    // reproduces what the reducer itself holds for a field no op has touched.
+    for (const [field, at, by] of [
+      ["amount", row.amountUpdatedAt, row.amountUpdatedBy],
+      ["note", row.noteUpdatedAt, row.noteUpdatedBy],
+    ] as const) {
+      if (at && by) state.meta[contributionFieldKey(row.id, field)] = {
+        at: at.toISOString(),
+        by,
+      };
+    }
     const contribution: Contribution = {
       id: row.id,
       entryId: row.entryId,
@@ -400,12 +416,19 @@ async function writeList(tx: Tx, id: Id, next: SyncState): Promise<void> {
 }
 
 async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> {
-  const meta = next.meta[catalogKey(id)];
+  const rowMeta = next.meta[catalogKey(id)];
   const item = next.catalog[id];
   // Missing item with a meta entry means update_catalog_item targeted a row
   // we don't have — the reducer no-ops that too (see reducer.ts), so there is
   // nothing to write.
-  if (!meta || !item) return;
+  if (!rowMeta || !item) return;
+
+  const fieldMeta = (field: CatalogField): RecordMeta =>
+    next.meta[catalogFieldKey(id, field)] ?? rowMeta;
+  const clocks = catalogClockColumns(fieldMeta);
+  // Derived, never stamped with whichever op arrived last — see latestClock.
+  const touched = latestClock([rowMeta, ...CATALOG_FIELDS.map(fieldMeta)]);
+
   await tx
     .insert(catalogItems)
     .values({
@@ -418,8 +441,9 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
       hasAtHome: item.hasAtHome,
       useCount: item.useCount,
       lastUsedAt: item.lastUsedAt ? new Date(item.lastUsedAt) : null,
-      updatedAt: new Date(meta.at),
-      updatedBy: meta.by,
+      updatedAt: new Date(touched.at),
+      updatedBy: touched.by,
+      ...clocks,
     })
     .onConflictDoUpdate({
       target: catalogItems.id,
@@ -430,10 +454,15 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
         iconRef: item.iconRef,
         isCustom: item.isCustom,
         hasAtHome: item.hasAtHome,
-        useCount: item.useCount,
-        lastUsedAt: item.lastUsedAt ? new Date(item.lastUsedAt) : null,
-        updatedAt: new Date(meta.at),
-        updatedBy: meta.by,
+        // `useCount` and `lastUsedAt` are deliberately NOT updated here. They
+        // are maintained by the purchase side effects with an atomic
+        // `use_count + 1`, and writing an absolute value loaded earlier in this
+        // transaction would clobber a concurrent increment — a lost update, not
+        // a conflict, so last-write-wins cannot save it. The reducer already
+        // refuses to take them from a patch; this is the other half.
+        updatedAt: new Date(touched.at),
+        updatedBy: touched.by,
+        ...clocks,
       },
     });
 }
@@ -476,14 +505,21 @@ async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
 }
 
 /**
- * Write one field's worth of a manual contribution. `field` is exactly the
- * one field the current op (set_amount or set_note) targets — the OTHER
- * field's clock columns are never touched by this call, since a set_amount
- * op has nothing true to say about when the note was last written (and vice
- * versa). Only `updated_at`/`updated_by` (the informational "last touched,
- * either field" columns recipe/scan contributions rely on) get stamped with
- * this op's own at/actor unconditionally — that is unambiguous here, since
- * this call IS the most recent touch by construction.
+ * Write one field's worth of a manual contribution.
+ *
+ * `field` is the one field the current op (set_amount or set_note) targets, and
+ * an UPDATE only ever moves that field's clock — a set_amount has nothing true
+ * to say about when the note was last written. An INSERT supplies both, because
+ * a brand-new row genuinely establishes both facts at once ("and the note has
+ * been empty since then").
+ *
+ * The other field's clock comes from the reducer's meta rather than being left
+ * out. Leaving it out is what made these columns nullable, and a NULL fell back
+ * to the row clock at read time — which moves on every write to either field, so
+ * writing the amount silently advanced the note's clock and a genuinely older
+ * note write lost a comparison it should have won. In one arrival order only, so
+ * two devices ended up with different notes and neither was wrong by its own
+ * reckoning. Reproduced by execution; see drizzle/0003.
  */
 async function writeManualContribution(
   tx: Tx,
@@ -518,10 +554,25 @@ async function writeManualContribution(
     note: null,
   };
 
+  /**
+   * Only the targeted field's clock is written — on INSERT as well as on UPDATE.
+   *
+   * The tempting shortcut is to stamp both on insert, since the row is new. It
+   * is wrong, and subtly: a `set_amount` at 05:00 creating the row would be
+   * asserting "and the note has been empty since 05:00", which the op never
+   * said. A note genuinely written at 03:00 then loses — but only in that
+   * arrival order, so the two devices settle on different notes. The other
+   * column stays NULL, meaning "nobody has written this", which is exactly what
+   * the reducer holds and what makes any later write land.
+   */
   const fieldColumns =
     field === "amount"
       ? { amountUpdatedAt: new Date(meta.at), amountUpdatedBy: meta.by }
       : { noteUpdatedAt: new Date(meta.at), noteUpdatedBy: meta.by };
+
+  // "Last touched, either field" — informational, and the only clock recipe and
+  // scan contributions have. This call IS the most recent touch by construction.
+  const touched = { at: new Date(meta.at), by: meta.by };
 
   await tx
     .insert(contributions)
@@ -533,8 +584,8 @@ async function writeManualContribution(
       amountValue: contribution.amount?.value ?? null,
       amountUnit: contribution.amount?.unit ?? null,
       note: contribution.note,
-      updatedAt: new Date(meta.at),
-      updatedBy: meta.by,
+      updatedAt: touched.at,
+      updatedBy: touched.by,
       ...fieldColumns,
     })
     .onConflictDoUpdate({
@@ -543,8 +594,8 @@ async function writeManualContribution(
         amountValue: contribution.amount?.value ?? null,
         amountUnit: contribution.amount?.unit ?? null,
         note: contribution.note,
-        updatedAt: new Date(meta.at),
-        updatedBy: meta.by,
+        updatedAt: touched.at,
+        updatedBy: touched.by,
         ...fieldColumns,
       },
     });
@@ -558,6 +609,12 @@ async function writeContribution(tx: Tx, id: Id, next: SyncState): Promise<void>
     await tx.delete(contributions).where(eq(contributions.id, id));
     return;
   }
+  // Recipe and scan contributions are written whole by a single op and resolve
+  // on the ROW-level key, so the per-field clock columns stay NULL for them —
+  // nothing has written those fields independently, and saying otherwise would
+  // be inventing a history. Their ids are disjoint from manual ones
+  // (`recipeContributionId` vs `manualContributionId`), so the two clocking
+  // schemes never meet on one row.
   await tx
     .insert(contributions)
     .values({

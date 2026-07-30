@@ -688,3 +688,174 @@ describe("meta convergence", () => {
     }
   });
 });
+
+describe("catalog field clocks", () => {
+  /**
+   * Editing different facts about one item must converge.
+   *
+   * With a single clock for the whole row, a rename at T5 and a re-filing at T2
+   * settle differently depending on which the server sees first: T2-then-T5
+   * keeps both, T5-then-T2 drops the re-filing and the item silently walks back
+   * to its old aisle. Same ops, two states.
+   *
+   * This is the shape the item registry makes routine — two people tidying the
+   * catalog on a Sunday afternoon — so it is pinned exhaustively rather than by
+   * example, the same way the amount/note split is.
+   */
+  const create: Op = {
+    ...base("anders", 0),
+    kind: "create_catalog_item",
+    item: item(CREAM),
+  };
+
+  /**
+   * The create is a fixture rather than part of the permutation, and that is a
+   * deliberate statement about what converges.
+   *
+   * `update_catalog_item` DROPS an update for an item it has never seen, exactly
+   * as `update_list` does — conjuring a partial record from a patch would leave
+   * a half-built item with no name. So create-then-update and update-then-create
+   * genuinely differ, and the guarantee rests on the transport instead: the
+   * server assigns `seq` on arrival, clients replay in `seq` order, and an
+   * update can only be authored on a device that already has the item. The
+   * create is always first. Pinned by the last test in this block so the
+   * assumption is written down rather than assumed.
+   */
+  const edits: Op[] = [
+    {
+      ...base("maria", 5),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { name: "vispgrädde", nameNorm: "vispgradde" },
+    },
+    {
+      ...base("anders", 2),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { categoryId: "frukt-gront" },
+    },
+    {
+      ...base("maria", 3),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { iconRef: "1F34E" },
+    },
+    {
+      ...base("anders", 4),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { hasAtHome: true },
+    },
+  ];
+
+  it("converges under every ordering of concurrent field edits", () => {
+    const orderings = permutations(edits);
+    expect(orderings.length).toBe(24);
+
+    const reference = observable(applyOps(emptyState(), [create, ...orderings[0]]));
+    for (const ordering of orderings) {
+      expect(observable(applyOps(emptyState(), [create, ...ordering]))).toEqual(
+        reference,
+      );
+    }
+  });
+
+  it("converges on the meta map too, so the next write resolves the same", () => {
+    const orderings = permutations(edits);
+    const reference = applyOps(emptyState(), [create, ...orderings[0]]).meta;
+    for (const ordering of orderings) {
+      expect(applyOps(emptyState(), [create, ...ordering]).meta).toEqual(reference);
+    }
+  });
+
+  it("keeps every edit — none of them shadow each other", () => {
+    const state = applyOps(emptyState(), [create, ...edits]);
+    const cream = state.catalog[CREAM];
+    expect(cream.name).toBe("vispgrädde");
+    expect(cream.nameNorm).toBe("vispgradde");
+    expect(cream.categoryId).toBe("frukt-gront");
+    expect(cream.iconRef).toBe("1F34E");
+    expect(cream.hasAtHome).toBe(true);
+  });
+
+  /**
+   * An op that is silent about a field must not stamp that field's clock.
+   *
+   * Otherwise a rename would beat a LATER re-filing, purely because it happened
+   * to be written second — the clock would be recording "someone touched this
+   * row" rather than "someone set this field", which is the moving clock the
+   * split exists to remove.
+   */
+  it("does not let a rename shadow a later re-filing", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 0), kind: "create_catalog_item", item: item(CREAM) },
+      {
+        ...base("maria", 9),
+        kind: "update_catalog_item",
+        itemId: CREAM,
+        patch: { name: "vispgrädde" },
+      },
+      {
+        ...base("anders", 5),
+        kind: "update_catalog_item",
+        itemId: CREAM,
+        patch: { categoryId: "frukt-gront" },
+      },
+    ]);
+    expect(state.catalog[CREAM].name).toBe("vispgrädde");
+    expect(state.catalog[CREAM].categoryId).toBe("frukt-gront");
+  });
+
+  /**
+   * The counters are not household opinions.
+   *
+   * `useCount` and `lastUsedAt` are derived from purchase history by the server
+   * with an atomic increment. A client asserting an absolute value would clobber
+   * a concurrent one — a lost update, which last-write-wins cannot help with —
+   * so a patch naming them is ignored rather than resolved.
+   */
+  it("ignores the derived counters in a patch", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 0), kind: "create_catalog_item", item: item(CREAM) },
+      {
+        ...base("maria", 9),
+        kind: "update_catalog_item",
+        itemId: CREAM,
+        patch: { useCount: 999, lastUsedAt: "2030-01-01T00:00:00.000Z" },
+      },
+    ]);
+    expect(state.catalog[CREAM].useCount).toBe(0);
+    expect(state.catalog[CREAM].lastUsedAt).toBeNull();
+  });
+
+  /**
+   * The one ordering that does NOT converge, written down on purpose.
+   *
+   * An update for an item the reducer has never seen is dropped rather than used
+   * to conjure a partial record — the same call `update_list` makes, for the
+   * same reason. So this pair genuinely settles two ways, and the guarantee is
+   * carried by the transport rather than by the reducer: `seq` is assigned on
+   * arrival, replay follows `seq`, and an update can only be authored on a
+   * device that already holds the item.
+   *
+   * Asserted rather than left implicit so that anyone who later makes an update
+   * reachable without a create — a registry import, a merge, a repair path —
+   * fails here and has to think about it, instead of shipping a silent
+   * divergence.
+   */
+  it("drops an update that arrives before its create (known, transport-guarded)", () => {
+    const rename: Op = {
+      ...base("maria", 5),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { name: "vispgrädde" },
+    };
+
+    const natural = applyOps(emptyState(), [create, rename]);
+    const inverted = applyOps(emptyState(), [rename, create]);
+
+    expect(natural.catalog[CREAM].name).toBe("vispgrädde");
+    // Not a bug being enshrined — a boundary being stated. The rename is gone.
+    expect(inverted.catalog[CREAM].name).toBe(CREAM);
+  });
+});
