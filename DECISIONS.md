@@ -127,6 +127,22 @@ replayed `add_recipe` **resurrects a deleted recipe**; and clearing a manual
 amount hard-deletes its LWW clocks, after which a later `set_amount` wins
 regardless of timestamp and two devices diverge permanently.
 
+## Where to pick up
+
+Build order and rationale are in §4 of the spec. Next is **per-field clocks on
+`update_catalog_item`** — reproduced bug, a rename at T5 plus a concurrent re-file
+at T2 silently loses the category — and it is a hard prerequisite for the
+registry, not a nicety. I stopped short of it deliberately: it needs a migration
+plus reducer changes plus server-side clock reconstruction plus additions to the
+exhaustive-ordering test, and a half-finished schema change is the wrong thing to
+leave behind unsupervised.
+
+Two things I checked and deliberately did NOT fix, because both are currently
+unreachable from the UI and so cost nothing today: `move_item` does not move
+contributions (a moved item would arrive with no amounts), and
+`update_catalog_item` is dispatched by nothing. The registry is what makes both
+matter.
+
 ## Where the design landed, in one paragraph
 
 Your butter observation settled the hardest question. Because the logical layer
