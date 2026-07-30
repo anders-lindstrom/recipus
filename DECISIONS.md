@@ -35,6 +35,22 @@ recomputed from the surviving purchases rather than cleared, because clearing
 would erase a genuine earlier purchase and leaving it would let a retracted
 timestamp stand in for one.
 
+**Plan mode and buy mode are built.** Plan-mode tap records nothing, buy-mode tap
+records a purchase, and each mode's long-press offers the other mode's action so
+neither can trap you. Exactly one gesture changes meaning between modes. Two
+end-to-end tests assert against the `purchases` table, because the difference is
+invisible on screen — the tile leaves the zone either way.
+
+Three things I changed against your literal description, each for a measured
+reason: plan mode is **untinted** (green stays reserved for item state); the buy
+hue is **terracotta, not amber** (an amber wash measured ΔL* 1.60 from
+`--color-warn-tint`, so it would have collided with the offline banner); and the
+accent is an **inset shadow rather than a border** (a border made the header 94px
+in buy mode against 93px in plan, and the aisle rail measures header height at
+runtime to place its jump offsets). "Markera som köpt" reuses the existing
+`remove_item{bought:true}` rather than adding a purchase-only op, so it ships
+without waiting for a new op kind to reach every device.
+
 ## Gotchas worth your attention
 
 **The generated migration would have broken the deploy.** `drizzle-kit` emitted
@@ -58,6 +74,22 @@ bitten because nothing dispatches it; the registry is what wakes it up.
 from `ops`. The log is unbounded and client `meta` grows forever, while
 `saveState` re-serialises the whole blob on every tap. I had been designing
 against a 30-day retention rule that does not exist.
+
+**One thing I could not fully explain, so take it as open.** After adding the two
+mode e2e tests, a full suite run logs exactly one `op refused by server` — a
+`writeEntry` upsert failing, on a different op and a different test each run
+(`set_amount` in test 3 one time, `remove_item` in test 9 the next). All nine tests
+pass. What I ruled out: it does not reproduce when either new test runs alone; it
+carries no Postgres error code, detail or constraint name, so it is not a
+constraint violation; and it is not in the purchase path, since it fails inside
+`writeEntry` before any purchase code runs. What I did not establish: the actual
+cause. My best read is a pre-existing race between a page still draining its
+outbox and the fixture's `dropTestList`, whose timing my new tests shifted — the
+`apply-op.ts` comment at the failing line already documents cross-request FK
+failures as an expected, per-op-reported outcome. Worth a proper look before
+trusting the e2e suite's silence on this. Server-side logging for failed ops was
+added while chasing it, which is a keeper either way: the cause used to be sent to
+the client and recorded nowhere.
 
 **Nine pre-existing bugs** are listed in §6 of the spec. Two are reproduced and
 worth doing soon: a snapshot omits removed recipe additions' clocks, so a stale
