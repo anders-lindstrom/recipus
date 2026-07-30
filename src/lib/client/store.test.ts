@@ -1,9 +1,10 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { entryId } from "@/lib/domain";
+import { emptyState, entryId } from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import type { Op } from "@/lib/sync";
-import { deleteDb, saveMeta, STATE_VERSION } from "./db";
+import { entryKey } from "@/lib/sync";
+import { deleteDb, loadState, saveMeta, saveState, STATE_VERSION } from "./db";
 import { createListStore, type EventSourceLike } from "./store";
 
 afterEach(async () => {
@@ -396,5 +397,63 @@ describe("state version tripwire", () => {
     await vi.waitFor(() => expect(store.status().online).toBe(true));
     expect(onSnapshot).not.toHaveBeenCalled();
     store.disconnect();
+  });
+});
+
+describe("retention", () => {
+  /**
+   * Tombstones are pruned when the app opens, not left to grow forever.
+   *
+   * The meta map is re-serialised to IndexedDB on every single tap, so a
+   * tombstone that never leaves costs a little more work on every interaction
+   * for the rest of the install's life. `pruneTombstones` was written for this
+   * and then had no caller anywhere; this is the caller.
+   */
+  it("drops tombstones past the retention window when it loads", async () => {
+    const old = entryId(LIST, "gammalt");
+    const recent = entryId(LIST, MILK);
+    const now = Date.now();
+    const daysAgo = (n: number) =>
+      new Date(now - n * 24 * 60 * 60 * 1000).toISOString();
+
+    const state = emptyState();
+    state.entries[old] = {
+      id: old,
+      listId: LIST,
+      catalogItemId: "gammalt",
+      createdAt: daysAgo(90),
+      createdBy: "anders",
+      removedAt: daysAgo(60),
+      priority: "normal",
+      updatedAt: daysAgo(60),
+      updatedBy: "anders",
+    };
+    state.entries[recent] = {
+      id: recent,
+      listId: LIST,
+      catalogItemId: MILK,
+      createdAt: daysAgo(10),
+      createdBy: "anders",
+      removedAt: daysAgo(2),
+      priority: "normal",
+      updatedAt: daysAgo(2),
+      updatedBy: "anders",
+    };
+    state.meta[entryKey(old)] = { at: daysAgo(60), by: "anders", deleted: true };
+    state.meta[entryKey(recent)] = { at: daysAgo(2), by: "anders", deleted: true };
+    await saveState(LIST, state);
+
+    const store = createListStore(LIST, "anders", { fetch: makeFetchMock() });
+    await store.ready();
+
+    expect(store.getState().entries[old]).toBeUndefined();
+    expect(store.getState().meta[entryKey(old)]).toBeUndefined();
+    // Still inside the window: a straggler could yet arrive arguing about it.
+    expect(store.getState().entries[recent]).toBeDefined();
+
+    // And the pruning is written back, or it happens again on every open and
+    // the stored blob never actually shrinks.
+    const reloaded = await loadState(LIST);
+    expect(reloaded!.entries[old]).toBeUndefined();
   });
 });

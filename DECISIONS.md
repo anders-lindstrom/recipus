@@ -1,9 +1,9 @@
 # Hardening session, 2026-07-30 — read this first
 
 The registry gate is done, priority and modifiers are built, `move_item` is
-fixed, and the two loose ends from the away session are both closed. **Three
-decisions are waiting on you** — they are collected in "Decisions I did not take"
-below, and nowhere else.
+fixed, retention is wired at 30 days, and the two loose ends from the away
+session are both closed. **Two decisions are waiting on you** — they are
+collected in "Decisions I did not take" below, and nowhere else.
 
 ## Three data-loss bugs, all the same shape
 
@@ -143,23 +143,48 @@ reducer converges on all of this, and it is the reconstruction from columns that
 has broken three times. The old single `move_item` test would have passed with
 all three defects present.
 
+## Retention: 30 days, both prunes, one constant
+
+Anders's number. `RETENTION_DAYS` lives in `src/lib/retention.ts` and both sides
+import it — deliberately not two constants that happen to agree, because a client
+pruning on a shorter window than the server is precisely the resurrection bug the
+window exists to prevent, and it would show up as items reappearing on one phone
+only.
+
+Server (`pruneRetention`, one transaction, on boot and then daily): the op log,
+tombstoned entries, removed recipe additions, deleted lists and recipes.
+Contributions go by cascade with their entry rather than by a second rule.
+**Purchases are never pruned** — a purchase is not bookkeeping about a deletion,
+it is the only record the household bought the thing, and it is the sole input to
+the cadence engine and to statistics. `purchases.list_id` carries no foreign key
+exactly so a pruned list cannot cascade into it; there is now a test asserting
+that, because it is an easy property to lose in a later migration.
+
+One asymmetry worth knowing: **the op log prunes on server time, tombstones on
+the client clock.** `ops.at` is the client's own clock and is deliberately never
+rewritten, so a phone with its date badly wrong would have its ops deleted the
+moment they landed if retention read it — `created_at` is the only honest answer
+to "how long have we had this". A tombstone is asking a different question ("how
+long since the user removed it"), so it gets the clock that answers it. Tested.
+
+Client: pruned once per open, in `ensureLoaded`, and written back only when
+something actually went. The meta map is re-serialised on every tap, so this was
+never about storage — it was a little more work per interaction for the rest of
+the install's life.
+
+Off by default in development (`PRUNE_ON_BOOT`), because this one deletes and a
+dev database left on a laptop for two months would lose its old tombstones at a
+startling moment.
+
 ## Decisions I did not take
 
-**1. Nothing calls `pruneTombstones`, and nothing prunes the `ops` table.** The
-function now works correctly; it just has no caller. Wiring it up needs one
-number from you: the retention window. It must match the op log's, or a client
-staler than the tombstones resurrects things. Replay-from-genesis currently works
-because the log is small. My inclination is **30 days**, matching the comment
-already in the schema, with the op-log prune added at the same time and never
-separately.
-
-**2. Statistics needs `users`, which is never populated.** "Who bought it" has
+**1. Statistics needs `users`, which is never populated.** "Who bought it" has
 nothing to read. The authenticated actor is already on every op and every
 purchase row, so the cheap version is to derive the roster from distinct actors
 rather than maintain a table. That is my inclination; the table exists and
 implies otherwise, so it is worth saying out loud before `/statistik` is built.
 
-**3. Suggestion dismissal is fully unwired** — table, migration, and a promise in
+**2. Suggestion dismissal is fully unwired** — table, migration, and a promise in
 the design doc, with zero reads or writes. It is a feature gap rather than a bug,
 but it is the kind that quietly stays unbuilt because everything still works.
 

@@ -1,5 +1,6 @@
 import { emptyState, type Id, type SyncState } from "@/lib/domain";
-import { applyOp, applyOps, type Op } from "@/lib/sync";
+import { retentionCutoff } from "@/lib/retention";
+import { applyOp, applyOps, pruneTombstones, type Op } from "@/lib/sync";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import {
   loadMeta,
@@ -293,6 +294,24 @@ export function createListStore(
           outbox.pending(),
         ]);
         if (savedState) state = savedState;
+        // Forget what is past recall, once per open.
+        //
+        // Tombstones exist only so a late op loses; past the window no phone can
+        // still be holding one that old. Left alone they never leave, and the
+        // meta map they keep alive is re-serialised on every single tap — so the
+        // cost is not storage, it is a little more work per interaction for the
+        // rest of this install's life. Same window as the server's prune, from
+        // the same constant, because a client pruning sooner than the server is
+        // how a stale op arrives to find nothing to lose against.
+        if (savedState) {
+          const pruned = pruneTombstones(state, retentionCutoff(new Date()));
+          // Written back only when something actually went, so an ordinary open
+          // does not pay for a full re-serialisation to change nothing.
+          if (Object.keys(pruned.meta).length !== Object.keys(state.meta).length) {
+            state = pruned;
+            await saveState(listId, state);
+          }
+        }
         if (savedMeta) {
           // State written by an older build may be missing facts this one cares
           // about: that build dropped op kinds it did not recognise, yet still
