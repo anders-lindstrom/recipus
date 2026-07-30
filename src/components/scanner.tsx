@@ -15,11 +15,26 @@ import { UiIcon } from "./ui-icon";
  * continuous session, not eight round trips through a modal.
  */
 
+/**
+ * What the last scan did, and how to take it back.
+ *
+ * Buy-mode scanning acts immediately — it adds the item and records the purchase
+ * with no dialog — so the only thing standing between a mis-scan and a wrong
+ * purchase is this. It belongs in the scanner rather than in a toast because the
+ * scanner stays open: you work through a basket, and a confirmation that covered
+ * the viewfinder or interrupted the session would defeat the point.
+ */
+export interface ScanOutcome {
+  text: string;
+  /** Absent when there is nothing to take back (an unknown code, say). */
+  undo?: () => void;
+}
+
 export interface ScannerProps {
   onScan: (ean: string) => void;
   onClose: () => void;
   /** Feedback for the last scan: what happened, in Swedish. */
-  lastResult?: string | null;
+  lastResult?: ScanOutcome | null;
 }
 
 type DetectFn = (video: HTMLVideoElement) => Promise<string[]>;
@@ -216,13 +231,23 @@ export function Scanner({ onScan, onClose, lastResult }: ScannerProps) {
         )}
 
         {lastResult && (
-          <p
+          <div
             aria-live="polite"
             className="mb-3 flex items-center gap-2 rounded-control bg-white/10 px-3 py-2.5 text-body-sm font-semibold"
           >
             <UiIcon name="check" size={16} className="flex-none" />
-            {lastResult}
-          </p>
+            <span className="flex-1">{lastResult.text}</span>
+            {lastResult.undo && (
+              <button
+                type="button"
+                onClick={lastResult.undo}
+                className="flex flex-none items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-caption font-semibold"
+              >
+                <UiIcon name="undo" size={13} />
+                Ångra
+              </button>
+            )}
+          </div>
         )}
 
         {needsManual ? (

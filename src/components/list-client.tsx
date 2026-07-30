@@ -1,17 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useList } from "@/lib/client/use-list";
 import { useMode } from "@/lib/client/use-mode";
+import { nextOpTimestamp } from "@/lib/client/op-clock";
 import type { Op } from "@/lib/sync";
-import type { Amount, Id, List } from "@/lib/domain";
+import { entryId, type Amount, type Id, type List } from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import { parseAmount } from "@/lib/units";
 import { normalizeName, slugify } from "@/lib/utils";
 import { ListScreen } from "./list-screen";
 import { ListSwitcher } from "./list-switcher";
-import { Scanner } from "./scanner";
+import { Scanner, type ScanOutcome } from "./scanner";
 
 /**
  * Wiring the list screen to the sync layer.
@@ -74,7 +75,7 @@ export interface ListClientProps {
 
 export function ListClient({ snapshot, lists, actor, members }: ListClientProps) {
   const [scanning, setScanning] = useState(false);
-  const [scanResult, setScanResult] = useState<string | null>(null);
+  const [scanResult, setScanResult] = useState<ScanOutcome | null>(null);
   const [switching, setSwitching] = useState(false);
 
   // Read once, on first render, so the offline path has a list name and
@@ -135,15 +136,23 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     return out;
   }, [state.recipeAdditions, recipeTitles]);
 
+  /**
+   * Strictly increasing per session — see `nextOpTimestamp`. Two ops sharing a
+   * timestamp cannot be ordered by last-write-wins, so the second silently loses.
+   */
+  const lastAt = useRef<string | null>(null);
+
   /** Returns the op's `clientOpId`, which undo needs to name what it retracts. */
   const dispatch = useCallback(
     (partial: OpDraft): string => {
       const clientOpId = crypto.randomUUID();
+      const at = nextOpTimestamp(lastAt.current, new Date());
+      lastAt.current = at;
       const op = {
         ...partial,
         clientOpId,
         actor: effectiveActor ?? "okand",
-        at: new Date().toISOString(),
+        at,
       } as Op;
       void dispatchOp(op).catch(() =>
         // A lapsed session is reported through status.signedOut, not thrown —
@@ -225,31 +234,85 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   };
 
   async function handleScan(ean: string) {
+    // `listId` is guaranteed by the guard above, but this function is hoisted
+    // out of that narrowing. The old code interpolated the id by hand, which
+    // accepted null and would have produced a "null:banan" key; deriving it with
+    // `entryId` closes the last place in the codebase that built an entry id
+    // itself, at the cost of this one honest guard.
+    if (!listId) return;
     try {
       const res = await fetch(`/api/barcode/${encodeURIComponent(ean)}`);
       if (!res.ok) {
-        setScanResult(`Okänd streckkod ${ean}`);
+        setScanResult({ text: `Okänd streckkod ${ean}` });
         return;
       }
       const { catalogItemId, productName } = await res.json();
       if (!catalogItemId) {
-        setScanResult(productName ? `${productName} — välj vara` : "Välj vara");
+        setScanResult({
+          text: productName ? `${productName} — välj vara` : "Välj vara",
+        });
         return;
       }
 
       const item = state.catalog[catalogItemId];
-      const entry = state.entries[`${listId}:${catalogItemId}`];
-      // Bidirectional, acting on the list you currently have open: already on
-      // it means you just picked it up, otherwise you just ran out.
-      if (entry && entry.removedAt === null) {
-        actions.removeItem(catalogItemId, true);
-        setScanResult(`${item?.name ?? "Varan"} avbockad`);
-      } else {
-        actions.addItem(catalogItemId);
-        setScanResult(`${item?.name ?? "Varan"} tillagd`);
+      const name = item?.name ?? "Varan";
+      const entry = state.entries[entryId(listId, catalogItemId)];
+      const onList = Boolean(entry && entry.removedAt === null);
+
+      /**
+       * Bidirectional, and mode-aware.
+       *
+       * Already on the list means you just picked it up; otherwise you have just
+       * run out — that part is unchanged. What the mode decides is whether a
+       * tick-off counts as a purchase, exactly as it does for a tap, so scanning
+       * cannot be a back door that writes history while planning.
+       *
+       * In buy mode an unplanned pickup is added AND bought in one gesture: the
+       * item is in your trolley, so it does not belong on the list, but it does
+       * belong in the history. No dialog — the scanner is a continuous session
+       * and fifteen confirmations would ruin it — so the undo lives in the
+       * result line instead, and retracts the purchase as well as the entry.
+       */
+      if (onList) {
+        const bought = mode === "buy";
+        const clientOpId = actions.removeItem(catalogItemId, bought);
+        setScanResult({
+          text: bought ? `${name} köpt` : `${name} avbockad`,
+          undo: () => {
+            actions.addItem(catalogItemId, undefined, clientOpId);
+            setScanResult({ text: `${name} tillbaka på listan` });
+          },
+        });
+        return;
       }
+
+      if (mode === "buy") {
+        actions.addItem(catalogItemId);
+        const clientOpId = actions.removeItem(catalogItemId, true);
+        setScanResult({
+          text: `${name} tillagd och köpt`,
+          undo: () => {
+            // Two halves: put it back so the purchase can be retracted against
+            // the op that wrote it, then take it off again WITHOUT recording a
+            // purchase — landing back where you were before the scan.
+            actions.addItem(catalogItemId, undefined, clientOpId);
+            actions.removeItem(catalogItemId, false);
+            setScanResult({ text: `${name} ångrad` });
+          },
+        });
+        return;
+      }
+
+      actions.addItem(catalogItemId);
+      setScanResult({
+        text: `${name} tillagd`,
+        undo: () => {
+          actions.removeItem(catalogItemId, false);
+          setScanResult({ text: `${name} borttagen igen` });
+        },
+      });
     } catch {
-      setScanResult("Kunde inte slå upp streckkoden");
+      setScanResult({ text: "Kunde inte slå upp streckkoden" });
     }
   }
 
