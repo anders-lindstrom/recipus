@@ -14,6 +14,7 @@ import {
 } from "@/db/schema";
 import { entryId, manualContributionId } from "@/lib/domain";
 import type { Op } from "@/lib/sync";
+import { SEED_ACTOR, upsertSeedCatalogItem } from "@/db/seed";
 import { applyOpToDatabase } from "./apply-op";
 import { loadListSnapshot } from "./list-data";
 
@@ -565,5 +566,125 @@ describe("snapshot meta for removed records", () => {
     // Harmless while nothing prunes client-side, and a resurrection bug the
     // moment anything does — the same shape already fixed once for writeEntry.
     expect(clock.deleted).toBe(true);
+  });
+});
+
+describe("seed corrections versus household edits", () => {
+  /**
+   * The seed runs on every server boot in production (src/instrumentation.ts)
+   * and overwrites name, name_norm, category_id and icon_ref — exactly the
+   * columns the item registry makes editable. So without a guard, every deploy
+   * and every container restart silently reverts every rename and re-filing the
+   * household has done, in production only, with no error anywhere.
+   *
+   * Tested rather than reasoned about precisely because of that failure profile:
+   * it cannot be noticed in development, where the seed and the edit are rarely
+   * more than minutes apart.
+   */
+  /**
+   * One row per test, not one shared row.
+   *
+   * These tests deliberately leave rows in opposite states — one seed-owned, one
+   * human-edited — so sharing a row makes each test's outcome depend on the
+   * previous one's. That is exactly the coupling the fixture comment above warns
+   * about for lists.
+   */
+  function seedFixture(tag: string) {
+    const name = `Test Seed Vara ${tag} ${RUN}`;
+    const id = `test-seed-vara-${tag}-${RUN}`;
+    return {
+      id,
+      seeded: { name, categorySlug: "frukt-gront", iconRef: "1F34E" },
+    };
+  }
+
+  it("corrects a row nobody has touched", async () => {
+    const { id: seededId, seeded } = seedFixture("untouched");
+    await upsertSeedCatalogItem(seeded);
+    extraItems.push(seededId);
+
+    // A later deploy re-files it and gives it a better icon. NOT a rename:
+    // the id is slugify(name), so changing the name in seed data produces a
+    // NEW row rather than a conflict — which means the `name`/`name_norm` in the
+    // upsert's `set:` can only ever differ by case or diacritics.
+    await upsertSeedCatalogItem({
+      ...seeded,
+      categorySlug: "mejeri-agg",
+      iconRef: "1F95B",
+    });
+
+    const [row] = await db
+      .select()
+      .from(catalogItems)
+      .where(eq(catalogItems.id, seededId));
+    expect(row.categoryId).toBe("mejeri-agg");
+    expect(row.iconRef).toBe("1F95B");
+    expect(row.updatedBy).toBe(SEED_ACTOR);
+  });
+
+  it("leaves a row the household has edited alone, forever", async () => {
+    const { id: seededId, seeded } = seedFixture("edited");
+    await upsertSeedCatalogItem(seeded);
+    extraItems.push(seededId);
+
+    // The household re-files it. applyOpToDatabase stamps the AUTHENTICATED
+    // actor, which is what makes updated_by trustworthy as the discriminator.
+    // The timestamp has to POSTDATE the seed's insert, which stamps
+    // `updated_at = now()`. An edit dated earlier loses the LWW comparison and
+    // is silently dropped — which is correct behaviour, and the reason a fixed
+    // past date made this test fail in a way that looked like the guard being
+    // broken. In production this is a non-issue: real edits happen after boot.
+    await applyOpToDatabase(
+      op("update_catalog_item", "2099-01-01T00:00:00.000Z", {
+        itemId: seededId,
+        patch: { name: "Vår egen benämning", categoryId: "skafferi" },
+      }),
+      ACTOR,
+    );
+
+    // Two more deploys try to correct it.
+    await upsertSeedCatalogItem({ ...seeded, categorySlug: "dryck" });
+    await upsertSeedCatalogItem({ ...seeded, iconRef: "1F37A" });
+
+    const [row] = await db
+      .select()
+      .from(catalogItems)
+      .where(eq(catalogItems.id, seededId));
+    expect(row.name).toBe("Vår egen benämning");
+    expect(row.categoryId).toBe("skafferi");
+    expect(row.iconRef).toBe(seeded.iconRef);
+    expect(row.updatedBy).toBe(ACTOR);
+  });
+
+  it("still corrects an item that has only been bought, never edited", async () => {
+    const { id: seededId, seeded } = seedFixture("bought");
+    await upsertSeedCatalogItem(seeded);
+    extraItems.push(seededId);
+
+    await applyOpToDatabase(
+      op("add_item", "2026-07-02T00:00:00.000Z", { listId, catalogItemId: seededId }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-07-02T01:00:00.000Z", {
+        listId,
+        catalogItemId: seededId,
+        bought: true,
+      }),
+      ACTOR,
+    );
+
+    await upsertSeedCatalogItem({ ...seeded, categorySlug: "dryck" });
+
+    const [row] = await db
+      .select()
+      .from(catalogItems)
+      .where(eq(catalogItems.id, seededId));
+    // Buying bumps use_count through a direct UPDATE that never touches
+    // updated_by. That is load-bearing, not incidental: if a purchase stamped
+    // the actor, everything anyone had ever bought would freeze out of future
+    // seed corrections.
+    expect(row.categoryId).toBe("dryck");
+    expect(row.useCount).toBeGreaterThan(0);
   });
 });

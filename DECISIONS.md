@@ -76,7 +76,21 @@ add-nullable, backfill, tighten. **Check generated migrations against real data
 before trusting them**; this one failed loudly rather than quietly, but only
 because I ran it.
 
-**The seed reverts catalog edits in production, silently.** `seed.ts` upserts
+**The seed-survival guard is now in** (`setWhere` on `updated_by`), with three
+tests, because this is the worst possible failure profile: silent, production-only,
+and unnoticeable in development where a seed and an edit are minutes apart. Two
+things fell out of testing it that are worth knowing:
+
+- **The seed cannot rename an item at all.** Ids are `slugify(name)`, so changing
+  a name in seed data creates a NEW row instead of conflicting. The `name` and
+  `name_norm` in the upsert's `set:` can therefore only ever differ by case or
+  diacritics — very nearly dead code.
+- **A seeded row's `updated_at` is its insert time**, so an op timestamped earlier
+  loses and is dropped. Correct behaviour, and a non-issue in production since
+  real edits postdate boot — but it made a test fail in a way that looked exactly
+  like the guard being broken.
+
+**Superseded — the seed used to revert catalog edits in production, silently.** `seed.ts` upserts
 every item on every boot, overwriting name, category and icon — the exact columns
 the registry makes editable — and `instrumentation.ts` runs it in production.
 Latent only because nothing dispatches `update_catalog_item` from the UI yet. The
