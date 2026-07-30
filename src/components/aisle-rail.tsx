@@ -222,10 +222,19 @@ export function AisleRail({ aisles }: AisleRailProps) {
           </div>
 
           {/* Says "there is more this way" — the one thing a hidden scrollbar
-              cannot. Without it people concluded the strip did not scroll. */}
+              cannot. Without it people concluded the strip did not scroll.
+
+              Fades into `--mode-wash` rather than a fixed colour: buy mode paints
+              the header terracotta, and a fade hardcoded to the page colour
+              smeared a pale streak across the tint. The rail does not need to
+              know modes exist — it just fades into its own background. */}
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-surface to-transparent"
+            className="pointer-events-none absolute inset-y-0 right-0 w-8"
+            style={{
+              backgroundImage:
+                "linear-gradient(to left, var(--mode-wash), transparent)",
+            }}
           />
         </div>
 

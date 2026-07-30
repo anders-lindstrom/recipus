@@ -81,6 +81,11 @@ export function opsRoutes() {
           const { seq } = await applyOpToDatabase(parsed.data as Op, actor);
           results.push({ clientOpId: raw.clientOpId, seq });
         } catch (err) {
+          // Logged server-side as well as returned. The client only ever saw a
+          // one-line message, so the cause of a refused op — which is now a
+          // thing the client counts and eventually gives up on — was invisible
+          // to whoever had to diagnose it.
+          console.error("[api/ops] op failed", raw.kind, raw.clientOpId, err);
           results.push({
             clientOpId: raw.clientOpId,
             error: err instanceof Error ? err.message : "Unknown error",

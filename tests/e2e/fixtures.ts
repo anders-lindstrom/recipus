@@ -68,6 +68,20 @@ test.afterAll(async () => {
 export { expect };
 
 /**
+ * How many purchases this list has recorded.
+ *
+ * The mode's entire justification is that a plan-time tap records nothing and a
+ * shop-time tap records exactly one, and neither is visible on screen — the tile
+ * leaves the zone either way. So the only honest assertion is against the table.
+ */
+export async function purchaseCount(listId: string): Promise<number> {
+  const [{ count }] = await sql<[{ count: string }]>`
+    select count(*)::text as count from purchases where list_id = ${listId}
+  `;
+  return Number(count);
+}
+
+/**
  * Locate a tile by its EXACT name.
  *
  * `:has-text()` is a substring match, so "tomat" also matches

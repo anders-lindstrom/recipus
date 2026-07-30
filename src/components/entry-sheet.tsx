@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { Amount } from "@/lib/domain";
+import type { ShopMode } from "@/lib/client/use-mode";
 import type { EntryView } from "@/lib/services/entries";
 import { formatAmount, parseAmount } from "@/lib/units";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,14 @@ import { UiIcon } from "./ui-icon";
 export interface EntrySheetProps {
   itemName: string;
   view: EntryView;
+  /**
+   * Which mode the list is in. Each mode's sheet offers the OTHER mode's action,
+   * so you are never more than a long-press from the right answer and neither
+   * mode can trap you into recording the wrong thing.
+   */
+  mode: ShopMode;
+  /** Records a purchase without the tap having been a buy. Plan mode only. */
+  onMarkBought: () => void;
   onClose: () => void;
   /** Sets the manual amount. Null clears it, leaving the item on the list. */
   onSetAmount: (amount: Amount | null) => void;
@@ -46,6 +55,8 @@ function sourceLabel(c: EntryView["contributions"][number]): string {
 export function EntrySheet({
   itemName,
   view,
+  mode,
+  onMarkBought,
   onClose,
   onSetAmount,
   onRemoveRecipe,
@@ -209,12 +220,21 @@ export function EntrySheet({
               </SheetButton>
             ))}
 
+            {mode === "plan" && (
+              <SheetButton
+                onClick={onMarkBought}
+                icon={<UiIcon name="check" size={16} />}
+              >
+                Markera som köpt
+              </SheetButton>
+            )}
+
             <SheetButton
               tone="danger"
               icon={<UiIcon name="remove" size={16} />}
               onClick={onRemoveWithoutBuying}
             >
-              Ta bort, köpte inte
+              {mode === "buy" ? "Köpte inte" : "Ta bort"}
             </SheetButton>
           </SheetActions>
         </>

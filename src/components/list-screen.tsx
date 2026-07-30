@@ -19,6 +19,8 @@ import {
   type EntryView,
   type RecipeAdditionInfo,
 } from "@/lib/services/entries";
+import type { ShopMode } from "@/lib/client/use-mode";
+import { cn } from "@/lib/utils";
 import { useSustained } from "@/lib/client/use-sustained";
 import { AddBar } from "./add-bar";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
@@ -87,6 +89,9 @@ export interface ListScreenProps {
   members: Array<{ id: string; initials: string; color: string }>;
   sync: { online: boolean; pendingCount: number; signedOut: boolean };
   onReauthenticate?: () => void;
+  /** Planning at home vs shopping in the shop. See lib/client/use-mode.ts. */
+  mode: ShopMode;
+  onModeChange: (mode: ShopMode) => void;
   actions: ListScreenActions;
 }
 
@@ -101,6 +106,8 @@ export function ListScreen({
   members,
   sync,
   onReauthenticate,
+  mode,
+  onModeChange,
   actions,
 }: ListScreenProps) {
   const [openEntry, setOpenEntry] = useState<Id | null>(null);
@@ -109,6 +116,8 @@ export function ListScreen({
     name: string;
     /** The removal to retract. Without it undo re-adds but leaves the purchase. */
     clientOpId: string;
+    /** Drives the label: only a buy is a "köp" to undo. */
+    bought: boolean;
   } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -160,9 +169,26 @@ export function ListScreen({
    * heading — in normal flow, where it cannot cover a control.
    */
   function tapOnList(item: CatalogItem) {
-    const clientOpId = actions.removeItem(item.id, true);
+    // The one gesture whose meaning depends on the mode, deliberately the only
+    // one. At the kitchen table you are editing an intention and nothing should
+    // be recorded; in a shop you are recording an event. That asymmetry is the
+    // whole reason the mode exists, and it is what makes the purchase history
+    // trustworthy enough to build statistics and fridge inference on.
+    remove(item.id, item.name, mode === "buy");
+  }
+
+  /**
+   * The one place an item leaves the list, whichever gesture asked for it.
+   *
+   * The tap uses the mode; the entry sheet deliberately offers the OTHER mode's
+   * answer ("Markera som köpt" while planning, "Köpte inte" while shopping), so
+   * neither mode can trap you into recording the wrong thing. Routing all three
+   * through here is what keeps the undo bookkeeping identical for all of them.
+   */
+  function remove(id: Id, name: string, bought: boolean) {
+    const clientOpId = actions.removeItem(id, bought);
     if (undoTimer.current) clearTimeout(undoTimer.current);
-    setUndoable({ id: item.id, name: item.name, clientOpId });
+    setUndoable({ id, name, clientOpId, bought });
     undoTimer.current = setTimeout(() => setUndoable(null), UNDO_WINDOW_MS);
   }
 
@@ -235,8 +261,27 @@ export function ListScreen({
       {/* Opaque, not frosted. A translucent bar let high-contrast tile labels
           ghost through it in dark mode, and `backdrop-filter` on a bar pinned
           over a 341-tile scroller costs a GPU repaint every frame on exactly
-          the hardware this has to stay smooth on. */}
-      <header className="safe-top sticky top-0 z-30 border-b border-line bg-surface">
+          the hardware this has to stay smooth on.
+
+          Buy mode washes this whole block terracotta and thickens the bottom
+          border. Nothing below it changes — in particular `ItemTile` never does,
+          which is what structurally keeps the mode from colliding with
+          green-means-on-the-list. `--mode-wash` tells the aisle rail's edge fade
+          what it is fading into. */}
+      <header
+        className={cn(
+          "safe-top sticky top-0 z-30 border-b transition-colors duration-200",
+          mode === "buy"
+            ? // The accent is an inset shadow, not a thicker border, because a
+              // border changes the header's HEIGHT — and the aisle rail measures
+              // that height at runtime to place its jump offsets and its
+              // active-aisle line. Measured: a 2px border made the header 94px in
+              // buy mode against 93px in plan. An inset shadow costs no layout, so
+              // both modes are exactly one height.
+              "border-mode-buy-line bg-mode-buy-wash shadow-[inset_0_-2px_0_var(--color-mode-buy-line)] [--mode-wash:var(--color-mode-buy-wash)]"
+            : "border-line bg-surface",
+        )}
+      >
         <div className="flex h-12 items-center gap-1 px-3">
           <button
             type="button"
@@ -248,6 +293,24 @@ export function ListScreen({
           </button>
 
           <div className="flex-1" />
+
+          <button
+            type="button"
+            onClick={() => onModeChange(mode === "buy" ? "plan" : "buy")}
+            aria-label={
+              mode === "buy" ? "Byt till planeringsläge" : "Byt till handla-läge"
+            }
+            className={cn(
+              "mr-1 flex h-8 flex-none items-center gap-1.5 rounded-full px-2.5",
+              "text-caption font-semibold transition-colors duration-150",
+              mode === "buy"
+                ? "bg-mode-buy-line text-white"
+                : "border border-line text-ink-soft",
+            )}
+          >
+            <UiIcon name={mode === "buy" ? "scan" : "edit"} size={14} />
+            {mode === "buy" ? "Handlar" : "Planerar"}
+          </button>
 
           {members.map((m) => (
             <span
@@ -278,9 +341,14 @@ export function ListScreen({
             "Something to say" excludes an op that is merely in flight — see
             `useSustained`. Being offline or signed out shows at once, because
             those are states you stay in rather than blips: the banner appears
-            once and the list settles under it. */}
+            once and the list settles under it.
+
+            It is a raised card with a warn accent rather than the warn-tinted
+            strip it used to be: measured, `warn-tint` sits only ΔL* 1.60 from
+            the buy-mode wash, so on an orange header the strip all but
+            disappeared exactly when it had something to say. */}
         {(sync.signedOut || !sync.online || syncIsSlow) && (
-          <div className="flex items-center gap-2 border-t border-line bg-warn-tint px-3 py-1.5 text-caption text-warn">
+          <div className="mx-2 mb-2 flex items-center gap-2 rounded-control border-l-[3px] border-warn bg-surface-raised px-2.5 py-1.5 text-caption text-warn shadow-sm">
             {sync.signedOut ? (
               <>
                 <UiIcon name="warning" size={14} className="flex-none" />
@@ -338,7 +406,7 @@ export function ListScreen({
                 className="flex items-center gap-1 rounded-full bg-brand-tint px-2.5 py-1 text-caption font-semibold text-brand-ink normal-case"
               >
                 <UiIcon name="undo" size={13} />
-                Ångra {undoable.name}
+                {undoable.bought ? "Ångra köp" : "Ångra"} {undoable.name}
               </button>
             )
           }
@@ -430,6 +498,15 @@ export function ListScreen({
         <EntrySheet
           itemName={openItem.name}
           view={openView}
+          mode={mode}
+          onMarkBought={() => {
+            // Identical to what a buy-mode tap does — marking it bought means you
+            // have it, so it leaves the list. Reusing that op rather than adding a
+            // purchase-only one keeps this shippable before any new op kind is on
+            // every device.
+            remove(openItem.id, openItem.name, true);
+            setOpenEntry(null);
+          }}
           onClose={() => setOpenEntry(null)}
           onSetAmount={(amount) => {
             actions.setAmount(openItem.id, amount);
@@ -440,7 +517,7 @@ export function ListScreen({
             setOpenEntry(null);
           }}
           onRemoveWithoutBuying={() => {
-            actions.removeItem(openItem.id, false);
+            remove(openItem.id, openItem.name, false);
             setOpenEntry(null);
           }}
         />

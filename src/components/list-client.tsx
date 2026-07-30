@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useList } from "@/lib/client/use-list";
+import { useMode } from "@/lib/client/use-mode";
 import type { Op } from "@/lib/sync";
 import type { Amount, Id, List } from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
@@ -154,6 +155,10 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     [effectiveActor, dispatchOp],
   );
 
+  // Device-local, never synced and never an op: one of you is in the shop while
+  // the other plans at home, so a shared mode would make the planner's taps
+  // write purchases. See lib/client/use-mode.ts for the full argument.
+  const { mode, setMode, touch } = useMode();
 
   // Nothing cached and no server: the very first launch has to happen with a
   // connection. Say so plainly instead of rendering an empty list that looks
@@ -180,8 +185,12 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
         if (amount) dispatch({ kind: "set_amount", listId, catalogItemId, amount });
       }
     },
-    removeItem: (catalogItemId: Id, bought: boolean) =>
-      dispatch({ kind: "remove_item", listId, catalogItemId, bought }),
+    removeItem: (catalogItemId: Id, bought: boolean) => {
+      // Buy mode's idle clock measures shopping, not staring at the screen, so
+      // it is a removal that counts as activity — not a render or a scroll.
+      if (bought) touch();
+      return dispatch({ kind: "remove_item", listId, catalogItemId, bought });
+    },
     setAmount: (catalogItemId: Id, amount: Amount | null) =>
       dispatch({ kind: "set_amount", listId, catalogItemId, amount }),
     createItem: (name: string, amountText: string) => {
@@ -255,6 +264,8 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
         recipeAdditions={recipeAdditionInfo}
         suggestions={snapshot?.suggestions ?? []}
         members={members}
+        mode={mode}
+        onModeChange={setMode}
         sync={{
           online: status.online,
           pendingCount: status.pendingCount,

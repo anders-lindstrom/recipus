@@ -48,6 +48,27 @@
   --color-danger: #a12a24;
   --color-danger-tint: #f8e4e2;
 
+  /*
+   * Buy mode.
+   *
+   * A third colour channel, because the two obvious choices were both already
+   * spoken for: green means "this item is on your list" and nothing else, and
+   * ochre (`warn`) carries suggestions and the offline banner. Terracotta keeps
+   * the warm "act now" reading while separating from `warn` by hue.
+   *
+   * It separates by hue and NOT by lightness — measured, `--color-mode-buy-wash`
+   * sits ΔL* 1.60 from `--color-warn-tint` in light mode. So nothing tinted with
+   * `warn` may sit on this wash and expect to be legible; the sync banner is a
+   * raised card with a warn accent for exactly that reason.
+   *
+   * Plan mode has no tokens on purpose. It is the resting state, so it is
+   * untinted, and absence-versus-presence is a stronger signal than two colours
+   * would be — while keeping the loud one on the mode whose taps write history.
+   */
+  --color-mode-buy-wash: #fae4d8;
+  --color-mode-buy-ink: #9c4318;
+  --color-mode-buy-line: #c8622e;
+
   /* One radius system. Interactive pills are the only full-round shape. */
   --radius-control: 10px;
   --radius-tile: 14px;
@@ -133,7 +154,23 @@
     --color-warn-tint: #322a15;
     --color-danger: #ec8981;
     --color-danger-tint: #3a1f1d;
+
+    --color-mode-buy-wash: #4a2a14;
+    --color-mode-buy-ink: #f0a06a;
+    --color-mode-buy-line: #e08a4e;
   }
+}
+
+/*
+ * The ground the pinned chrome is currently painted in.
+ *
+ * The aisle rail's right-edge fade has to blend into whatever is behind it, and
+ * in buy mode that is the terracotta wash rather than the page. Reading it from a
+ * variable set on <header> keeps the rail from having to know anything about
+ * modes — it just fades into its own background, whatever that is.
+ */
+:root {
+  --mode-wash: var(--color-surface);
 }
 
 html,
