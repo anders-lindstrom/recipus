@@ -67,6 +67,24 @@ was marked deleted, live ones included. The removed-addition test still passed �
 for the wrong reason. `tsc` caught it, and there is now an explicit assertion that
 a live addition arrives with an undeleted clock.
 
+**All three of your answers are built.** Recipe removal now asks whether to take
+its ingredients with it (checklist, everything checked by default, `bought:false`
+throughout since dropping a recipe is not a shop). Scanning is mode-aware, with an
+unplanned buy-mode pickup added and bought in one gesture and undo in the
+scanner's own result line. And the fridge guess pre-excludes small amounts of
+things with a known cadence, badged with the reason, behind a per-device flag whose
+"off" keeps the badge and drops only the presumption.
+
+**One bug found while building the scan undo, with a much wider blast radius than
+the feature.** `wins()` compares timestamps and then falls back to comparing
+actors — so two ops from the SAME person in the SAME millisecond tie, and the tie
+resolves as "the newcomer loses". Right for a genuine two-device conflict, silently
+wrong for two ops one device dispatched together on purpose. Undo of a buy-mode
+scan does exactly that (re-add so the purchase can be retracted, then remove
+again), and the item was left on the list. Two fast taps on one tile are the same
+shape. Client op timestamps are now strictly increasing per session, via a pure
+`nextOpTimestamp` with five tests.
+
 ## Gotchas worth your attention
 
 **The generated migration would have broken the deploy.** `drizzle-kit` emitted
@@ -128,6 +146,11 @@ amount hard-deletes its LWW clocks, after which a later `set_amount` wins
 regardless of timestamp and two devices diverge permanently.
 
 ## Where to pick up
+
+Priority flags and modifiers are next on the feature side — both are specified in
+full, both are one op and one clock each. Before either, the per-field clock fix
+below is still the prerequisite for the registry.
+
 
 Build order and rationale are in §4 of the spec. Next is **per-field clocks on
 `update_catalog_item`** — reproduced bug, a rename at T5 plus a concurrent re-file
