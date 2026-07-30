@@ -20,6 +20,7 @@ import {
   type EntryView,
   type RecipeAdditionInfo,
 } from "@/lib/services/entries";
+import { useSustained } from "@/lib/client/use-sustained";
 import { AddBar, type AddBarHandle } from "./add-bar";
 import { AisleRail } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
@@ -87,6 +88,13 @@ export function ListScreen({
 }: ListScreenProps) {
   const [openEntry, setOpenEntry] = useState<Id | null>(null);
   const addBar = useRef<AddBarHandle>(null);
+
+  // Ops normally drain in tens of milliseconds. Only say anything once one has
+  // been waiting long enough that the delay is the story.
+  const syncIsSlow = useSustained(sync.pendingCount > 0, {
+    delayMs: 1200,
+    dwellMs: 900,
+  });
 
   const byId = useMemo(
     () => new Map(catalog.map((c) => [c.id, c])),
@@ -220,8 +228,13 @@ export function ListScreen({
         </div>
 
         {/* Only ever appears when there is something to say. Never a modal,
-            never a spinner over the list. */}
-        {(sync.signedOut || !sync.online || sync.pendingCount > 0) && (
+            never a spinner over the list.
+
+            "Something to say" excludes an op that is merely in flight — see
+            `useSustained`. Being offline or signed out shows at once, because
+            those are states you stay in rather than blips: the banner appears
+            once and the list settles under it. */}
+        {(sync.signedOut || !sync.online || syncIsSlow) && (
           <div className="flex items-center gap-2 border-t border-line bg-warn-tint px-3 py-1.5 text-caption text-warn">
             {sync.signedOut ? (
               <>
@@ -245,7 +258,9 @@ export function ListScreen({
                 <span>
                   {sync.online ? "Synkar" : "Offline"}
                   {sync.pendingCount > 0 &&
-                    ` · ${sync.pendingCount} ändringar väntar`}
+                    ` · ${sync.pendingCount} ${
+                      sync.pendingCount === 1 ? "ändring" : "ändringar"
+                    } väntar`}
                 </span>
               </>
             )}

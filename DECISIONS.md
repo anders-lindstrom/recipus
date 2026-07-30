@@ -378,9 +378,32 @@ Sizes skew larger than before; item names went 11px → 13px.
   meant delaying the state change. A tap that waits is a tap that fails in a
   shop; the toast already confirms.
 
-## Three copy bugs fixed on the way past
+## The sync banner was flashing on every tap
 
-"Lägg till 1 **varor**" now agrees. Dash placeholders for a missing amount were
+Reported as "it makes the whole thing jump up and down very quick", and measured
+rather than guessed: every tap queued an op, so `pendingCount` went 0 → 1 → 0 as
+the outbox drained, and the banner that drove appeared at +153ms and vanished at
++190ms. The sticky header grew 49px → 78px and back **inside 37ms**, shoving the
+entire list down 29px and up again. The core loop is tapping tiles, so it
+happened on every single press.
+
+The banner's job is to say sync is **stuck**, not that it is happening — a write
+that lands in 40ms is not news. `useSustained` now gates it: nothing appears
+until ops have been pending for 1.2s, and once shown it stays 900ms so a write
+that drains just after the threshold cannot reintroduce the same flash.
+
+Offline and signed-out still show immediately. Those are states you stay in
+rather than blips, so the banner appears once and the list settles under it —
+that is a single meaningful transition, not a jitter.
+
+Verified both directions: the header now holds 49px with zero transitions across
+a full tap, and with `/api/ops` hanging the banner appears at ~1.2s and stays.
+The offline-banner end-to-end test still passes untouched.
+
+## Four copy bugs fixed on the way past
+
+"Lägg till 1 **varor**" and "1 **ändringar** väntar" now agree. Dash
+placeholders for a missing amount were
 removed — an ingredient with no quantity ("salt efter smak") renders an empty
 column, because a dash looked like a parsed value. And the entry sheet's two
 foot buttons were equal-weight side by side, separated by a hairline, which is
