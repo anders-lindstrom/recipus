@@ -22,6 +22,23 @@ waiting on him except the two items at the end of this section.
 6. **Suggestion dismissal is household-wide**, and that is wanted rather than
    tolerated: dismissing silences the suggestion for both of you.
 
+## What got built
+
+`move_item` (fixed and reachable), retention, suggestion dismissal, and **the
+item registry end to end** — schema, the five ops, server persistence, snapshot
+hydration, the matcher's alias support, and `/varor` itself with its review
+queue, split, merge and blocked-delete.
+
+`525` unit tests, `14` Playwright flows, `tsc` / lint / `build` clean.
+
+Build-order steps 9 and 10 are done apart from the **scan path**, which is the
+one piece of the registry still missing: `handleScan` is still a bare `fetch`, so
+an unknown barcode scanned offline is still dropped rather than queued. That is
+the thing that turns a dropped scan into a lost purchase in buy mode, and it is
+the natural next task — everything it needs (`create_product`, `link_barcode`,
+`autoMapProductName` at 0.8, the review queue to catch what does not auto-map)
+now exists.
+
 ## Gotchas found while building, worth knowing
 
 **`pruneTombstones` would have eaten the registry.** It rebuilt its result from
@@ -48,6 +65,17 @@ independent declarations of one shape and nothing made them agree; a drift 400s
 the op silently rather than failing to compile. There is now a test, but it
 covers `move_item` and the registry ops only — the other kinds are still
 unguarded.
+
+**The registry nearly shipped invisible, twice.** Both were the same shape: a
+function that rebuilds a structure from scratch and populates it field by field,
+so a field added later is silently absent. First `pruneTombstones` (fixed
+structurally), then `applySnapshot` in the client store — the server had started
+sending products, aliases and barcodes and the store simply did not read them, so
+`/varor` would have rendered empty after every hydrate, indistinguishable from a
+household that had never scanned anything. That one cannot be fixed structurally,
+because a snapshot and a SyncState are genuinely different shapes, so it has a
+test. **Worth asking of any new map: what rebuilds this, and does it name every
+field?**
 
 ## Still needs Anders
 
