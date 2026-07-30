@@ -29,8 +29,27 @@ export function opsRoutes() {
       path: "/",
       tags: ["ops"],
       description:
-        "Apply a batch of ops, strictly in the order given. Idempotent per clientOpId — a retried op returns its original seq rather than re-applying. Partial success is normal: one op failing (e.g. a stale reference) does not abort the rest of the batch, and the caller should check each result individually.",
-      request: { body: jsonBody(z.object({ ops: opSchema.array() })) },
+        "Apply a batch of ops, strictly in the order given. Idempotent per clientOpId — a retried op returns its original seq rather than re-applying. Partial success is normal: one op failing (e.g. a stale reference, or a kind this server does not know) does not abort the rest of the batch, and the caller should check each result individually.",
+      // Loose on the envelope, strict per op.
+      //
+      // This used to validate `opSchema.array()`, which rejected the WHOLE body
+      // if any single op failed to parse. A client running a newer build than
+      // the server — an image rollback is enough — therefore had its entire
+      // outbox 400'd, acked nothing, and re-posted the same batch forever. The
+      // route already documents partial success as normal; validating the batch
+      // as a unit meant that promise could never be kept.
+      //
+      // `clientOpId` and `kind` are still required, because a result has to name
+      // the op it answers for. Everything else is checked op by op below.
+      request: {
+        body: jsonBody(
+          z.object({
+            ops: z
+              .looseObject({ clientOpId: z.string(), kind: z.string() })
+              .array(),
+          }),
+        ),
+      },
       responses: {
         200: jsonRes(z.object({ results: opResultSchema.array() }), "Per-op results"),
       },
@@ -44,13 +63,26 @@ export function opsRoutes() {
       // adds it to a list in the same flush relies on the create committing
       // before the add is attempted (list_entries.catalog_item_id is a real
       // FK). Running the batch concurrently would let that race either way.
-      for (const op of ops) {
+      for (const raw of ops) {
+        // Per-op parse. An op this server does not understand becomes one
+        // `error` result and nothing more: the client can then ack it as
+        // permanently rejected and stop retrying, instead of the whole batch
+        // failing and the outbox looping.
+        const parsed = opSchema.safeParse(raw);
+        if (!parsed.success) {
+          results.push({
+            clientOpId: raw.clientOpId,
+            error: `Ogiltig operation (${raw.kind}): ${parsed.error.issues[0]?.message ?? "kunde inte tolkas"}`,
+          });
+          continue;
+        }
+
         try {
-          const { seq } = await applyOpToDatabase(op as Op, actor);
-          results.push({ clientOpId: op.clientOpId, seq });
+          const { seq } = await applyOpToDatabase(parsed.data as Op, actor);
+          results.push({ clientOpId: raw.clientOpId, seq });
         } catch (err) {
           results.push({
-            clientOpId: op.clientOpId,
+            clientOpId: raw.clientOpId,
             error: err instanceof Error ? err.message : "Unknown error",
           });
         }

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { entryId } from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import type { Op } from "@/lib/sync";
-import { deleteDb } from "./db";
+import { deleteDb, saveMeta, STATE_VERSION } from "./db";
 import { createListStore, type EventSourceLike } from "./store";
 
 afterEach(async () => {
@@ -342,5 +342,58 @@ describe("online reachability", () => {
     store.connect();
 
     await vi.waitFor(() => expect(store.status().online).toBe(true));
+  });
+});
+
+describe("state version tripwire", () => {
+  /**
+   * A device whose cached state was written by an older build.
+   *
+   * That build dropped any op kind it did not recognise — correct, it is what
+   * keeps it from crashing — but it still advanced its cursor, so those ops are
+   * never re-fetched and its state is permanently missing a fact. The version
+   * stamp is how the newer build notices and repairs itself, and the repair has
+   * to be a full snapshot rather than a log replay.
+   */
+  it("re-hydrates from a snapshot when the cached state predates this build", async () => {
+    await saveMeta({
+      listId: LIST,
+      cursor: 42,
+      lastHydratedAt: "2026-03-12T09:00:00.000Z",
+      stateVersion: STATE_VERSION - 1,
+    });
+
+    const onSnapshot = vi.fn(() => jsonResponse(emptySnapshot(LIST)));
+    const store = createListStore(LIST, "anders", {
+      fetch: makeFetchMock({ onSnapshot }),
+      createEventSource: () => new FakeEventSource(),
+    });
+    await store.ready();
+    store.connect();
+
+    await vi.waitFor(() => expect(onSnapshot).toHaveBeenCalled());
+    store.disconnect();
+  });
+
+  it("does not re-hydrate when the cached state is current", async () => {
+    await saveMeta({
+      listId: LIST,
+      cursor: 42,
+      lastHydratedAt: "2026-03-12T09:00:00.000Z",
+      stateVersion: STATE_VERSION,
+    });
+
+    const onSnapshot = vi.fn(() => jsonResponse(emptySnapshot(LIST)));
+    const store = createListStore(LIST, "anders", {
+      fetch: makeFetchMock({ onSnapshot }),
+      createEventSource: () => new FakeEventSource(),
+    });
+    await store.ready();
+    store.connect();
+
+    // Give the reconnect cycle room to have taken a snapshot if it were going to.
+    await vi.waitFor(() => expect(store.status().online).toBe(true));
+    expect(onSnapshot).not.toHaveBeenCalled();
+    store.disconnect();
   });
 });

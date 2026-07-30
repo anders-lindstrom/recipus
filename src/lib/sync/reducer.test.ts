@@ -575,3 +575,116 @@ describe("pruneTombstones", () => {
     expect(Object.keys(pruned.meta)).toHaveLength(0);
   });
 });
+
+describe("forward compatibility", () => {
+  /**
+   * A phone that has not been updated receiving an op from one that has.
+   *
+   * This is not hypothetical politeness: before the `default` branch existed the
+   * switch fell through and returned `undefined`, `applyOps` threw on the next
+   * op, and the client store wrote `undefined` over its cached state and retried
+   * forever — the app opened to an empty list in a shop and blamed the network.
+   * Every future op kind depends on this behaviour already being deployed, which
+   * is why it is tested rather than assumed.
+   */
+  const fromTheFuture = {
+    ...base("maria", 3),
+    kind: "set_priority",
+    listId: LIST,
+    catalogItemId: CREAM,
+    priority: "urgent",
+  } as unknown as Op;
+
+  it("ignores an op kind it does not know, leaving state untouched", () => {
+    const before = applyOp(emptyState(), {
+      ...base("anders", 1),
+      kind: "add_item",
+      listId: LIST,
+      catalogItemId: CREAM,
+    });
+
+    const after = applyOp(before, fromTheFuture);
+    expect(after).toBe(before);
+  });
+
+  it("keeps applying the rest of a batch around an unknown op", () => {
+    // The batch matters more than the single op: an unknown kind in the middle
+    // must not take the known ops on either side of it down with it.
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      fromTheFuture,
+      { ...base("anders", 4), kind: "add_item", listId: LIST, catalogItemId: MILK },
+    ]);
+
+    expect(state).toBeDefined();
+    expect(state.entries[entryId(LIST, CREAM)]?.removedAt).toBeNull();
+    expect(state.entries[entryId(LIST, MILK)]?.removedAt).toBeNull();
+  });
+});
+
+describe("meta convergence", () => {
+  /**
+   * The existing convergence test compares `observable()`, which deliberately
+   * excludes `meta`. That proves what the user sees agrees — but `meta` is what
+   * the NEXT op resolves against, so two clients can display an identical list
+   * and then diverge on the following write. This closes that gap in both
+   * directions: the bookkeeping itself must converge, and convergence must
+   * survive one more op landing afterwards.
+   */
+  const ops: Op[] = [
+    { ...base("anders", 0), kind: "create_catalog_item", item: item(CREAM) },
+    { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+    {
+      ...base("maria", 2),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: { value: 5, unit: "dl" },
+    },
+    {
+      ...base("anders", 3),
+      kind: "set_note",
+      listId: LIST,
+      catalogItemId: CREAM,
+      note: "helst ekologisk",
+    },
+    {
+      ...base("maria", 4),
+      kind: "remove_item",
+      listId: LIST,
+      catalogItemId: CREAM,
+      bought: true,
+    },
+  ];
+
+  it("converges on the meta map under every ordering", () => {
+    const orderings = permutations(ops);
+    expect(orderings.length).toBe(120);
+
+    const reference = applyOps(emptyState(), orderings[0]).meta;
+    for (const ordering of orderings) {
+      expect(applyOps(emptyState(), ordering).meta).toEqual(reference);
+    }
+  });
+
+  it("still converges after one further op, whatever order preceded it", () => {
+    // The probe is what catches divergence hiding in the bookkeeping: a clock
+    // that ended up different resolves this next write differently.
+    const probe: Op = {
+      ...base("anders", 9),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: { value: 2, unit: "dl" },
+    };
+
+    const orderings = permutations(ops);
+    const reference = observable(
+      applyOp(applyOps(emptyState(), orderings[0]), probe),
+    );
+    for (const ordering of orderings) {
+      const probed = applyOp(applyOps(emptyState(), ordering), probe);
+      expect(observable(probed)).toEqual(reference);
+    }
+  });
+});

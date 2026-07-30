@@ -1,7 +1,14 @@
 import { emptyState, type Id, type SyncState } from "@/lib/domain";
 import { applyOp, applyOps, type Op } from "@/lib/sync";
 import type { ListSnapshot } from "@/lib/services/list-data";
-import { loadMeta, loadState, saveMeta, saveState, type SyncMeta } from "./db";
+import {
+  loadMeta,
+  loadState,
+  saveMeta,
+  saveState,
+  STATE_VERSION,
+  type SyncMeta,
+} from "./db";
 import * as outbox from "./outbox";
 
 /**
@@ -165,22 +172,33 @@ async function fetchCatchUp(
 async function postOps(
   fetchImpl: typeof fetch,
   ops: Op[],
-): Promise<Array<{ clientOpId: string }>> {
+): Promise<outbox.PostOutcome> {
   const body = (await apiFetch(fetchImpl, `/api/ops`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ops }),
   })) as { results: OpResult[] };
 
-  const accepted: Array<{ clientOpId: string }> = [];
+  // Refusals are reported separately from acceptances rather than merely
+  // logged. A refused op used to be skipped and left in the outbox, so it was
+  // re-sent on every flush for the lifetime of the install, `pendingCount`
+  // never returned to zero, and the sync banner stayed up describing a
+  // connection problem that did not exist.
+  const accepted: string[] = [];
+  const refused: string[] = [];
   for (const result of body.results) {
     if (result.error) {
-      console.warn("[client-store] op rejected by server", result.clientOpId, result.error);
+      console.warn(
+        "[client-store] op refused by server",
+        result.clientOpId,
+        result.error,
+      );
+      refused.push(result.clientOpId);
       continue;
     }
-    accepted.push({ clientOpId: result.clientOpId });
+    accepted.push(result.clientOpId);
   }
-  return accepted;
+  return { accepted, refused };
 }
 
 function streamUrl(listId: Id, since: number): string {
@@ -196,7 +214,15 @@ export function createListStore(
   const createEventSource = deps.createEventSource ?? defaultCreateEventSource;
 
   let state: SyncState = emptyState();
-  let syncMeta: SyncMeta = { listId, cursor: null, lastHydratedAt: null };
+  // Stamped from the start, not only on the stale path: every `saveMeta` spreads
+  // this object, so a fresh install that omitted the version would read back as
+  // version 0 and force a rehydrate on every single open.
+  let syncMeta: SyncMeta = {
+    listId,
+    cursor: null,
+    lastHydratedAt: null,
+    stateVersion: STATE_VERSION,
+  };
   const listeners = new Set<() => void>();
 
   let pendingCount = 0;
@@ -267,7 +293,18 @@ export function createListStore(
           outbox.pending(),
         ]);
         if (savedState) state = savedState;
-        if (savedMeta) syncMeta = savedMeta;
+        if (savedMeta) {
+          // State written by an older build may be missing facts this one cares
+          // about: that build dropped op kinds it did not recognise, yet still
+          // advanced its cursor, so those ops will never be re-fetched. Keep the
+          // state — it is what makes the app usable offline right now — but
+          // clear `lastHydratedAt` so `reconnectCycle` takes a full snapshot the
+          // next time there IS a network, and repairs the gap.
+          const stale = (savedMeta.stateVersion ?? 0) < STATE_VERSION;
+          syncMeta = stale
+            ? { ...savedMeta, lastHydratedAt: null, stateVersion: STATE_VERSION }
+            : savedMeta;
+        }
         pendingCount = outboxOps.length;
         for (const op of outboxOps) originatedClientOpIds.add(op.clientOpId);
         updateStatus();

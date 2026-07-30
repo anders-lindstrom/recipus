@@ -419,6 +419,34 @@ export function applyOp(state: SyncState, op: Op): SyncState {
       );
       return upsertEntry(moved, op, op.toListId, op.catalogItemId);
     }
+
+    /**
+     * An op kind this build has never heard of.
+     *
+     * This branch is what lets a phone that has not been updated survive an op
+     * from one that has, and it is deliberately load-bearing rather than
+     * defensive: without it the switch fell through and returned `undefined`,
+     * `applyOps` then threw on the next iteration, and the store wrote
+     * `undefined` over the cached state and retried forever — an app that opens
+     * to an empty list in a shop and blames the network. Dropping an op we
+     * cannot understand trades convergence for availability, which is the right
+     * way round: an old phone missing an item's urgency flag is a cosmetic
+     * disagreement, an old phone that will not open is not.
+     *
+     * The `never` assignment keeps this from becoming a silent hole in the
+     * *other* direction. If a kind is added to `Op` and not handled above, `op`
+     * does not narrow to `never` here and the build fails, so forgetting a case
+     * is a compile error rather than a live op that vanishes.
+     *
+     * Ops dropped here are not re-fetched — the cursor advances regardless — so
+     * a client that skipped one repairs itself via the `stateVersion` rehydrate
+     * in src/lib/client/db.ts rather than by replaying the log.
+     */
+    default: {
+      const unhandled: never = op;
+      void unhandled;
+      return state;
+    }
   }
 }
 
