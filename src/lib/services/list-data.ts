@@ -6,6 +6,7 @@ import {
   contributions,
   listEntries,
   lists,
+  products,
   purchases,
   recipeAdditions,
   recipes,
@@ -39,6 +40,10 @@ import {
   listKey,
 } from "@/lib/sync";
 import { catalogFieldClocks } from "./clocks";
+import {
+  effectiveCatalogItemId,
+  purchaseProductJoin,
+} from "./purchase-attribution";
 import { dismissedOn } from "./suggestion-dismissals";
 
 /**
@@ -351,21 +356,19 @@ async function loadPurchaseStats(now: Date): Promise<Record<Id, CadenceStats>> {
 
   const rows = await db
     .select({
-      catalogItemId: purchases.catalogItemId,
+      catalogItemId: effectiveCatalogItemId,
       purchasedAt: purchases.purchasedAt,
     })
     .from(purchases)
+    .leftJoin(products, purchaseProductJoin)
     .where(gte(purchases.purchasedAt, since))
     .orderBy(asc(purchases.purchasedAt));
 
   const byItem = new Map<Id, Date[]>();
   for (const r of rows) {
-    // A scan-sourced purchase carries a product, not a vara, and stays out of
-    // the cadence until a human places that product — deferred, not lost. The
-    // COALESCE through `products` that redeems it belongs to the registry and
-    // arrives with it; one shared helper will own it, since two hand-written
-    // versions of "which vara did this count for" will disagree somewhere
-    // nobody tests.
+    // NULL here means a scan of a product nobody has placed on a vara yet, so
+    // there is no honest answer to "how often do we buy this" — deferred, not
+    // lost. See purchase-attribution.ts.
     if (r.catalogItemId === null) continue;
     const list = byItem.get(r.catalogItemId);
     if (list) list.push(r.purchasedAt);
@@ -395,10 +398,11 @@ async function loadSuggestions(
 
   const rows = await db
     .select({
-      catalogItemId: purchases.catalogItemId,
+      catalogItemId: effectiveCatalogItemId,
       purchasedAt: purchases.purchasedAt,
     })
     .from(purchases)
+    .leftJoin(products, purchaseProductJoin)
     .where(
       and(eq(purchases.listId, listId), gte(purchases.purchasedAt, since)),
     )
@@ -406,9 +410,9 @@ async function loadSuggestions(
 
   const byItem = new Map<Id, Date[]>();
   for (const r of rows) {
-    // Same rule as `loadPurchaseStats`, and it has to be the same rule: the
-    // suggestion row and the cadence stats must never disagree about how often
-    // you buy something.
+    // Same resolution as `loadPurchaseStats`, and it has to be literally the
+    // same one: the suggestion row and the cadence stats must never disagree
+    // about how often you buy something.
     if (r.catalogItemId === null) continue;
     const list = byItem.get(r.catalogItemId);
     if (list) list.push(r.purchasedAt);

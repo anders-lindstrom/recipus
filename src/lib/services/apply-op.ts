@@ -8,6 +8,7 @@ import {
   listEntries,
   lists,
   ops as opsTable,
+  products,
   purchases,
   recipeAdditions,
 } from "@/db/schema";
@@ -46,6 +47,10 @@ import {
   catalogFieldClocks,
   latestClock,
 } from "./clocks";
+import {
+  effectiveCatalogItemId,
+  purchaseProductJoin,
+} from "./purchase-attribution";
 
 /**
  * Applying one client op to Postgres.
@@ -816,19 +821,30 @@ async function recordPurchaseIfBought(tx: Tx, op: Op, next: SyncState): Promise<
 async function retractPurchaseIfUndo(tx: Tx, op: Op): Promise<void> {
   if (op.kind !== "add_item" || !op.undoesClientOpId) return;
 
+  // Resolved BEFORE the delete rather than from a RETURNING clause, because a
+  // scan-sourced purchase keeps its vara on the product and `DELETE` cannot
+  // join. Both statements key on the same `clientOpId` inside one transaction,
+  // so the idempotency is exactly what it was: a replayed undo finds nothing and
+  // does nothing.
   const [removed] = await tx
-    .delete(purchases)
+    .select({ catalogItemId: effectiveCatalogItemId })
+    .from(purchases)
+    .leftJoin(products, purchaseProductJoin)
     .where(eq(purchases.clientOpId, op.undoesClientOpId))
-    .returning({ catalogItemId: purchases.catalogItemId });
+    .limit(1);
 
   // Nothing to undo: the purchase was never written (a `bought: false` removal,
   // or one that lost its LWW comparison), or this undo already applied.
   if (!removed) return;
 
-  // A purchase attributed to a product rather than a vara has no catalog row to
-  // correct — its `use_count` was never incremented, because nothing knows yet
-  // which vara it belongs to. Retracting the purchase is the half that matters
-  // and has already happened above.
+  await tx
+    .delete(purchases)
+    .where(eq(purchases.clientOpId, op.undoesClientOpId));
+
+  // A scan of a product nobody has placed on a vara yet. There is no catalog row
+  // to correct — `use_count` was never incremented for it, because nothing knew
+  // which vara to credit. Retracting the purchase is the half that matters and
+  // has already happened.
   if (removed.catalogItemId === null) return;
 
   // `lastUsedAt` is recomputed from what is left rather than simply cleared.
@@ -836,10 +852,14 @@ async function retractPurchaseIfUndo(tx: Tx, op: Op): Promise<void> {
   // the retracted timestamp go on standing in for one — either way the catalog's
   // recency ordering, and later the fridge inference, would read a date that no
   // purchase row supports.
+  // Through the same resolution, not `purchases.catalog_item_id` directly. A
+  // scan of a placed product is a genuine purchase of this vara, and counting it
+  // here but not in the cadence would leave two answers to one question.
   const [latest] = await tx
     .select({ purchasedAt: purchases.purchasedAt })
     .from(purchases)
-    .where(eq(purchases.catalogItemId, removed.catalogItemId))
+    .leftJoin(products, purchaseProductJoin)
+    .where(eq(effectiveCatalogItemId, removed.catalogItemId))
     .orderBy(desc(purchases.purchasedAt))
     .limit(1);
 
