@@ -5,6 +5,7 @@ import {
   manualContributionId,
   recipeContributionId,
   type CatalogItem,
+  type Product,
   type SyncState,
 } from "@/lib/domain";
 import type { Op } from "./ops";
@@ -72,6 +73,9 @@ function observable(state: SyncState) {
     entries: state.entries,
     contributions: state.contributions,
     recipeAdditions: state.recipeAdditions,
+    products: state.products,
+    aliases: state.aliases,
+    barcodes: state.barcodes,
   };
 }
 
@@ -1512,5 +1516,259 @@ describe("catalog field clocks", () => {
     expect(natural.catalog[CREAM].name).toBe("vispgrädde");
     // Not a bug being enshrined — a boundary being stated. The rename is gone.
     expect(inverted.catalog[CREAM].name).toBe(CREAM);
+  });
+});
+
+describe("registry", () => {
+  const EAN = "7310865004703";
+  const PROD = `prod:${EAN}`;
+
+  function product(over: Partial<Product> = {}): Product {
+    return {
+      id: PROD,
+      name: "Arla Standardmjölk",
+      brand: "Arla",
+      catalogItemId: null,
+      defaultSize: { value: 1.5, unit: "l" },
+      sourceSizeText: "1,5 l",
+      imageUrl: null,
+      createdAt: at(1),
+      createdBy: "anders",
+      ...over,
+    };
+  }
+
+  /**
+   * Two phones in two shops scan the same unknown barcode. The id is derived, so
+   * they are creating the SAME row and only one creation can be recorded — which
+   * means it has to be the one that does not depend on arrival order. Exactly the
+   * rule `earliestCreation` already enforces for entries.
+   */
+  it("keeps the earliest creation when two devices scan the same barcode", () => {
+    const mine: Op = {
+      ...base("anders", 3),
+      kind: "create_product",
+      product: product({ createdAt: at(3), createdBy: "anders" }),
+    };
+    const theirs: Op = {
+      ...base("maria", 1),
+      kind: "create_product",
+      product: product({ name: "Standardmjölk", createdAt: at(1), createdBy: "maria" }),
+    };
+
+    const a = applyOps(emptyState(), [mine, theirs]);
+    const b = applyOps(emptyState(), [theirs, mine]);
+    expect(observable(a)).toEqual(observable(b));
+    expect(a.products[PROD].createdAt).toBe(at(1));
+    expect(a.products[PROD].createdBy).toBe("maria");
+  });
+
+  it("places a product on a vara, and lets the placing be corrected", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "create_product", product: product() },
+      {
+        ...base("anders", 2),
+        kind: "update_product",
+        productId: PROD,
+        patch: { catalogItemId: "ost" },
+      },
+      // A wrong auto-map is precisely what a person is there to fix.
+      {
+        ...base("maria", 3),
+        kind: "update_product",
+        productId: PROD,
+        patch: { catalogItemId: MILK },
+      },
+    ]);
+    expect(state.products[PROD].catalogItemId).toBe(MILK);
+  });
+
+  /**
+   * The four-clocks rule, on the registry's own table. A patch that says nothing
+   * about the brand must not stamp the brand's clock, or an op silent about a
+   * field beats one that actually changes it — the bug this codebase has paid
+   * for three times.
+   */
+  it("does not let a silent field beat one that was actually written", () => {
+    const renameLate: Op = {
+      ...base("anders", 9),
+      kind: "update_product",
+      productId: PROD,
+      patch: { name: "Arla Mellanmjölk" },
+    };
+    const placeEarly: Op = {
+      ...base("maria", 4),
+      kind: "update_product",
+      productId: PROD,
+      patch: { catalogItemId: MILK },
+    };
+    const create: Op = {
+      ...base("anders", 1),
+      kind: "create_product",
+      product: product(),
+    };
+
+    const a = applyOps(emptyState(), [create, renameLate, placeEarly]);
+    const b = applyOps(emptyState(), [create, placeEarly, renameLate]);
+    expect(observable(a)).toEqual(observable(b));
+    // Both edits stick: they are different facts, so neither can outrank the other.
+    expect(a.products[PROD].name).toBe("Arla Mellanmjölk");
+    expect(a.products[PROD].catalogItemId).toBe(MILK);
+  });
+
+  /**
+   * A row per EAN, not an array on the product. Two phones adding two different
+   * barcodes for the same pack must not conflict at all — last-write-wins on an
+   * array would silently drop one, and `wins()` cannot merge.
+   */
+  it("keeps both barcodes when two devices add different ones", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "create_product", product: product() },
+      { ...base("anders", 2), kind: "link_barcode", ean: EAN, productId: PROD, source: "off" },
+      { ...base("maria", 3), kind: "link_barcode", ean: "5901234123457", productId: PROD, source: "manual" },
+    ]);
+    expect(Object.keys(state.barcodes).sort()).toEqual(
+      ["5901234123457", EAN].sort(),
+    );
+    expect(state.barcodes[EAN].productId).toBe(PROD);
+  });
+
+  it("tombstones a deleted vara rather than dropping it", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "create_catalog_item", item: item(CREAM) },
+      { ...base("anders", 2), kind: "delete_catalog_item", itemId: CREAM },
+      // A stale create arriving afterwards must lose, or the vara comes back.
+      { ...base("maria", 1), kind: "create_catalog_item", item: item(CREAM) },
+    ]);
+    expect(state.catalog[CREAM]).toBeUndefined();
+  });
+
+  /**
+   * The merge convergence constraint, which is the whole reason the reducer only
+   * tombstones.
+   *
+   * A merge implemented as row REWRITING diverges: merge(B→A) at T5 followed by a
+   * long-offline add_item(B) at T7 leaves an entry for B in one arrival order and
+   * for A in the other. Tombstoning only means both orders end with the same
+   * orphan entry on a tombstoned vara — visible, manually fixable, and identical
+   * on every device, which is the property that actually matters.
+   */
+  it("converges when a merge and a stale add of the merged-away vara cross", () => {
+    const create: Op = {
+      ...base("anders", 1),
+      kind: "create_catalog_item",
+      item: item("kottfars"),
+    };
+    const merge: Op = {
+      ...base("anders", 5),
+      kind: "merge_catalog_items",
+      fromItemId: "kottfars",
+      toItemId: "notfars",
+      aliasNorm: "kottfars",
+    };
+    const staleAdd: Op = {
+      ...base("maria", 7),
+      kind: "add_item",
+      listId: LIST,
+      catalogItemId: "kottfars",
+    };
+
+    const a = applyOps(emptyState(), [create, merge, staleAdd]);
+    const b = applyOps(emptyState(), [create, staleAdd, merge]);
+    expect(observable(a)).toEqual(observable(b));
+
+    // The entry is untouched by the merge — no rewriting, ever.
+    expect(a.entries[entryId(LIST, "kottfars")]).toBeDefined();
+    expect(a.entries[entryId(LIST, "kottfars")].catalogItemId).toBe("kottfars");
+    expect(a.catalog["kottfars"]).toBeUndefined();
+  });
+
+  it("keeps the merged-away word as an alias", () => {
+    // Without this a recipe line reading "köttfärs" goes from a perfect match to
+    // nothing at all: it shares no prefix, compound head or whole word with
+    // "nötfärs".
+    const state = applyOp(emptyState(), {
+      ...base("anders", 5),
+      kind: "merge_catalog_items",
+      fromItemId: "kottfars",
+      toItemId: "notfars",
+      aliasNorm: "kottfars",
+    });
+    expect(state.aliases["kottfars"]).toEqual({
+      aliasNorm: "kottfars",
+      catalogItemId: "notfars",
+      createdAt: at(5),
+      createdBy: "anders",
+    });
+  });
+
+  /**
+   * `update_product` inherits `update_catalog_item`'s one non-converging pair,
+   * and for the same reason: an update for a product the reducer has never seen
+   * is dropped rather than used to conjure a partial row.
+   *
+   * The guarantee is the transport's, not the reducer's — `seq` is assigned on
+   * arrival, replay follows `seq`, and an update can only be authored on a device
+   * that already holds the product. Written down so that anyone who later makes
+   * an update reachable without a create (an Open Food Facts backfill, a repair
+   * path, an import) fails here and has to think, rather than shipping a silent
+   * divergence.
+   */
+  it("drops a product update that arrives before its create (transport-guarded)", () => {
+    const create: Op = {
+      ...base("anders", 1),
+      kind: "create_product",
+      product: product(),
+    };
+    const place: Op = {
+      ...base("maria", 5),
+      kind: "update_product",
+      productId: PROD,
+      patch: { catalogItemId: MILK },
+    };
+
+    expect(applyOps(emptyState(), [create, place]).products[PROD].catalogItemId).toBe(MILK);
+    // Not a bug being enshrined — a boundary being stated. The placing is gone.
+    expect(applyOps(emptyState(), [place, create]).products[PROD].catalogItemId).toBeNull();
+  });
+
+  it("converges under every ordering of registry ops", () => {
+    // The create is held FIRST rather than permuted, because of the boundary
+    // above: it is a precondition of the others, guaranteed by the transport
+    // rather than by the reducer. Permuting it would be asserting a property
+    // this design deliberately does not claim.
+    const create: Op = {
+      ...base("anders", 1),
+      kind: "create_product",
+      product: product(),
+    };
+    const ops: Op[] = [
+      { ...base("maria", 2), kind: "link_barcode", ean: EAN, productId: PROD, source: "off" },
+      {
+        ...base("anders", 4),
+        kind: "update_product",
+        productId: PROD,
+        patch: { catalogItemId: MILK },
+      },
+      {
+        ...base("maria", 6),
+        kind: "update_product",
+        productId: PROD,
+        patch: { name: "Arla Mellanmjölk", brand: "Arla" },
+      },
+      { ...base("anders", 8), kind: "create_catalog_item", item: item(MILK) },
+    ];
+
+    const orderings = permutations(ops);
+    expect(orderings.length).toBe(24);
+    const reference = applyOps(emptyState(), [create, ...orderings[0]]);
+    for (const ordering of orderings) {
+      const got = applyOps(emptyState(), [create, ...ordering]);
+      expect(observable(got)).toEqual(observable(reference));
+      expect(got.meta).toEqual(reference.meta);
+    }
+    // And the edits actually stuck, rather than converging on having lost them.
+    expect(reference.products[PROD].catalogItemId).toBe(MILK);
+    expect(reference.products[PROD].name).toBe("Arla Mellanmjölk");
   });
 });

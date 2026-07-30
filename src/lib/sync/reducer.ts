@@ -9,6 +9,7 @@ import {
   type Id,
   type ListEntry,
   type Priority,
+  type Product,
   type RecordMeta,
   type SyncState,
 } from "@/lib/domain";
@@ -93,6 +94,36 @@ export const CATALOG_FIELDS: readonly CatalogField[] = [
 ];
 export const catalogFieldKey = (id: Id, field: CatalogField): MetaKey =>
   `catalog:${id}:${field}`;
+
+/**
+ * The registry's keys.
+ *
+ * An alias and a barcode are each identified by their own value — the normalized
+ * word, the EAN — so those ARE the ids. One row per value rather than an array
+ * on the parent, because last-write-wins on an array silently drops one of two
+ * concurrent additions and `wins()` has nothing useful to say about merging them.
+ */
+export const productKey = (id: Id): MetaKey => `product:${id}`;
+export const aliasKey = (aliasNorm: string): MetaKey => `alias:${aliasNorm}`;
+export const barcodeKey = (ean: string): MetaKey => `barcode:${ean}`;
+
+/**
+ * A product's editable facts, each on its own clock.
+ *
+ * `size` covers `defaultSize` and `sourceSizeText` together — one fact in two
+ * representations, exactly as `name` covers `name` and `nameNorm` for a vara.
+ * `item` is the mapping to a vara, which is the one the review queue exists to
+ * set and the one a person most often comes back to correct.
+ */
+export type ProductField = "name" | "brand" | "size" | "item";
+export const PRODUCT_FIELDS: readonly ProductField[] = [
+  "name",
+  "brand",
+  "size",
+  "item",
+];
+export const productFieldKey = (id: Id, field: ProductField): MetaKey =>
+  `product:${id}:${field}`;
 
 type CatalogItemPatch = Partial<Omit<CatalogItem, "id">>;
 
@@ -354,6 +385,38 @@ function catalogFieldPatch(
     case "home":
       return update.hasAtHome !== undefined
         ? { hasAtHome: update.hasAtHome }
+        : null;
+  }
+}
+
+/**
+ * The part of a product patch that speaks to one field, or null if it is silent.
+ *
+ * The null is the whole point, as it is for `catalogFieldPatch`: an op that does
+ * not mention the brand must not stamp the brand's clock, or it beats a later op
+ * that actually changes it. `size` returns both columns together because they are
+ * one fact — what the pack contains — in a parsed and a verbatim form.
+ */
+function productFieldPatch(
+  update: Partial<Product>,
+  field: ProductField,
+): Partial<Product> | null {
+  switch (field) {
+    case "name":
+      return update.name !== undefined ? { name: update.name } : null;
+    case "brand":
+      return update.brand !== undefined ? { brand: update.brand } : null;
+    case "size": {
+      const out: Partial<Product> = {};
+      if (update.defaultSize !== undefined) out.defaultSize = update.defaultSize;
+      if (update.sourceSizeText !== undefined) {
+        out.sourceSizeText = update.sourceSizeText;
+      }
+      return Object.keys(out).length > 0 ? out : null;
+    }
+    case "item":
+      return update.catalogItemId !== undefined
+        ? { catalogItemId: update.catalogItemId }
         : null;
   }
 }
@@ -655,6 +718,179 @@ export function applyOp(state: SyncState, op: Op): SyncState {
     }
 
     /**
+     * Creation is EARLIEST-wins, unlike almost everything else here.
+     *
+     * Forced by the derived id: two offline phones scanning the same unknown
+     * barcode both author `create_product` for `prod:${ean}`, so they are
+     * creating one row and only one creation timestamp can survive. Picking it by
+     * last-write-wins would make the answer depend on arrival order. Same
+     * argument, same helper, as `list_entries.created_at`.
+     *
+     * The mutable facts DO resolve last-write-wins, and the create stamps all
+     * four field clocks, because a create genuinely asserts every one of them at
+     * once — and leaving them unset would give a later `update_product` nothing
+     * to lose against, however stale it was.
+     */
+    case "create_product": {
+      const key = productKey(op.product.id);
+      const existing = state.products[op.product.id];
+      const creation = existing
+        ? earliestCreation(
+            { at: existing.createdAt, by: existing.createdBy },
+            { at: op.product.createdAt, by: op.product.createdBy },
+          )
+        : { at: op.product.createdAt, by: op.product.createdBy };
+
+      if (!wins(op, state.meta[key])) {
+        // Lost the record, but its creation stamp may still be the earliest
+        // anyone has seen — and that has to be applied regardless of the
+        // comparison, or the two arrival orders disagree.
+        if (
+          existing &&
+          (creation.at !== existing.createdAt || creation.by !== existing.createdBy)
+        ) {
+          return patch(state, {
+            products: {
+              ...state.products,
+              [op.product.id]: {
+                ...existing,
+                createdAt: creation.at,
+                createdBy: creation.by,
+              },
+            },
+          });
+        }
+        return state;
+      }
+
+      const meta = { ...state.meta, [key]: metaOf(op) };
+      for (const field of PRODUCT_FIELDS) {
+        meta[productFieldKey(op.product.id, field)] = metaOf(op);
+      }
+      return patch(state, {
+        products: {
+          ...state.products,
+          [op.product.id]: {
+            ...op.product,
+            createdAt: creation.at,
+            createdBy: creation.by,
+          },
+        },
+        meta,
+      });
+    }
+
+    /**
+     * Each fact against its own clock, exactly as `update_catalog_item` does.
+     *
+     * The row-level `product:${id}` clock is neither read nor written here: it
+     * means "last touched by anyone", which is the wrong thing to resolve a
+     * single field against, and it is the moving clock this split exists to
+     * remove.
+     */
+    case "update_product": {
+      const existing = state.products[op.productId];
+      // An update for a product nobody has seen is dropped rather than used to
+      // conjure a partial row, as `update_list` and `update_catalog_item` are.
+      if (!existing) return state;
+
+      let product = existing;
+      let meta = state.meta;
+      for (const field of PRODUCT_FIELDS) {
+        const fieldPatch = productFieldPatch(op.patch, field);
+        // Silent about this fact: no claim, so no clock. Stamping anyway would
+        // let an op that says nothing about the brand beat one that does.
+        if (!fieldPatch) continue;
+        const key = productFieldKey(op.productId, field);
+        if (!wins(op, meta[key])) continue;
+        product = { ...product, ...fieldPatch };
+        meta = { ...meta, [key]: metaOf(op) };
+      }
+
+      if (product === existing) return state;
+      return patch(state, {
+        products: { ...state.products, [op.productId]: product },
+        meta,
+      });
+    }
+
+    case "link_barcode": {
+      const key = barcodeKey(op.ean);
+      if (!wins(op, state.meta[key])) return state;
+      return patch(state, {
+        barcodes: {
+          ...state.barcodes,
+          [op.ean]: { ean: op.ean, productId: op.productId, source: op.source },
+        },
+        meta: { ...state.meta, [key]: metaOf(op) },
+      });
+    }
+
+    /**
+     * Soft, like every other delete here, so a stale `create_catalog_item` from
+     * a phone that was in a drawer loses instead of resurrecting the vara.
+     *
+     * Entries referring to it are deliberately left alone — see the merge case
+     * below for why the reducer never touches them.
+     */
+    case "delete_catalog_item": {
+      const key = catalogKey(op.itemId);
+      if (!wins(op, state.meta[key])) return state;
+      return patch(state, {
+        catalog: omit(state.catalog, op.itemId),
+        meta: { ...state.meta, [key]: metaOf(op, true) },
+      });
+    }
+
+    /**
+     * Two things, and deliberately ONLY two: tombstone the merged-away vara, and
+     * record its word as an alias of the survivor.
+     *
+     * What this must never do is rewrite entry or contribution rows. A merge
+     * implemented that way does not converge: `merge(B→A)` at T5 followed by a
+     * long-offline `add_item(B)` at T7 leaves an entry for B in one arrival order
+     * and for A in the other, and neither device is wrong by its own reckoning.
+     * Tombstoning alone means every order ends with the same orphan entry on a
+     * tombstoned vara — visible, manually fixable, and above all identical
+     * everywhere. Purchases, recipe ingredients and aliases are re-pointed by a
+     * bounded, idempotent server-side effect, on the same boundary purchases
+     * already sit on.
+     *
+     * The alias is what stops the merge destroying history: without it every
+     * recipe line already written against the old word stops resolving, since it
+     * shares no prefix, compound head or whole word with the survivor's name.
+     */
+    case "merge_catalog_items": {
+      const key = catalogKey(op.fromItemId);
+      const aKey = aliasKey(op.aliasNorm);
+
+      let next = state;
+      if (wins(op, state.meta[key])) {
+        next = patch(next, {
+          catalog: omit(next.catalog, op.fromItemId),
+          meta: { ...next.meta, [key]: metaOf(op, true) },
+        });
+      }
+      // Resolved on its own key: the alias outlives the tombstone, and a merge
+      // that lost the vara comparison can still be the newest word on the alias.
+      if (wins(op, next.meta[aKey])) {
+        next = patch(next, {
+          aliases: {
+            ...next.aliases,
+            [op.aliasNorm]: {
+              aliasNorm: op.aliasNorm,
+              catalogItemId: op.toItemId,
+              createdAt: op.at,
+              createdBy: op.actor,
+            },
+          },
+          meta: { ...next.meta, [aKey]: metaOf(op) },
+        });
+      }
+      return next;
+    }
+
+    /**
      * An op kind this build has never heard of.
      *
      * This branch is what lets a phone that has not been updated survive an op
@@ -771,6 +1007,7 @@ const FIELD_SUFFIXES: readonly string[] = [
   ...MANUAL_FIELDS,
   "priority",
   ...CATALOG_FIELDS,
+  ...PRODUCT_FIELDS,
 ];
 
 function parentMetaKey(key: string): string | null {

@@ -372,6 +372,70 @@ const moveItemOpSchema = z.object({
     .nullable(),
 });
 
+/**
+ * The registry ops. Mirrors the `RegistryOp` union in src/lib/sync/ops.ts —
+ * see there for why any of this is shaped the way it is.
+ */
+const productSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    brand: z.string().nullable(),
+    catalogItemId: z.string().nullable(),
+    defaultSize: amountSchema.nullable(),
+    sourceSizeText: z.string().nullable(),
+    imageUrl: z.string().nullable(),
+    createdAt: z.string(),
+    createdBy: z.string(),
+  })
+  .openapi("Product");
+
+const createProductOpSchema = z.object({
+  ...opBase,
+  kind: z.literal("create_product"),
+  product: productSchema,
+});
+
+const updateProductOpSchema = z.object({
+  ...opBase,
+  kind: z.literal("update_product"),
+  productId: z.string(),
+  // Partial on purpose, and the reducer treats "absent" as "says nothing about
+  // this field" rather than "set it to undefined" — a patch silent about the
+  // brand must not stamp the brand's clock.
+  patch: productSchema
+    .pick({
+      name: true,
+      brand: true,
+      catalogItemId: true,
+      defaultSize: true,
+      sourceSizeText: true,
+    })
+    .partial(),
+});
+
+const linkBarcodeOpSchema = z.object({
+  ...opBase,
+  kind: z.literal("link_barcode"),
+  ean: z.string().min(1),
+  productId: z.string(),
+  source: z.enum(["off", "manual"]),
+});
+
+const deleteCatalogItemOpSchema = z.object({
+  ...opBase,
+  kind: z.literal("delete_catalog_item"),
+  itemId: z.string(),
+});
+
+const mergeCatalogItemsOpSchema = z.object({
+  ...opBase,
+  kind: z.literal("merge_catalog_items"),
+  fromItemId: z.string(),
+  toItemId: z.string(),
+  aliasNorm: z.string().min(1),
+});
+
 export const opSchema = z
   .discriminatedUnion("kind", [
     createListOpSchema,
@@ -388,6 +452,11 @@ export const opSchema = z
     addRecipeOpSchema,
     removeRecipeOpSchema,
     moveItemOpSchema,
+    createProductOpSchema,
+    updateProductOpSchema,
+    linkBarcodeOpSchema,
+    deleteCatalogItemOpSchema,
+    mergeCatalogItemsOpSchema,
   ])
   .openapi("Op");
 

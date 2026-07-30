@@ -1,4 +1,12 @@
-import type { Amount, CatalogItem, Id, List, Priority } from "@/lib/domain";
+import type {
+  Amount,
+  BarcodeSource,
+  CatalogItem,
+  Id,
+  List,
+  Priority,
+  Product,
+} from "@/lib/domain";
 
 /**
  * The operation log.
@@ -153,6 +161,97 @@ export type Op =
         note: string | null;
         modifier: string | null;
       } | null;
+    })
+  | RegistryOp;
+
+/**
+ * The registry ops.
+ *
+ * Kept in the op log rather than behind server CRUD, which was argued both ways
+ * and decided by one fact: unknown barcodes are created in a shop, offline. The
+ * design doc already promises they are queued rather than dropped, and with buy
+ * mode a dropped scan is a lost purchase — only the outbox can fix that.
+ */
+export type RegistryOp =
+  | (OpBase & {
+      /**
+       * A product the household has met — usually from scanning an unknown
+       * barcode, sometimes typed in for something the cheese counter sells.
+       *
+       * `product.id` is DERIVED for scan-born products (`prod:${ean}`), so two
+       * offline phones scanning the same barcode create the same product rather
+       * than two. That makes creation earliest-wins rather than last-write-wins:
+       * both devices are creating the same row, and only one creation timestamp
+       * can be recorded, so it must be the one that does not depend on which op
+       * happened to arrive first.
+       */
+      kind: "create_product";
+      product: Product;
+    })
+  | (OpBase & {
+      /**
+       * Correcting a product, one fact at a time.
+       *
+       * Four independent clocks — name, brand, size, and the mapping to a vara —
+       * for the reason `update_catalog_item` has four: a patch that says nothing
+       * about the brand must not stamp the brand's clock, or an op that is silent
+       * about a field beats one that actually changes it.
+       *
+       * `catalogItemId` is the interesting one. It starts null for anything born
+       * from Open Food Facts, and placing it is the whole job of the review
+       * queue; it also has to be *re-placeable*, because a wrong auto-map is
+       * exactly the thing a person is there to fix.
+       */
+      kind: "update_product";
+      productId: Id;
+      patch: Partial<
+        Pick<
+          Product,
+          "name" | "brand" | "catalogItemId" | "defaultSize" | "sourceSizeText"
+        >
+      >;
+    })
+  | (OpBase & {
+      /**
+       * One barcode, pointing at a product.
+       *
+       * A row per EAN rather than an array on the product, deliberately: two
+       * phones adding two different barcodes for the same pack then do not
+       * conflict at all, whereas last-write-wins on an array would silently drop
+       * one of them and `wins()` has no way to merge.
+       */
+      kind: "link_barcode";
+      ean: string;
+      productId: Id;
+      source: BarcodeSource;
+    })
+  | (OpBase & { kind: "delete_catalog_item"; itemId: Id })
+  | (OpBase & {
+      /**
+       * Two words for one thing, resolved into one.
+       *
+       * The reducer does exactly two things: tombstones `fromItemId`, and records
+       * `aliasNorm` as a way of reaching `toItemId`. It must NEVER rewrite entry
+       * or contribution rows, and that constraint is load-bearing rather than
+       * laziness — a merge implemented as row rewriting diverges. `merge(B→A)` at
+       * T5 followed by a long-offline `add_item(B)` at T7 ends with an entry for
+       * B in one arrival order and for A in the other. Tombstoning only means
+       * both orders end with the same orphan entry on a tombstoned vara: visible,
+       * manually fixable, and above all identical on every device.
+       *
+       * Purchases, recipe ingredients and aliases are re-pointed by a bounded,
+       * idempotent server-side effect — the same boundary purchases already sit
+       * on, and for the same reason.
+       *
+       * `aliasNorm` is what keeps old recipe lines resolving: without it a line
+       * reading "köttfärs" goes from a perfect match to nothing at all, since it
+       * shares no prefix, compound head or whole word with "nötfärs".
+       */
+      kind: "merge_catalog_items";
+      fromItemId: Id;
+      toItemId: Id;
+      /** The merged-away word, already normalized. */
+      aliasNorm: string;
     });
 
 export type OpKind = Op["kind"];
@@ -184,9 +283,16 @@ export function opListId(op: Op): Id | null {
     // bytes to at most a couple of devices, whereas widening the event to carry
     // two ids would change the event contract for this one case.
     case "move_item":
-    // Catalog changes are household-wide, not list-scoped.
+    // Catalog and registry changes are household-wide, not list-scoped. A vara,
+    // a product and a barcode all belong to the household rather than to one
+    // shop, so every list's stream must receive them.
     case "create_catalog_item":
     case "update_catalog_item":
+    case "create_product":
+    case "update_product":
+    case "link_barcode":
+    case "delete_catalog_item":
+    case "merge_catalog_items":
       return null;
   }
 }
