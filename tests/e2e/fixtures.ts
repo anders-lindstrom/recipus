@@ -48,6 +48,38 @@ async function dropTestList(id: string) {
   await sql`update catalog_items set use_count = 0, last_used_at = null`;
 }
 
+/**
+ * Remove varor a test invented, along with everything pointing at them.
+ *
+ * `delete_catalog_item` is a SOFT delete — deliberately, so a stale create from a
+ * phone in a drawer loses instead of resurrecting the vara — which makes it the
+ * wrong tool for teardown: tombstoning is invisible to the app but leaves the row
+ * behind forever, and a suite run a few hundred times would quietly accumulate
+ * thousands of them. So the harness reaches past the op log, exactly as
+ * `dropTestList` does, and takes the rows out.
+ *
+ * The dependants are deleted by hand rather than left to cascades, because the
+ * interesting ones do not cascade: a product's mapping to a vara is a plain FK,
+ * and a test that placed one would otherwise fail teardown with a constraint
+ * violation that looks like a bug in the registry.
+ */
+export async function dropCatalogItems(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql`delete from purchases where product_id in (select id from products where catalog_item_id in ${sql(ids)})`;
+  await sql`delete from products where catalog_item_id in ${sql(ids)}`;
+  await sql`delete from purchases where catalog_item_id in ${sql(ids)}`;
+  await sql`delete from catalog_item_aliases where catalog_item_id in ${sql(ids)}`;
+  await sql`delete from list_entries where catalog_item_id in ${sql(ids)}`;
+  await sql`delete from catalog_items where id in ${sql(ids)}`;
+}
+
+/** Products a test created that never landed on one of its own varor. */
+export async function dropProducts(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql`delete from purchases where product_id in ${sql(ids)}`;
+  await sql`delete from products where id in ${sql(ids)}`;
+}
+
 export const test = base.extend<
   {
     freshPage: Page;

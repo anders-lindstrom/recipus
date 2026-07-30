@@ -1,5 +1,11 @@
 import type { Page } from "@playwright/test";
-import { expect, outboxSize, test } from "./fixtures";
+import {
+  dropCatalogItems,
+  dropProducts,
+  expect,
+  outboxSize,
+  test,
+} from "./fixtures";
 
 /**
  * The registry screen, end to end.
@@ -136,19 +142,6 @@ async function createProduct(
   return id;
 }
 
-/**
- * Tombstone whatever the test invented.
- *
- * Soft, like every delete here, and enough: a tombstoned vara is filtered out of
- * every catalog query, so it cannot turn up as a stray tile in another spec.
- */
-async function dropVaror(page: Page, ids: string[]): Promise<void> {
-  await postOps(
-    page,
-    ids.map((itemId) => ({ ...envelope(), kind: "delete_catalog_item", itemId })),
-  );
-}
-
 /** Let the client's outbox drain, so teardown never pulls a table out from under it. */
 async function settle(page: Page): Promise<void> {
   await expect.poll(() => outboxSize(page), { timeout: 5000 }).toBe(0);
@@ -162,7 +155,7 @@ test("a scanned product is placed on a vara from the review queue", async ({
   const varaName = `Provmjolk ${suffix}`;
   const productName = `Provprodukt ${suffix}`;
   const varaId = await createVara(page, varaName);
-  await createProduct(page, productName, "Provmärket");
+  const productId = await createProduct(page, productName, "Provmärket");
 
   await page.goto(`/varor?list=${listId}`);
 
@@ -201,16 +194,11 @@ test("a scanned product is placed on a vara from the review queue", async ({
   await page.getByRole("button", { name: /^Ångra/ }).click();
   await expect(queueRow).toBeVisible();
 
-  // Put it back before leaving. There is no `delete_product` op — a product is a
-  // thing the household has met, and meeting it is not undoable — so an unplaced
-  // one left behind here turns up in every later run's review queue. Under the
-  // vara that is about to be tombstoned it is invisible to every screen.
-  await queueRow.click();
-  await sheet.getByLabel("Sök vara").fill(varaName);
-  await sheet.getByRole("button", { name: new RegExp(varaName) }).click();
-
   await settle(page);
-  await dropVaror(page, [varaId]);
+  // The product is unplaced again, so it needs removing in its own right — left
+  // behind it would turn up in every later run's review queue.
+  await dropProducts([productId]);
+  await dropCatalogItems([varaId]);
 });
 
 test("merging keeps the merged-away word finding the survivor", async ({
@@ -248,7 +236,7 @@ test("merging keeps the merged-away word finding the survivor", async ({
   await expect(survivor).toContainText("även");
 
   await settle(page);
-  await dropVaror(page, [goneId, keptId]);
+  await dropCatalogItems([goneId, keptId]);
 });
 
 test("a split moves only the ticked products, and the source vara stays", async ({
@@ -297,7 +285,10 @@ test("a split moves only the ticked products, and the source vara stays", async 
   ).toHaveCount(0);
 
   await settle(page);
-  await dropVaror(page, [sourceId, slug(splitName)]);
+  // Both varor go, and the two products go with them — `dropCatalogItems` takes
+  // out whatever points at them, which is the only reason this teardown is one
+  // line rather than a dependency graph.
+  await dropCatalogItems([sourceId, slug(splitName)]);
 });
 
 test("a vara on the list cannot be deleted until it is taken off it", async ({
@@ -334,4 +325,7 @@ test("a vara on the list cannot be deleted until it is taken off it", async ({
   await expect(page.getByText(varaName, { exact: true })).toHaveCount(0);
 
   await settle(page);
+  // Deleted through the UI, but that delete is soft by design — the row is still
+  // there, tombstoned, and teardown is what actually removes it.
+  await dropCatalogItems([varaId]);
 });

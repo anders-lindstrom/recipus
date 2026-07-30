@@ -420,25 +420,19 @@ export function ListScreen({
             </span>
           ))}
 
-          {/* The two other screens, as quiet icons rather than a nav bar
-              competing with the tiles. Everything else up here is about the list
-              you are standing in front of.
+          {/* The only way into the recipe screens. Everything else up here is
+              about the list you are standing in front of, so recipes get one
+              quiet icon rather than a nav bar competing with the tiles.
 
-              `/varor` is the household's vocabulary — the same set of things the
-              catalog well below is drawn from, which is why it takes the grid
-              glyph the aisle rail already uses for "all of it". */}
-          <Link
-            href="/varor"
-            aria-label="Varor"
-            className="ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
-          >
-            <UiIcon name="allAisles" size={19} />
-          </Link>
-
+              The registry deliberately does NOT get a second one beside it. It
+              lives on the catalog well below, which is the same set of things
+              rendered as tiles — and a grid glyph up here sat one row above the
+              aisle rail's own grid glyph and read as the same control drawn
+              twice. */}
           <Link
             href="/recept"
             aria-label="Recept"
-            className="flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
+            className="ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
           >
             <UiIcon name="recipes" size={20} />
           </Link>
@@ -614,6 +608,26 @@ export function ListScreen({
           household's current intent; everything below is the vocabulary it
           draws on, and the two should not look like one long list. */}
       <section className="mt-6 border-t border-line bg-surface-sunken px-3 pb-6">
+        {/* The well has never had a name, which is why the bottom two-thirds of
+            this screen reads as "more list" rather than as the vocabulary the
+            list is drawn from. Naming it also gives the registry its one entry
+            point, in the only place on the app that is unambiguously about the
+            same set of things.
+
+            A masthead rather than another `SectionHeading`: it is the well's
+            title, not a peer of the aisle headings underneath it, and at 17px
+            against their 11px caps the hierarchy says so without a rule. */}
+        <div className="flex items-center gap-2 pt-4">
+          <h2 className="flex-1 text-title text-ink">Allt ni handlar</h2>
+          <Link
+            href="/varor"
+            className="flex flex-none items-center gap-1.5 rounded-full border border-line-strong px-3 py-1.5 text-caption font-semibold text-ink-soft"
+          >
+            <UiIcon name="allAisles" size={14} />
+            Varor
+          </Link>
+        </div>
+
         {catalogByCategory.map((group) => (
           <div key={group.categoryId}>
             <SectionHeading id={aisleAnchorId(group.categoryId)} tone="brand">
