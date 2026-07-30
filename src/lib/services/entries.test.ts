@@ -10,6 +10,7 @@ import {
 import {
   activeEntries,
   buildEntryView,
+  itemsOnlyWantedByRecipe,
   groupByCategory,
   shouldGroupByAisle,
 } from "./entries";
@@ -250,5 +251,117 @@ describe("shouldGroupByAisle", () => {
     expect(shouldGroupByAisle(5)).toBe(false);
     expect(shouldGroupByAisle(12)).toBe(false);
     expect(shouldGroupByAisle(13)).toBe(true);
+  });
+});
+
+describe("itemsOnlyWantedByRecipe", () => {
+  const LIST = "hemkop";
+  const ADDITION = "add-1";
+
+  function entry(itemId: string, removed = false): ListEntry {
+    return {
+      id: entryId(LIST, itemId),
+      listId: LIST,
+      catalogItemId: itemId,
+      createdAt: "2026-03-12T10:00:00.000Z",
+      createdBy: "anders",
+      removedAt: removed ? "2026-03-12T11:00:00.000Z" : null,
+      updatedAt: "2026-03-12T10:00:00.000Z",
+      updatedBy: "anders",
+    };
+  }
+
+  function recipeContribution(itemId: string, additionId: string): Contribution {
+    return {
+      id: `${additionId}#${itemId}`,
+      entryId: entryId(LIST, itemId),
+      sourceKind: "recipe",
+      recipeAdditionId: additionId,
+      amount: { value: 2, unit: "dl" },
+      note: null,
+    };
+  }
+
+  function manualContribution(itemId: string): Contribution {
+    return {
+      id: `${entryId(LIST, itemId)}#manual`,
+      entryId: entryId(LIST, itemId),
+      sourceKind: "manual",
+      recipeAdditionId: null,
+      amount: { value: 1, unit: "st" },
+      note: null,
+    };
+  }
+
+  it("offers an item nothing else wants", () => {
+    expect(
+      itemsOnlyWantedByRecipe(
+        ADDITION,
+        [entry("gradde")],
+        [recipeContribution("gradde", ADDITION)],
+      ),
+    ).toEqual(["gradde"]);
+  });
+
+  it("leaves an item you also asked for yourself", () => {
+    // The whole reason this is a suggestion and not an action.
+    expect(
+      itemsOnlyWantedByRecipe(
+        ADDITION,
+        [entry("gradde")],
+        [recipeContribution("gradde", ADDITION), manualContribution("gradde")],
+      ),
+    ).toEqual([]);
+  });
+
+  it("leaves an item a second recipe also wants", () => {
+    expect(
+      itemsOnlyWantedByRecipe(
+        ADDITION,
+        [entry("gradde")],
+        [
+          recipeContribution("gradde", ADDITION),
+          recipeContribution("gradde", "add-2"),
+        ],
+      ),
+    ).toEqual([]);
+  });
+
+  it("ignores items this recipe never asked for", () => {
+    expect(
+      itemsOnlyWantedByRecipe(
+        ADDITION,
+        [entry("gradde"), entry("banan")],
+        [
+          recipeContribution("gradde", ADDITION),
+          manualContribution("banan"),
+        ],
+      ),
+    ).toEqual(["gradde"]);
+  });
+
+  it("ignores an entry already removed", () => {
+    expect(
+      itemsOnlyWantedByRecipe(
+        ADDITION,
+        [entry("gradde", true)],
+        [recipeContribution("gradde", ADDITION)],
+      ),
+    ).toEqual([]);
+  });
+
+  it("offers an entry with no contributions at all left", () => {
+    // A bare add_item creates an entry with no contributions, so an entry whose
+    // only contribution was this recipe's is the same shape either way.
+    expect(
+      itemsOnlyWantedByRecipe(
+        ADDITION,
+        [entry("mjolk"), entry("gradde")],
+        [
+          recipeContribution("mjolk", ADDITION),
+          recipeContribution("gradde", ADDITION),
+        ],
+      ),
+    ).toEqual(["mjolk", "gradde"]);
   });
 });

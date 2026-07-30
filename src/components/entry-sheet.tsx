@@ -37,7 +37,12 @@ export interface EntrySheetProps {
   onClose: () => void;
   /** Sets the manual amount. Null clears it, leaving the item on the list. */
   onSetAmount: (amount: Amount | null) => void;
-  onRemoveRecipe: (recipeAdditionId: string) => void;
+  /**
+   * `recipeTitle` is the label this sheet actually rendered on the button. Passed
+   * along so the confirmation that follows cannot name the recipe differently
+   * from the button that opened it.
+   */
+  onRemoveRecipe: (recipeAdditionId: string, recipeTitle: string) => void;
   /** Removes without recording a purchase — a change of mind, not a shop. */
   onRemoveWithoutBuying: () => void;
 }
@@ -214,7 +219,9 @@ export function EntrySheet({
                 key={c.id}
                 tone="danger"
                 icon={<UiIcon name="remove" size={16} />}
-                onClick={() => onRemoveRecipe(c.recipeAdditionId!)}
+                onClick={() =>
+                  onRemoveRecipe(c.recipeAdditionId!, c.recipeTitle ?? "receptet")
+                }
               >
                 Ta bort {c.recipeTitle ?? "receptet"}
               </SheetButton>

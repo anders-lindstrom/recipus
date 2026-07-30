@@ -15,6 +15,7 @@ import {
   activeEntries,
   buildEntryView,
   groupByCategory,
+  itemsOnlyWantedByRecipe,
   shouldGroupByAisle,
   type EntryView,
   type RecipeAdditionInfo,
@@ -26,6 +27,10 @@ import { AddBar } from "./add-bar";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
 import { ItemTile, SectionHeading, TileGrid } from "./item-tile";
+import {
+  RecipeRemovalSheet,
+  type RecipeRemovalCandidate,
+} from "./recipe-removal-sheet";
 import { UiIcon } from "./ui-icon";
 
 /**
@@ -118,6 +123,18 @@ export function ListScreen({
     clientOpId: string;
     /** Drives the label: only a buy is a "köp" to undo. */
     bought: boolean;
+  } | null>(null);
+  /**
+   * A recipe removal waiting on the "and its ingredients?" question.
+   *
+   * Held rather than dispatched immediately: the ingredients only this recipe
+   * wants have to be computed BEFORE the contributions go, since afterwards
+   * there is nothing left to tell them apart from anything else on the list.
+   */
+  const [removingRecipe, setRemovingRecipe] = useState<{
+    additionId: Id;
+    title: string;
+    candidates: RecipeRemovalCandidate[];
   } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -494,6 +511,22 @@ export function ListScreen({
         <UiIcon name="scan" size={24} />
       </button>
 
+      {removingRecipe && (
+        <RecipeRemovalSheet
+          recipeTitle={removingRecipe.title}
+          candidates={removingRecipe.candidates}
+          onCancel={() => setRemovingRecipe(null)}
+          onConfirm={(itemIds) => {
+            actions.removeRecipe(removingRecipe.additionId);
+            // `bought: false` throughout. Dropping a recipe is a change of
+            // plan, not a shop, and recording it as one would teach the cadence
+            // engine that you buy these things every time you change your mind.
+            for (const itemId of itemIds) actions.removeItem(itemId, false);
+            setRemovingRecipe(null);
+          }}
+        />
+      )}
+
       {openItem && openView && (
         <EntrySheet
           itemName={openItem.name}
@@ -512,9 +545,19 @@ export function ListScreen({
             actions.setAmount(openItem.id, amount);
             setOpenEntry(null);
           }}
-          onRemoveRecipe={(id) => {
-            actions.removeRecipe(id);
+          onRemoveRecipe={(id, title) => {
             setOpenEntry(null);
+            const orphans = itemsOnlyWantedByRecipe(id, entries, contributions)
+              .map((itemId) => byId.get(itemId))
+              .filter((c): c is CatalogItem => Boolean(c))
+              .map((c) => ({ id: c.id, name: c.name, iconRef: c.iconRef }));
+
+            // Nothing would be left stranded, so there is nothing to ask about.
+            if (orphans.length === 0) {
+              actions.removeRecipe(id);
+              return;
+            }
+            setRemovingRecipe({ additionId: id, title, candidates: orphans });
           }}
           onRemoveWithoutBuying={() => {
             remove(openItem.id, openItem.name, false);

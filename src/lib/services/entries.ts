@@ -194,3 +194,49 @@ export const AISLE_GROUPING_THRESHOLD = 12;
 export function shouldGroupByAisle(entryCount: number): boolean {
   return entryCount > AISLE_GROUPING_THRESHOLD;
 }
+
+/**
+ * Which items are on the list ONLY because this recipe asked for them.
+ *
+ * Removing a recipe drops its contributions but deliberately keeps the entries,
+ * because something else may still want the cream and an entry with no
+ * contributions is a valid "buy some, amount unspecified". The cost is that
+ * dropping a recipe leaves its ingredients sitting on the list with no quantity
+ * and no reason, and you have to tap each one off yourself.
+ *
+ * So the recipe offers to take them with it. This computes the candidates from
+ * current state at the moment of removal, which is why `add_recipe` needs to
+ * record nothing extra and no migration is involved.
+ *
+ * Deliberately a *suggestion*, never automatic. An item you added yourself with
+ * no amount and which a recipe also wanted is indistinguishable here from one
+ * the recipe brought — both end up with the recipe's contribution as their only
+ * one. Guessing would sometimes take something you wanted, so the caller shows
+ * this as a checklist and lets you decide.
+ */
+export function itemsOnlyWantedByRecipe(
+  recipeAdditionId: Id,
+  entries: ListEntry[],
+  contributions: Contribution[],
+): Id[] {
+  const byEntry = new Map<Id, Contribution[]>();
+  for (const c of contributions) {
+    const list = byEntry.get(c.entryId);
+    if (list) list.push(c);
+    else byEntry.set(c.entryId, [c]);
+  }
+
+  const out: Id[] = [];
+  for (const entry of activeEntries(entries)) {
+    const mine = byEntry.get(entry.id) ?? [];
+    const fromThisRecipe = mine.filter(
+      (c) => c.recipeAdditionId === recipeAdditionId,
+    );
+    // Nothing from this recipe: not its business. Something else also wants it:
+    // it stays whatever happens.
+    if (fromThisRecipe.length === 0) continue;
+    if (fromThisRecipe.length !== mine.length) continue;
+    out.push(entry.catalogItemId);
+  }
+  return out;
+}
