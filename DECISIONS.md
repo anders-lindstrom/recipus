@@ -1,3 +1,68 @@
+# Away session, 2026-07-30 (evening) — read this first
+
+Anders answered every open decision and then went out for a few hours. Nothing is
+waiting on him except the two items at the end of this section.
+
+## What he decided
+
+1. **`move_item`**: only the manual contribution travels; a recipe's share stays
+   on the list its addition belongs to. Fan-out goes household-wide (`opListId`
+   → null).
+2. **Recipe amount not travelling is fine.** The move sheet says so before you
+   choose rather than after.
+3. **Moving onto a vara already on the destination overwrites its amount and
+   priority** — acceptable, but the sheet must say so. It does, phrased as a
+   condition, because the device only holds the current list's entries and
+   genuinely cannot know whether the item is already there.
+4. **Retention: 30 days**, both prunes, one constant.
+5. **The statistics roster derives from `autheliaUser`.** Anders and Jannica are
+   already distinct on every op and every purchase row, because auth reads
+   Authelia's `Remote-User` — so this needs no new plumbing. NOT yet built: its
+   only consumer is `/statistik`, which does not exist.
+6. **Suggestion dismissal is household-wide**, and that is wanted rather than
+   tolerated: dismissing silences the suggestion for both of you.
+
+## Gotchas found while building, worth knowing
+
+**`pruneTombstones` would have eaten the registry.** It rebuilt its result from
+`emptyState()` and copied four maps across BY NAME, so anything later added to
+`SyncState` was silently dropped — and the client now prunes on every app open.
+Adding `products`/`aliases`/`barcodes` would have deleted the whole registry from
+the store the first time anyone opened the app, with no error anywhere. Fixed
+structurally: the result now starts as a copy of the whole state and overrides
+only what it prunes, so carried is the default and dropped is the deliberate act.
+
+**The move looked like it did nothing.** The store holds one list's state, so
+nothing had ever needed to filter entries by list — until `move_item`, the only
+op that writes an entry belonging to a DIFFERENT list, and writes it live.
+Unfiltered, the moved item kept rendering on the source. Found by driving the
+real app; no unit test could have seen it.
+
+**Two clocks, two questions.** Retention prunes the op log on SERVER time and
+tombstones on the CLIENT clock. `ops.at` is the phone's own clock and is
+deliberately never rewritten, so a device with a wrong date would have its ops
+deleted the moment they landed if retention read it.
+
+**The wire schema had never been tested.** `Op` and `opSchema` are two
+independent declarations of one shape and nothing made them agree; a drift 400s
+the op silently rather than failing to compile. There is now a test, but it
+covers `move_item` and the registry ops only — the other kinds are still
+unguarded.
+
+## Still needs Anders
+
+- **Display names.** The roster derives from `autheliaUser`, which gives
+  `anders`/`jannica`. Capitalising is the smallest thing that yields "Anders" and
+  "Jannica", but it breaks the day an Authelia username is not someone's name.
+  Say the word and it is ten minutes.
+- **Deploying.** Recipus is fully onboarded for the beelink (its own Postgres
+  role owning its own database, no published host port, entrypoint migrations —
+  the longhaul pattern) but nothing has been verified ON the box: SSH is refused
+  from here because the key needs a passphrase. `ssh-add ~/.ssh/id_rsa` and it
+  can be checked.
+
+---
+
 # Hardening session, 2026-07-30 — read this first
 
 The registry gate is done, priority and modifiers are built, `move_item` is
