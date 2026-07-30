@@ -22,6 +22,77 @@ what is specific to Recipus.
 
 ---
 
+## Upgrading the running install — read before the next deploy
+
+The deployed checkpoint is `265e4a6` ("ci: seed before running the test suite"),
+from 29 July. Everything below landed after it, and **none of it needs a manual
+step on the box** — but three things change behaviour in production and are worth
+knowing before you push, not after.
+
+### Four migrations apply on the next boot, not one
+
+`0002` … `0005`. The entrypoint runs `drizzle-kit migrate` on every start and
+takes a `pg_dump` into `/backups` first, so the rollback path exists — but it is
+the only one, since drizzle has no down migrations. Confirm the dump appeared in
+`~/services/recipus/backups/` before assuming the deploy is safe to leave.
+
+`0005` is the one to look at. It restructures `barcodes`: every existing row is
+promoted into a `products` row before the old columns are dropped, by an
+`INSERT … SELECT` with `ON CONFLICT DO NOTHING`, so it is data-preserving and
+safe to re-run. It also makes `purchases.catalog_item_id` nullable and adds
+`product_id` beside it with a CHECK that one of the two is present. Existing
+purchase rows all carry a `catalog_item_id`, so they satisfy it unchanged.
+
+Hand-written for that reason: `drizzle-kit generate` would have emitted
+`DROP COLUMN` + `ADD COLUMN … NOT NULL` on `barcodes`, which aborts on a table
+with rows — and had it not, it would have thrown away every barcode you have
+confirmed, because the product rows have to be built *from* those columns first.
+
+### Retention starts deleting
+
+New this round: `pruneRetention` runs **on boot and then every 24 hours** in
+production, and it is the only thing in this app that deletes. It takes the op
+log, tombstoned entries, removed recipe additions, deleted lists and recipes, and
+spent suggestion dismissals — everything past 30 days.
+
+**Purchases are never pruned**, and there is a test holding that line, because
+they are the sole input to the cadence engine and to the statistics screen.
+`purchases.list_id` deliberately carries no foreign key so that pruning a deleted
+list cannot cascade into them.
+
+Practically, the first run after this deploy is a **no-op**: the install is two
+days old and nothing in it is 30 days old yet. It becomes real at the end of
+August. Set `PRUNE_ON_BOOT=0` in `~/services/recipus/.env` if you would rather
+hold it off; it defaults to on in production and off in development.
+
+### New op kinds, and what an un-updated phone does
+
+Six new kinds ship here (`move_item` also changed shape). A phone still running
+the cached older client simply never sends them, and one receiving a kind it does
+not know **drops that op and carries on** — the R1 forward-compatibility work
+from the away session is what makes that safe rather than fatal. Such a phone
+repairs itself through the `stateVersion` rehydrate the next time it loads the
+new shell; there is nothing to do by hand.
+
+Worth being deliberate about anyway: **open the app on both phones once after
+deploying** so they pick up the new shell, rather than discovering a stale one in
+a shop.
+
+### The seed still cannot resurrect anything
+
+Now that varor can be deleted and merged away, this is worth stating rather than
+assuming: the boot seed's upsert never writes `deleted_at`, and its `setWhere`
+only matches rows still stamped `updated_by = 'system'`. Deleting or merging a
+vara stamps the human's name, so the seed skips it entirely. Verified in the
+code, and there is a test for the sibling case (a rename surviving a re-seed).
+
+### Nothing new is needed in NPM, DDNS or Authelia
+
+`/varor` and `/api/suggestions` are new but sit under hosts and paths that are
+already proxied. No new secret, no new volume, no new port.
+
+---
+
 ## One-time setup
 
 ### 1. GitHub repo secrets
