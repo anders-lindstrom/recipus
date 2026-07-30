@@ -389,8 +389,16 @@ Risk-ordered, each step independently shippable and reversible.
 7. **Priority flag** — one op, one clock, the `writeEntry` carry-forward hazard.
 8. **Modifiers** — one op, one clock, tile line, add-bar confirm sheet.
 9. **Registry model + sync**, then `/varor`, then the scan path.
+   *Model and sync landed 2026-07-30 (evening): `products`/`catalog_item_aliases`
+   as tables, `barcodes` demoted to an EAN→product pointer, `purchases`
+   attributing to either level behind one shared COALESCE helper, and the five
+   ops with their reducer cases. `/varor` and the scan path follow.*
 10. **Taxonomy ops** — split sheet, merge, alias-on-merge, deterministic
     tie-break in the matcher.
+    *`merge_catalog_items` and the alias-on-merge are done at the op layer, and
+    the matcher's alias expansion, deterministic tie-break and 0.8 auto-map
+    threshold are done. Split is pure UI over `update_product` and belongs with
+    `/varor`.*
 11. **Statistics** at `/statistik`.
 12. **Fridge inference** last, since it depends on 6 and on real history.
 
