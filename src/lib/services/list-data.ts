@@ -359,6 +359,13 @@ async function loadPurchaseStats(now: Date): Promise<Record<Id, CadenceStats>> {
 
   const byItem = new Map<Id, Date[]>();
   for (const r of rows) {
+    // A scan-sourced purchase carries a product, not a vara, and stays out of
+    // the cadence until a human places that product — deferred, not lost. The
+    // COALESCE through `products` that redeems it belongs to the registry and
+    // arrives with it; one shared helper will own it, since two hand-written
+    // versions of "which vara did this count for" will disagree somewhere
+    // nobody tests.
+    if (r.catalogItemId === null) continue;
     const list = byItem.get(r.catalogItemId);
     if (list) list.push(r.purchasedAt);
     else byItem.set(r.catalogItemId, [r.purchasedAt]);
@@ -398,6 +405,10 @@ async function loadSuggestions(
 
   const byItem = new Map<Id, Date[]>();
   for (const r of rows) {
+    // Same rule as `loadPurchaseStats`, and it has to be the same rule: the
+    // suggestion row and the cadence stats must never disagree about how often
+    // you buy something.
+    if (r.catalogItemId === null) continue;
     const list = byItem.get(r.catalogItemId);
     if (list) list.push(r.purchasedAt);
     else byItem.set(r.catalogItemId, [r.purchasedAt]);

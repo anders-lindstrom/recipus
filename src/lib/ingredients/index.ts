@@ -2,10 +2,17 @@
  * Ingredients engine: turns a raw recipe line into a quantity and a cleaned
  * name, then fuzzy-matches that name against the household catalog.
  *
+ * The same scorer places a scanned product's name in the catalog
+ * (`autoMapProductName`), at a deliberately stricter threshold — it lives here
+ * rather than beside the registry because that threshold is only meaningful in
+ * terms of the score tiers defined below.
+ *
  * Pure module — no DOM, no network, no database. See
  * docs/superpowers/specs/2026-07-29-recipus-design.md §5.2 for the design
  * rationale (why matching tolerates preparation words and Swedish compounds,
- * and why an unmatched ingredient never blocks an import).
+ * and why an unmatched ingredient never blocks an import), and
+ * docs/superpowers/specs/2026-07-30-items-history-registry.md §2.10–2.11 for
+ * aliases and the auto-map threshold.
  */
 
 import type { Amount, Id } from "@/lib/domain";
@@ -165,6 +172,39 @@ export interface IngredientMatch {
   score: number;
 }
 
+/** One row of `catalog_item_aliases`: an extra word that reaches an item. */
+export interface CatalogItemAlias {
+  itemId: Id;
+  /** Already normalized, exactly as the column stores it. */
+  aliasNorm: string;
+}
+
+/**
+ * Expand items and their aliases into the flat candidate list the matcher
+ * takes: one candidate per name, plus one per alias, all pointing at the item
+ * they belong to.
+ *
+ * This is the entire mechanism behind "a merged-away word keeps resolving".
+ * `merge_catalog_items(B → A)` tombstones B and keeps B's word as an alias of
+ * A; without that alias a recipe line saying "köttfärs" goes from a 1.0 match
+ * to nothing, because it shares no prefix, compound head or whole word with
+ * any surviving catalog name. The matcher itself needs no knowledge of any of
+ * this — it scores a list, and a list is what it gets.
+ *
+ * Both inputs carry pre-normalized names, matching the contract the matcher
+ * already has with its callers: `name_norm` and `alias_norm` are columns, read
+ * straight off the row rather than recomputed here.
+ */
+export function buildMatchCandidates(
+  items: readonly MatchCandidate[],
+  aliases: readonly CatalogItemAlias[] = [],
+): MatchCandidate[] {
+  return [
+    ...items,
+    ...aliases.map((alias) => ({ id: alias.itemId, nameNorm: alias.aliasNorm })),
+  ];
+}
+
 const SCORE_EXACT = 1.0;
 const SCORE_PREFIX = 0.8;
 const SCORE_COMPOUND_HEAD = 0.7;
@@ -207,13 +247,42 @@ function compoundHeadSuffix(query: string, catalog: MatchCandidate[]): string | 
   return null;
 }
 
+interface ScoredCandidate {
+  id: Id;
+  score: number;
+  nameLength: number;
+}
+
+/**
+ * Is `a` a better match than `b`? Higher score first, then the shorter (more
+ * generic, safer) catalog name, then the lowest id.
+ *
+ * The id comparison is the load-bearing part, and it is not decoration: the
+ * candidate list arrives from a `select` with no `ORDER BY`, so its order is
+ * Postgres' business. Without a final discriminator, "havre" resolves to
+ * *havregryn* or *havremjöl* depending on row order alone — two devices
+ * holding byte-identical catalogs can disagree, and one device can disagree
+ * with itself after a VACUUM. Which of the two wins does not matter; that
+ * both sides pick the same one, unable to consult each other, is the whole
+ * point. Same reasoning as the actor-name tie-break in src/lib/sync/reducer.ts.
+ *
+ * Equal ids can occur — an item contributes one candidate per name *and* per
+ * alias — and then either answer is the same answer, so falling through is
+ * correct.
+ */
+function isBetterMatch(a: ScoredCandidate, b: ScoredCandidate): boolean {
+  if (a.score !== b.score) return a.score > b.score;
+  if (a.nameLength !== b.nameLength) return a.nameLength < b.nameLength;
+  return a.id < b.id;
+}
+
 export function matchIngredient(name: string, catalog: MatchCandidate[]): IngredientMatch | null {
   const query = normalizeName(name);
   if (!query) return null;
 
   const headSuffix = compoundHeadSuffix(query, catalog);
 
-  let best: { id: Id; score: number; nameLength: number } | null = null;
+  let best: ScoredCandidate | null = null;
   for (const candidate of catalog) {
     const c = candidate.nameNorm;
     if (!c) continue;
@@ -231,13 +300,52 @@ export function matchIngredient(name: string, catalog: MatchCandidate[]): Ingred
       continue;
     }
 
-    if (!best || score > best.score || (score === best.score && c.length < best.nameLength)) {
-      best = { id: candidate.id, score, nameLength: c.length };
+    const scored: ScoredCandidate = { id: candidate.id, score, nameLength: c.length };
+    if (!best || isBetterMatch(scored, best)) {
+      best = scored;
     }
   }
 
   if (!best || best.score < MIN_SCORE) return null;
   return { id: best.id, score: best.score };
+}
+
+/**
+ * The score a scanned product's NAME must reach before it is mapped to a vara
+ * with nobody looking. 0.8 — the prefix tier — never 0.7.
+ *
+ * One tier lower is where Swedish compounding turns coffee into cheese: every
+ * "-rost" ends in "ost", so the compound-head tier maps both "Kaffe Gevalia
+ * Mellanrost" and "Zoégas Skånerost" to *ost*, and "Kelda Tomatsoppa" to
+ * *soppa*. Verified by execution against the real seeded catalog, not
+ * reasoned about — see the threshold tests.
+ *
+ * This threshold is strict because of what an auto-map *does* in buy mode: it
+ * records a purchase. A wrong one is silent, lands on a vara nobody bought,
+ * and then feeds cadence and statistics as though it were true. A product sent
+ * to the review queue instead costs one tap, later, with the shopping already
+ * done.
+ *
+ * The consequence is deliberate and should not be read as a defect: of twelve
+ * realistic Swedish product names, two auto-commit and ten queue. That ratio
+ * is the design.
+ */
+export const AUTO_MAP_MIN_SCORE = SCORE_PREFIX;
+
+/**
+ * Map a scanned product's name to a vara, or null when a human has to place
+ * it. Null is the ordinary outcome, not an error — see AUTO_MAP_MIN_SCORE.
+ *
+ * Callers wanting a "menade du …?" suggestion for the review queue should call
+ * `matchIngredient` directly; a suggestion a person confirms carries none of
+ * the risk this threshold guards against.
+ */
+export function autoMapProductName(
+  productName: string,
+  catalog: MatchCandidate[],
+): IngredientMatch | null {
+  const match = matchIngredient(productName, catalog);
+  return match !== null && match.score >= AUTO_MAP_MIN_SCORE ? match : null;
 }
 
 /**

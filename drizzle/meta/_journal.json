@@ -36,6 +36,13 @@
       "when": 1785431348710,
       "tag": "0004_priority_and_modifiers",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785517200000,
+      "tag": "0005_registry",
+      "breakpoints": true
     }
   ]
 }

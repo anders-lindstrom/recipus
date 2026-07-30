@@ -825,6 +825,12 @@ async function retractPurchaseIfUndo(tx: Tx, op: Op): Promise<void> {
   // or one that lost its LWW comparison), or this undo already applied.
   if (!removed) return;
 
+  // A purchase attributed to a product rather than a vara has no catalog row to
+  // correct — its `use_count` was never incremented, because nothing knows yet
+  // which vara it belongs to. Retracting the purchase is the half that matters
+  // and has already happened above.
+  if (removed.catalogItemId === null) return;
+
   // `lastUsedAt` is recomputed from what is left rather than simply cleared.
   // Clearing it would erase a genuine earlier purchase, and leaving it would let
   // the retracted timestamp go on standing in for one — either way the catalog's
