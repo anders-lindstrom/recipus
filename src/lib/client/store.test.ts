@@ -49,6 +49,7 @@ function emptySnapshot(listId: string): ListSnapshot {
     recipeTitles: {},
     meta: {},
     suggestions: [],
+    purchaseStats: {},
   };
 }
 

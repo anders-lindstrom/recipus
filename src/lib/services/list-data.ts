@@ -21,7 +21,12 @@ import type {
   RecordMeta,
   Unit,
 } from "@/lib/domain";
-import { rankSuggestions, catalogOrderScore } from "@/lib/cadence";
+import {
+  analyzeCadence,
+  catalogOrderScore,
+  rankSuggestions,
+  type CadenceStats,
+} from "@/lib/cadence";
 import {
   additionKey,
   catalogKey,
@@ -68,6 +73,19 @@ export interface ListSnapshot {
   meta: Record<string, RecordMeta>;
   /** Cadence suggestions, already ranked and filtered. */
   suggestions: Array<{ catalogItemId: Id; reason: string }>;
+  /**
+   * Per-item purchase cadence, for items with any history at all.
+   *
+   * Deliberately HOUSEHOLD-wide rather than per-list, unlike `suggestions`.
+   * "Should I buy this here" is a question about this shop; "do we already have
+   * this in the cupboard" is a question about the kitchen, and the answer does not
+   * change because you happened to buy it at Bauhaus last time.
+   *
+   * Sent as a digest rather than raw dates: the median and the confidence do not
+   * age, only `daysSinceLast` does, and that is recomputable from the last
+   * purchase whenever it is needed.
+   */
+  purchaseStats: Record<Id, CadenceStats>;
 }
 
 function toAmount(
@@ -270,7 +288,42 @@ export async function loadListSnapshot(
     recipeTitles,
     meta,
     suggestions: await loadSuggestions(listId, entries, now),
+    purchaseStats: await loadPurchaseStats(now),
   };
+}
+
+/**
+ * Purchase cadence per item, across the whole household.
+ *
+ * Same two-year window and the same engine as the suggestion row, so the two can
+ * never disagree about how often you buy something. The only difference is scope:
+ * this one is not filtered by list.
+ */
+async function loadPurchaseStats(now: Date): Promise<Record<Id, CadenceStats>> {
+  const since = new Date(now);
+  since.setFullYear(since.getFullYear() - 2);
+
+  const rows = await db
+    .select({
+      catalogItemId: purchases.catalogItemId,
+      purchasedAt: purchases.purchasedAt,
+    })
+    .from(purchases)
+    .where(gte(purchases.purchasedAt, since))
+    .orderBy(asc(purchases.purchasedAt));
+
+  const byItem = new Map<Id, Date[]>();
+  for (const r of rows) {
+    const list = byItem.get(r.catalogItemId);
+    if (list) list.push(r.purchasedAt);
+    else byItem.set(r.catalogItemId, [r.purchasedAt]);
+  }
+
+  const out: Record<Id, CadenceStats> = {};
+  for (const [catalogItemId, dates] of byItem) {
+    out[catalogItemId] = analyzeCadence(dates, now);
+  }
+  return out;
 }
 
 /**

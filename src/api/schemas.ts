@@ -196,6 +196,18 @@ export const listSnapshotSchema = z
         deleted: z.boolean().optional(),
       }),
     ),
+    // Per-item purchase cadence, household-wide. Feeds the "you probably still
+    // have this" exclusion in the recipe sheet.
+    purchaseStats: z.record(
+      z.string(),
+      z.object({
+        purchaseCount: z.number(),
+        medianIntervalDays: z.number().nullable(),
+        confidence: z.number(),
+        overdueScore: z.number().nullable(),
+        daysSinceLast: z.number().nullable(),
+      }),
+    ),
     suggestions: z.array(
       z.object({ catalogItemId: z.string(), reason: z.string() }),
     ),

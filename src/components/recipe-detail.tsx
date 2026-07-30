@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import type { Amount, CatalogItem, Id, List, Recipe, RecipeIngredient } from "@/lib/domain";
+import type { CadenceStats } from "@/lib/cadence";
 import { parseIngredientLine } from "@/lib/ingredients";
 import type { Op } from "@/lib/sync";
 import { normalizeName, slugify } from "@/lib/utils";
@@ -69,6 +70,8 @@ type AddFlow =
   | {
       step: "sheet";
       list: List;
+      /** Household cadence, for the "you probably still have this" guess. */
+      purchaseStats: Record<Id, CadenceStats>;
       recipe: Recipe;
       catalog: Record<Id, CatalogItem>;
       pendingCreates: PendingCreate[];
@@ -236,7 +239,10 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
     try {
       const res = await fetch(`/api/lists/${encodeURIComponent(list.id)}/snapshot`);
       if (!res.ok) throw new Error(await readError(res, "Kunde inte förbereda listan."));
-      const snapshot = (await res.json()) as { catalog: CatalogItem[] };
+      const snapshot = (await res.json()) as {
+        catalog: CatalogItem[];
+        purchaseStats?: Record<Id, CadenceStats>;
+      };
       const catalog: Record<Id, CatalogItem> = {};
       for (const item of snapshot.catalog) catalog[item.id] = item;
 
@@ -264,6 +270,7 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
       setFlow({
         step: "sheet",
         list,
+        purchaseStats: snapshot.purchaseStats ?? {},
         recipe: { ...recipe, ingredients: patchedIngredients },
         catalog,
         pendingCreates: [...pending.values()],
@@ -476,6 +483,7 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
         <RecipeAddSheet
           recipe={flow.recipe}
           catalog={flow.catalog}
+          purchaseStats={flow.purchaseStats}
           listName={flow.list.name}
           onCancel={() => setFlow({ step: "idle" })}
           onConfirm={handleConfirm}

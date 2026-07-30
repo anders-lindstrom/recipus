@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 import type { Amount, CatalogItem, Id, Recipe } from "@/lib/domain";
+import { probablyStillHave, type CadenceStats } from "@/lib/cadence";
+import { useFridgeGuess } from "@/lib/client/use-fridge-guess";
 import { formatAmount, scaleAmount } from "@/lib/units";
 import { cn } from "@/lib/utils";
 import { UiIcon } from "./ui-icon";
@@ -18,6 +20,8 @@ import { UiIcon } from "./ui-icon";
 export interface RecipeAddSheetProps {
   recipe: Recipe;
   catalog: Record<Id, CatalogItem>;
+  /** Household purchase cadence, for the "you probably still have this" guess. */
+  purchaseStats: Record<Id, CadenceStats>;
   listName: string;
   onCancel: () => void;
   onConfirm: (
@@ -34,11 +38,32 @@ interface Row {
   scaledAmount: Amount | null;
   isStaple: boolean;
   isNew: boolean;
+  /** Set when purchase history says the cupboard probably covers this. */
+  stillHave: string | null;
+}
+
+/**
+ * "Köpt i går" and friends, or null when the guess does not apply.
+ *
+ * Returns the REASON rather than a boolean, because the reason is what makes a
+ * pre-exclusion defensible: an ingredient quietly missing from the list is
+ * alarming, and one labelled "Köpt i går" is obvious.
+ */
+function stillHaveReason(
+  stats: CadenceStats | undefined,
+  scaledAmount: Amount | null,
+): string | null {
+  if (!stats || !probablyStillHave(stats, scaledAmount)) return null;
+  const days = Math.round(stats.daysSinceLast ?? 0);
+  if (days <= 0) return "Köpt i dag";
+  if (days === 1) return "Köpt i går";
+  return `Köpt för ${days} dgr sedan`;
 }
 
 export function RecipeAddSheet({
   recipe,
   catalog,
+  purchaseStats,
   listName,
   onCancel,
   onConfirm,
@@ -62,16 +87,37 @@ export function RecipeAddSheet({
           // every single time is how a feature becomes noise.
           isStaple: catalogItem?.hasAtHome ?? false,
           isNew: !catalogItem,
+          // The perishable sibling of `hasAtHome`: not "always in the cupboard"
+          // but "bought recently enough, and little enough is wanted, that it
+          // almost certainly still is". Always computed so the reason can be
+          // shown; whether it pre-excludes is the flag's business.
+          stillHave: stillHaveReason(
+            ing.catalogItemId ? purchaseStats[ing.catalogItemId] : undefined,
+            ing.amount ? scaleAmount(ing.amount, factor) : null,
+          ),
         };
       }),
-    [recipe.ingredients, catalog, factor],
+    [recipe.ingredients, catalog, factor, purchaseStats],
   );
 
+  const { enabled: guessEnabled, setEnabled: setGuessEnabled } = useFridgeGuess();
+
+  // Computed once, from the rows as they were on open. Deliberately not derived
+  // state: after this you are editing YOUR choices, and a guess that reasserted
+  // itself when you changed the serving count would fight you.
   const [excluded, setExcluded] = useState<Set<Id>>(
-    () => new Set(rows.filter((r) => r.isStaple).map((r) => r.ingredientId)),
+    () =>
+      new Set(
+        rows
+          .filter((r) => r.isStaple || (guessEnabled && r.stillHave))
+          .map((r) => r.ingredientId),
+      ),
   );
 
   const included = rows.filter((r) => !excluded.has(r.ingredientId));
+  const autoExcluded = rows.filter(
+    (r) => excluded.has(r.ingredientId) && (r.isStaple || r.stillHave),
+  ).length;
 
   function toggle(id: Id) {
     setExcluded((prev) => {
@@ -156,6 +202,20 @@ export function RecipeAddSheet({
           </span>
         </div>
 
+        {/* One tap back to "everything", so a wrong guess costs nothing. The
+            counter above already says how many were dropped; this is the undo. */}
+        {autoExcluded > 0 && (
+          <div className="mx-4 mb-1">
+            <button
+              type="button"
+              onClick={() => setExcluded(new Set())}
+              className="text-caption font-semibold text-brand"
+            >
+              Lägg till allt ändå
+            </button>
+          </div>
+        )}
+
         {/* Rows, not cards: excluding a staple is a toggle on a line of text,
             and the old bordered boxes made each one look like its own object
             you had to consider separately. */}
@@ -196,6 +256,16 @@ export function RecipeAddSheet({
                         Ny vara
                       </span>
                     )}
+                    {/* The reason, not just the fact. An ingredient silently
+                        missing from the list is alarming; one labelled "Köpt i
+                        går" explains itself. Shown whether or not the flag let
+                        it pre-exclude, so turning the guess off downgrades to
+                        information rather than to nothing. */}
+                    {row.stillHave && (
+                      <span className="rounded-full bg-brand-tint px-2 py-0.5 text-badge text-brand-ink uppercase no-underline">
+                        {row.stillHave}
+                      </span>
+                    )}
                     {row.isStaple && (
                       <span className="rounded-full bg-surface-sunken px-2 py-0.5 text-badge text-ink-soft uppercase no-underline">
                         Har hemma
@@ -225,6 +295,39 @@ export function RecipeAddSheet({
             );
           })}
         </ul>
+      </div>
+
+      {/* The flag lives here rather than in a settings screen: this sheet is the
+          only place the guess has any effect, so it is the only place the
+          question makes sense. Off keeps the badges and drops the presumption. */}
+      <div className="mx-4 mt-5 mb-2 flex items-center gap-3 border-t border-line pt-4">
+        <div className="flex-1">
+          <div className="text-body-sm font-semibold text-ink">
+            Hoppa över sånt vi nyligen köpt
+          </div>
+          <div className="mt-0.5 text-caption text-ink-soft">
+            Gäller bara små mängder av varor med köphistorik.
+          </div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={guessEnabled}
+          aria-label="Hoppa över sånt vi nyligen köpt"
+          onClick={() => setGuessEnabled(!guessEnabled)}
+          className={cn(
+            "relative h-7 w-12 flex-none rounded-full transition-colors duration-150",
+            guessEnabled ? "bg-brand" : "bg-line-strong",
+          )}
+        >
+          <span
+            aria-hidden
+            className={cn(
+              "absolute top-1 h-5 w-5 rounded-full bg-white transition-[left] duration-150",
+              guessEnabled ? "left-6" : "left-1",
+            )}
+          />
+        </button>
       </div>
 
       <div className="safe-bottom flex-none border-t border-line bg-surface p-3">
