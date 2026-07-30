@@ -376,6 +376,19 @@ export function createListStore(
     for (const [id, addition] of Object.entries(snapshot.recipeAdditions)) {
       base.recipeAdditions[id] = addition;
     }
+    // The registry. Keyed by the thing that identifies each one — a product by
+    // its id, an alias by its normalized word, a barcode by its EAN — which is
+    // the same identity the reducer's own cases write under, so an op arriving
+    // after a hydrate lands on the record it means.
+    //
+    // Easy to forget, and silent when forgotten: this function maps the snapshot
+    // onto the state map by map, by name, so a map the server has started sending
+    // is simply not read and /varor renders an empty registry after every
+    // hydrate — indistinguishable from a household that has not scanned anything.
+    // There is a test for exactly that.
+    for (const product of snapshot.products) base.products[product.id] = product;
+    for (const alias of snapshot.aliases) base.aliases[alias.aliasNorm] = alias;
+    for (const barcode of snapshot.barcodes) base.barcodes[barcode.ean] = barcode;
     Object.assign(base.meta, snapshot.meta);
 
     const outboxOps = await outbox.pending();

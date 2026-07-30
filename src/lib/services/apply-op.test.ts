@@ -3,17 +3,28 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
 import {
+  barcodes,
+  catalogItemAliases,
   catalogItems,
   contributions,
   listEntries,
   lists,
   ops as opsTable,
+  products,
   purchases,
   recipeAdditions,
+  recipeIngredients,
   recipes,
 } from "@/db/schema";
 import { entryId, manualContributionId } from "@/lib/domain";
 import type { Op } from "@/lib/sync";
+import {
+  aliasKey,
+  barcodeKey,
+  catalogKey,
+  productFieldKey,
+  productKey,
+} from "@/lib/sync";
 import { SEED_ACTOR, upsertSeedCatalogItem } from "@/db/seed";
 import { applyOpToDatabase } from "./apply-op";
 import { loadListSnapshot } from "./list-data";
@@ -50,6 +61,15 @@ function op(kind: string, at: string, fields: Record<string, unknown>): Op {
 const extraItems: string[] = [];
 /** Recipes created by individual tests, for the same cleanup reason. */
 const extraRecipes: string[] = [];
+/**
+ * The registry rows individual tests create, tracked for the same reason.
+ *
+ * Separate lists rather than one, because they have to be deleted in foreign-key
+ * order: a barcode points at a product, an alias points at a vara.
+ */
+const extraProducts: string[] = [];
+const extraEans: string[] = [];
+const extraAliases: string[] = [];
 
 async function seedItem(id: string): Promise<void> {
   extraItems.push(id);
@@ -65,6 +85,36 @@ async function seedItem(id: string): Promise<void> {
         hasAtHome: false,
         useCount: 0,
         lastUsedAt: null,
+      },
+    }),
+    ACTOR,
+  );
+}
+
+/**
+ * A product born the way a scan makes one: named, unplaced, nothing else known.
+ *
+ * `create_product` stamps all four field clocks, so anything a test does to it
+ * afterwards has a genuine clock to lose against — which is the whole point of
+ * the ordering tests below.
+ */
+async function seedProduct(
+  id: string,
+  at = "2026-01-01T00:00:00.000Z",
+): Promise<void> {
+  extraProducts.push(id);
+  await applyOpToDatabase(
+    op("create_product", at, {
+      product: {
+        id,
+        name: id,
+        brand: null,
+        catalogItemId: null,
+        defaultSize: null,
+        sourceSizeText: null,
+        imageUrl: null,
+        createdAt: at,
+        createdBy: ACTOR,
       },
     }),
     ACTOR,
@@ -114,15 +164,26 @@ afterAll(async () => {
   // FK order: purchases and entries reference catalog items, so they go first.
   const allItems = [catalogItemId, ...extraItems];
   await db.delete(purchases).where(inArray(purchases.catalogItemId, allItems));
+  // Scan-sourced purchases carry a product instead of a vara, so they are not
+  // reached by the delete above.
+  await db.delete(purchases).where(inArray(purchases.productId, extraProducts));
   await db
     .delete(opsTable)
     .where(inArray(opsTable.actor, [ACTOR]));
   await db
     .delete(listEntries)
     .where(inArray(listEntries.listId, [listId, otherListId]));
+  await db.delete(barcodes).where(inArray(barcodes.ean, extraEans));
+  await db
+    .delete(catalogItemAliases)
+    .where(inArray(catalogItemAliases.aliasNorm, extraAliases));
+  // Before the catalog items, not after: this cascades to recipe_ingredients,
+  // which reference catalog items without a cascade of their own — so a recipe
+  // left standing makes the item delete below fail on a foreign key.
+  await db.delete(recipes).where(inArray(recipes.id, extraRecipes));
+  await db.delete(products).where(inArray(products.id, extraProducts));
   await db.delete(catalogItems).where(inArray(catalogItems.id, allItems));
   await db.delete(lists).where(inArray(lists.id, [listId, otherListId]));
-  await db.delete(recipes).where(inArray(recipes.id, extraRecipes));
 });
 
 describe("applyOpToDatabase", () => {
@@ -1399,3 +1460,451 @@ describe("seed corrections versus household edits", () => {
     expect(row.useCount).toBeGreaterThan(0);
   });
 });
+
+describe("the registry survives the database", () => {
+  /**
+   * The reconstruction, not the reducer.
+   *
+   * The pure reducer already converges on every op in this block — that is
+   * covered by src/lib/sync/reducer.test.ts. What has broken three times in this
+   * codebase is the trip through Postgres: a clock written to the wrong column, a
+   * clock falling back to one that moves, a record loaded while tombstoned. None
+   * of those are visible without a real database, and every one of them looked
+   * correct when reasoned about.
+   */
+
+  /**
+   * Two products, identical ops, opposite arrival orders.
+   *
+   * A rename at 17:00 and a placing-on-a-vara at 14:00, which cross. With four
+   * independent clocks both edits stick whichever way round they arrive. With a
+   * shared clock — or with a field clock falling back to the row's `updated_at`,
+   * which moves whenever ANY field is written — the placing loses in one order
+   * and wins in the other, and the two products end up different. That is the
+   * shape of every clock bug this file has already paid for.
+   */
+  it("converges when a product rename and an older placing arrive in either order", async () => {
+    const vara = `${catalogItemId}-placed`;
+    await seedItem(vara);
+    const first = `test-apply-op-prod-order-a-${RUN}`;
+    const second = `test-apply-op-prod-order-b-${RUN}`;
+    await seedProduct(first);
+    await seedProduct(second);
+
+    const rename = (id: string) =>
+      applyOpToDatabase(
+        op("update_product", "2026-09-05T17:00:00.000Z", {
+          productId: id,
+          patch: { name: "Arla Mellanmjölk 1,5 l" },
+        }),
+        ACTOR,
+      );
+    const place = (id: string) =>
+      applyOpToDatabase(
+        op("update_product", "2026-09-05T14:00:00.000Z", {
+          productId: id,
+          patch: { catalogItemId: vara },
+        }),
+        ACTOR,
+      );
+
+    // Newer rename first, then the older placing — the order that loses the
+    // placing the moment the two facts share a clock.
+    await rename(first);
+    await place(first);
+
+    await place(second);
+    await rename(second);
+
+    const read = async (id: string) => {
+      const [row] = await db.select().from(products).where(eq(products.id, id));
+      return { name: row.name, catalogItemId: row.catalogItemId };
+    };
+
+    expect(await read(first)).toEqual(await read(second));
+    // And both edits actually landed, rather than converging on having lost both.
+    expect(await read(first)).toEqual({
+      name: "Arla Mellanmjölk 1,5 l",
+      catalogItemId: vara,
+    });
+  });
+
+  /**
+   * A product's clock columns are NULLABLE, and NULL has to keep meaning
+   * "nobody has written this field".
+   *
+   * A product born from Open Food Facts genuinely has never had its mapping
+   * asserted by anyone, which is why these columns differ from `catalog_items`'.
+   * If the loader filled a NULL in from the row clock, OFF's guess would outrank
+   * a human correction made on a phone whose clock sat behind the server's — the
+   * moving-clock bug, arriving where it would be least visible.
+   */
+  it("lets any write land on a field whose clock column is NULL", async () => {
+    const vara = `${catalogItemId}-null-clock`;
+    await seedItem(vara);
+    const id = `test-apply-op-prod-nullclock-${RUN}`;
+    extraProducts.push(id);
+
+    // Inserted directly, the way a future Open Food Facts import would: a row
+    // that exists with no opinion recorded about any of its four facts. The row
+    // clock is deliberately far in the future, so a fallback to it would swallow
+    // the correction below.
+    await db.insert(products).values({
+      id,
+      name: "OFF-namn",
+      createdBy: ACTOR,
+      createdAt: new Date("2050-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2050-01-01T00:00:00.000Z"),
+      updatedBy: "off",
+    });
+
+    await applyOpToDatabase(
+      op("update_product", "2026-09-06T09:00:00.000Z", {
+        productId: id,
+        patch: { catalogItemId: vara },
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db.select().from(products).where(eq(products.id, id));
+    expect(row.catalogItemId).toBe(vara);
+    expect(row.itemUpdatedAt?.toISOString()).toBe("2026-09-06T09:00:00.000Z");
+    // The facts the op said nothing about keep their NULL. Stamping them would
+    // invent a history and beat a later op that actually changes them.
+    expect(row.nameUpdatedAt).toBeNull();
+    expect(row.brandUpdatedAt).toBeNull();
+  });
+
+  /**
+   * Two EANs, one product, and both have to survive.
+   *
+   * This is the entire argument for a row per barcode rather than an array on the
+   * product: last-write-wins on an array silently drops one of two concurrent
+   * additions, and `wins()` has nothing useful to say about merging them.
+   */
+  it("keeps two different barcodes for one product", async () => {
+    const id = `test-apply-op-prod-barcodes-${RUN}`;
+    await seedProduct(id);
+    const swedish = `test-apply-op-ean-se-${RUN}`;
+    const norwegian = `test-apply-op-ean-no-${RUN}`;
+    extraEans.push(swedish, norwegian);
+
+    await applyOpToDatabase(
+      op("link_barcode", "2026-09-07T10:00:00.000Z", {
+        ean: swedish,
+        productId: id,
+        source: "manual",
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("link_barcode", "2026-09-07T10:00:01.000Z", {
+        ean: norwegian,
+        productId: id,
+        source: "off",
+      }),
+      ACTOR,
+    );
+
+    const rows = await db
+      .select()
+      .from(barcodes)
+      .where(inArray(barcodes.ean, [swedish, norwegian]));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.productId === id)).toBe(true);
+    expect(rows.find((r) => r.ean === swedish)?.source).toBe("manual");
+    expect(rows.find((r) => r.ean === norwegian)?.source).toBe("off");
+  });
+
+  /**
+   * A merge, end to end.
+   *
+   * The reducer does exactly two things — tombstone the merged-away vara, record
+   * its word as an alias — and it must NEVER rewrite entry or contribution rows,
+   * because that is what makes it converge (see the op's own comment in
+   * sync/ops.ts). Everything else moves as a bounded server-side effect on the
+   * same boundary purchases already sit on, so both halves are asserted here: the
+   * rows that MUST move, and the entry that must NOT.
+   */
+  it("tombstones the vara, keeps the alias, and leaves the entries alone", async () => {
+    const from = `${catalogItemId}-merge-from`;
+    const to = `${catalogItemId}-merge-to`;
+    const older = `${catalogItemId}-merge-older`;
+    await seedItem(from);
+    await seedItem(to);
+    await seedItem(older);
+
+    const olderAlias = `test-apply-op-alias-older-${RUN}`;
+    const mergedAlias = `test-apply-op-alias-merged-${RUN}`;
+    extraAliases.push(olderAlias, mergedAlias);
+
+    // An earlier merge, so this one has an existing alias to re-point. A chain of
+    // merges is the case where "leave the alias where it is" leaves a word
+    // pointing at a vara that no longer exists.
+    await applyOpToDatabase(
+      op("merge_catalog_items", "2026-09-08T09:00:00.000Z", {
+        fromItemId: older,
+        toItemId: from,
+        aliasNorm: olderAlias,
+      }),
+      ACTOR,
+    );
+
+    // A live entry on the merged-away vara, and the two kinds of history that
+    // point at it.
+    await applyOpToDatabase(
+      op("add_item", "2026-09-08T09:30:00.000Z", { listId, catalogItemId: from }),
+      ACTOR,
+    );
+    const purchaseId = `test-apply-op-purchase-merge-${RUN}`;
+    await db.insert(purchases).values({
+      id: purchaseId,
+      catalogItemId: from,
+      listId,
+      purchasedAt: new Date("2026-09-08T09:40:00.000Z"),
+      actor: ACTOR,
+      clientOpId: randomUUID(),
+    });
+    const recipeId = `test-apply-op-recipe-merge-${RUN}`;
+    extraRecipes.push(recipeId);
+    await db.insert(recipes).values({
+      id: recipeId,
+      title: "Köttfärssås",
+      servings: 4,
+      servingsUnit: "portioner",
+      createdBy: ACTOR,
+      updatedBy: ACTOR,
+    });
+    await db.insert(recipeIngredients).values({
+      id: `${recipeId}-1`,
+      recipeId,
+      position: 0,
+      rawText: "500 g köttfärs",
+      amountValue: 500,
+      amountUnit: "g",
+      catalogItemId: from,
+    });
+
+    const merge = (at: string) =>
+      applyOpToDatabase(
+        op("merge_catalog_items", at, {
+          fromItemId: from,
+          toItemId: to,
+          aliasNorm: mergedAlias,
+        }),
+        ACTOR,
+      );
+    await merge("2026-09-08T10:00:00.000Z");
+
+    const [merged] = await db
+      .select()
+      .from(catalogItems)
+      .where(eq(catalogItems.id, from));
+    expect(merged.deletedAt?.toISOString()).toBe("2026-09-08T10:00:00.000Z");
+
+    const aliasRows = await db
+      .select()
+      .from(catalogItemAliases)
+      .where(inArray(catalogItemAliases.aliasNorm, [olderAlias, mergedAlias]));
+    expect(
+      aliasRows.find((a) => a.aliasNorm === mergedAlias)?.catalogItemId,
+    ).toBe(to);
+    // Re-pointed rather than left aiming at a vara that no longer exists.
+    expect(aliasRows.find((a) => a.aliasNorm === olderAlias)?.catalogItemId).toBe(
+      to,
+    );
+
+    // The entry is the thing that must NOT move. A merge that rewrote it would
+    // stop converging: a long-offline `add_item(from)` arriving afterwards leaves
+    // an entry for `from` in one arrival order and for `to` in the other.
+    const [entry] = await db
+      .select()
+      .from(listEntries)
+      .where(eq(listEntries.id, entryId(listId, from)));
+    expect(entry.catalogItemId).toBe(from);
+    expect(entry.removedAt).toBeNull();
+
+    // History does move, because it has no clock of its own to disagree with.
+    const [purchase] = await db
+      .select()
+      .from(purchases)
+      .where(eq(purchases.id, purchaseId));
+    expect(purchase.catalogItemId).toBe(to);
+    const [ingredient] = await db
+      .select()
+      .from(recipeIngredients)
+      .where(eq(recipeIngredients.id, `${recipeId}-1`));
+    expect(ingredient.catalogItemId).toBe(to);
+
+    // Applying the same merge again must not double-apply anything. The op log
+    // already short-circuits an identical clientOpId, so this is the layer below
+    // that: the effect itself has to be safe to run a second time. Dated LATER on
+    // purpose, so it genuinely wins its comparison and the effect really does run
+    // twice — an op that merely lost would prove nothing about idempotence.
+    await merge("2026-09-08T11:00:00.000Z");
+    const [purchaseAgain] = await db
+      .select()
+      .from(purchases)
+      .where(eq(purchases.id, purchaseId));
+    expect(purchaseAgain.catalogItemId).toBe(to);
+
+  });
+
+  /**
+   * A merge that LOST its comparison must re-point nothing.
+   *
+   * The case that makes the gate load-bearing rather than decorative: the vara
+   * was RETIRED at 11:00, and a merge from a phone that had been in a drawer
+   * turns up afterwards dated 09:00. The reducer refuses it — the tombstone is
+   * newer — so on every client the history stays where it is. Without the same
+   * refusal here, the server would quietly drag it onto a vara no winning op ever
+   * chose, and nothing would ever correct it: an ordinary losing write is fixed
+   * by the next op, but history carries no clock to lose with.
+   */
+  it("re-points nothing when the merge lost to a newer retirement", async () => {
+    const stale = `${catalogItemId}-merge-stale`;
+    const target = `${catalogItemId}-merge-stale-to`;
+    await seedItem(stale);
+    await seedItem(target);
+
+    const purchaseId = `test-apply-op-purchase-stale-${RUN}`;
+    await db.insert(purchases).values({
+      id: purchaseId,
+      catalogItemId: stale,
+      listId,
+      purchasedAt: new Date("2026-09-08T08:00:00.000Z"),
+      actor: ACTOR,
+      clientOpId: randomUUID(),
+    });
+
+    await applyOpToDatabase(
+      op("delete_catalog_item", "2026-09-08T11:00:00.000Z", { itemId: stale }),
+      ACTOR,
+    );
+
+    const staleAlias = `test-apply-op-alias-stale-${RUN}`;
+    extraAliases.push(staleAlias);
+    await applyOpToDatabase(
+      op("merge_catalog_items", "2026-09-08T09:00:00.000Z", {
+        fromItemId: stale,
+        toItemId: target,
+        aliasNorm: staleAlias,
+      }),
+      ACTOR,
+    );
+
+    const [purchase] = await db
+      .select()
+      .from(purchases)
+      .where(eq(purchases.id, purchaseId));
+    expect(purchase.catalogItemId).toBe(stale);
+  });
+
+  /**
+   * The merged-away vara must not travel to a hydrating client as a record —
+   * only as a clock.
+   *
+   * That distinction is the fix for a live resurrection bug already recorded in
+   * DECISIONS.md: a missing clock is not "no opinion", it is *anything wins*,
+   * because `wins(op, undefined)` is true whatever the op's timestamp says. So a
+   * stale `create_catalog_item` replayed from an outbox would bring the merged
+   * word straight back.
+   */
+  it("sends a tombstoned vara's clock without its record", async () => {
+    const gone = `${catalogItemId}-deleted-vara`;
+    await seedItem(gone);
+
+    await applyOpToDatabase(
+      op("delete_catalog_item", "2026-09-09T11:00:00.000Z", { itemId: gone }),
+      ACTOR,
+    );
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    expect(snapshot!.catalog.find((c) => c.id === gone)).toBeUndefined();
+    expect(snapshot!.meta[catalogKey(gone)]).toEqual({
+      at: "2026-09-09T11:00:00.000Z",
+      by: ACTOR,
+      deleted: true,
+    });
+  });
+
+  /**
+   * The registry has to arrive with the snapshot, or it is empty until an op
+   * happens to turn up — and on a cold open in a shop, none will.
+   *
+   * The meta matters as much as the records: without the product's `item` clock,
+   * a stale `update_product` replayed from an outbox has nothing to lose against
+   * and silently re-places the product on whatever vara it last guessed.
+   */
+  it("hydrates products, aliases and barcodes with their clocks", async () => {
+    const vara = `${catalogItemId}-hydrated`;
+    await seedItem(vara);
+    const id = `test-apply-op-prod-hydrate-${RUN}`;
+    await seedProduct(id);
+    const ean = `test-apply-op-ean-hydrate-${RUN}`;
+    extraEans.push(ean);
+    const alias = `test-apply-op-alias-hydrate-${RUN}`;
+    extraAliases.push(alias);
+    const aliasFrom = `${catalogItemId}-alias-source`;
+    await seedItem(aliasFrom);
+
+    await applyOpToDatabase(
+      op("update_product", "2026-09-10T12:00:00.000Z", {
+        productId: id,
+        patch: { catalogItemId: vara, defaultSize: { value: 1.5, unit: "l" } },
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("link_barcode", "2026-09-10T12:05:00.000Z", {
+        ean,
+        productId: id,
+        source: "manual",
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("merge_catalog_items", "2026-09-10T12:10:00.000Z", {
+        fromItemId: aliasFrom,
+        toItemId: vara,
+        aliasNorm: alias,
+      }),
+      ACTOR,
+    );
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+
+    const product = snapshot!.products.find((p) => p.id === id);
+    expect(product?.catalogItemId).toBe(vara);
+    expect(product?.defaultSize).toEqual({ value: 1.5, unit: "l" });
+    expect(snapshot!.meta[productKey(id)]).toBeDefined();
+    expect(snapshot!.meta[productFieldKey(id, "item")]).toEqual({
+      at: "2026-09-10T12:00:00.000Z",
+      by: ACTOR,
+    });
+    // Its own column, not the row's. The row clock moved when the barcode and
+    // the size were written; the mapping's did not.
+    expect(snapshot!.meta[productFieldKey(id, "size")]?.at).toBe(
+      "2026-09-10T12:00:00.000Z",
+    );
+
+    expect(snapshot!.barcodes.find((b) => b.ean === ean)).toEqual({
+      ean,
+      productId: id,
+      source: "manual",
+    });
+    expect(snapshot!.meta[barcodeKey(ean)]).toEqual({
+      at: "2026-09-10T12:05:00.000Z",
+      by: ACTOR,
+    });
+
+    expect(
+      snapshot!.aliases.find((a) => a.aliasNorm === alias)?.catalogItemId,
+    ).toBe(vara);
+    expect(snapshot!.meta[aliasKey(alias)]).toEqual({
+      at: "2026-09-10T12:10:00.000Z",
+      by: ACTOR,
+    });
+  });
+});
+

@@ -1,6 +1,8 @@
 import { and, asc, desc, eq, gte, inArray, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import {
+  barcodes,
+  catalogItemAliases,
   catalogItems,
   categories,
   contributions,
@@ -13,12 +15,16 @@ import {
 } from "@/db/schema";
 import { isClearedManualContribution } from "@/lib/domain";
 import type {
+  BarcodeLink,
+  BarcodeSource,
   CatalogItem,
+  CatalogItemAlias,
   Category,
   Contribution,
   Id,
   List,
   ListEntry,
+  Product,
   RecipeAddition,
   RecordMeta,
   Unit,
@@ -31,6 +37,8 @@ import {
 } from "@/lib/cadence";
 import {
   additionKey,
+  aliasKey,
+  barcodeKey,
   catalogFieldKey,
   catalogKey,
   contributionFieldKey,
@@ -38,8 +46,10 @@ import {
   entryKey,
   entryPriorityKey,
   listKey,
+  productFieldKey,
+  productKey,
 } from "@/lib/sync";
-import { catalogFieldClocks } from "./clocks";
+import { catalogFieldClocks, productFieldClocks } from "./clocks";
 import {
   effectiveCatalogItemId,
   purchaseProductJoin,
@@ -60,6 +70,18 @@ export interface ListSnapshot {
   catalog: CatalogItem[];
   entries: ListEntry[];
   contributions: Contribution[];
+  /**
+   * The registry, household-wide exactly as `catalog` is.
+   *
+   * It travels with the snapshot rather than behind its own endpoint because it
+   * is part of `SyncState`: a client that hydrates without it holds an empty
+   * registry until an op happens to arrive, and on a cold open in a shop none
+   * will. Scanning would then ask about barcodes the household answered months
+   * ago.
+   */
+  products: Product[];
+  aliases: CatalogItemAlias[];
+  barcodes: BarcodeLink[];
   /**
    * Full records, in the shape the reducer needs — NOT display info.
    *
@@ -117,7 +139,14 @@ export async function loadListSnapshot(
     .limit(1);
   if (!listRow) return null;
 
-  const [categoryRows, catalogRows, entryRows] = await Promise.all([
+  const [
+    categoryRows,
+    catalogRows,
+    entryRows,
+    productRows,
+    aliasRows,
+    barcodeRows,
+  ] = await Promise.all([
     db.select().from(categories).orderBy(asc(categories.position)),
     db
       .select()
@@ -126,6 +155,14 @@ export async function loadListSnapshot(
       // tie-break so the catalog never reshuffles arbitrarily between loads.
       .orderBy(desc(catalogItems.useCount), asc(catalogItems.name)),
     db.select().from(listEntries).where(eq(listEntries.listId, listId)),
+    // Unfiltered, tombstones included — the clock has to travel even when the
+    // record does not. Filtering removed rows out here is the bug that
+    // resurrected removed recipe additions, one table over, and it left no
+    // trace: a missing clock reads as "no prior record", so a stale op replayed
+    // from an outbox wins by default. The records are withheld below instead.
+    db.select().from(products),
+    db.select().from(catalogItemAliases),
+    db.select().from(barcodes),
   ]);
 
   const entryIds = entryRows.map((e) => e.id);
@@ -200,6 +237,11 @@ export async function loadListSnapshot(
     meta[catalogKey(c.id)] = {
       at: c.updatedAt.toISOString(),
       by: c.updatedBy,
+      // Retired by "Ta bort", or merged away. Withheld from the records below
+      // while the clock still travels, exactly as a removed recipe addition is:
+      // without the clock, a stale `create_catalog_item` from a phone that was in
+      // a drawer has nothing to lose against and brings the vara straight back.
+      deleted: c.deletedAt !== null ? true : undefined,
     };
     // The four editable facts each resolve against their own clock — see the
     // reducer's update_catalog_item. Emitted here as well as in `apply-op`'s
@@ -210,6 +252,36 @@ export async function loadListSnapshot(
     for (const [field, clock] of catalogFieldClocks(c)) {
       meta[catalogFieldKey(c.id, field)] = clock;
     }
+  }
+  for (const p of productRows) {
+    meta[productKey(p.id)] = {
+      at: p.updatedAt.toISOString(),
+      by: p.updatedBy,
+      deleted: p.deletedAt !== null ? true : undefined,
+    };
+    // Each from its own NULLABLE column, and an unset one emits nothing at all —
+    // see productFieldClocks. Absent is what the reducer holds for a product
+    // whose mapping nobody has asserted yet, and absent is what has to be
+    // reconstructed, or the review queue's whole purpose is quietly outranked.
+    for (const [field, clock] of productFieldClocks(p)) {
+      meta[productFieldKey(p.id, field)] = clock;
+    }
+  }
+  for (const a of aliasRows) {
+    meta[aliasKey(a.aliasNorm)] = {
+      at: a.updatedAt.toISOString(),
+      by: a.updatedBy,
+      deleted: a.deletedAt !== null ? true : undefined,
+    };
+  }
+  for (const b of barcodeRows) {
+    // One editable fact — which product this EAN points at — so the record-level
+    // clock IS that fact's clock and there is nothing to disambiguate.
+    meta[barcodeKey(b.ean)] = {
+      at: b.updatedAt.toISOString(),
+      by: b.updatedBy,
+      deleted: b.deletedAt !== null ? true : undefined,
+    };
   }
   for (const e of entryRows) {
     meta[entryKey(e.id)] = {
@@ -262,17 +334,21 @@ export async function loadListSnapshot(
     }
   }
 
-  const catalog: CatalogItem[] = catalogRows.map((c) => ({
-    id: c.id,
-    name: c.name,
-    nameNorm: c.nameNorm,
-    categoryId: c.categoryId,
-    iconRef: c.iconRef,
-    isCustom: c.isCustom,
-    hasAtHome: c.hasAtHome,
-    useCount: c.useCount,
-    lastUsedAt: c.lastUsedAt?.toISOString() ?? null,
-  }));
+  // Tombstoned varor are dropped here, not in the query: their clocks were
+  // emitted above and have to survive the round trip, the records must not.
+  const catalog: CatalogItem[] = catalogRows
+    .filter((c) => c.deletedAt === null)
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      nameNorm: c.nameNorm,
+      categoryId: c.categoryId,
+      iconRef: c.iconRef,
+      isCustom: c.isCustom,
+      hasAtHome: c.hasAtHome,
+      useCount: c.useCount,
+      lastUsedAt: c.lastUsedAt?.toISOString() ?? null,
+    }));
 
   // Recency+frequency ordering. This is the cheap mechanism that makes the
   // catalog feel personal after about three shops, long before the cadence
@@ -335,6 +411,34 @@ export async function loadListSnapshot(
         modifier: c.modifier,
       }))
       .filter((c) => !isClearedManualContribution(c)),
+    products: productRows
+      .filter((p) => p.deletedAt === null)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        brand: p.brand,
+        catalogItemId: p.catalogItemId,
+        defaultSize: toAmount(p.defaultSizeValue, p.defaultSizeUnit),
+        sourceSizeText: p.sourceSizeText,
+        imageUrl: p.imageUrl,
+        createdAt: p.createdAt.toISOString(),
+        createdBy: p.createdBy,
+      })),
+    aliases: aliasRows
+      .filter((a) => a.deletedAt === null)
+      .map((a) => ({
+        aliasNorm: a.aliasNorm,
+        catalogItemId: a.catalogItemId,
+        createdAt: a.createdAt.toISOString(),
+        createdBy: a.createdBy,
+      })),
+    barcodes: barcodeRows
+      .filter((b) => b.deletedAt === null)
+      .map((b) => ({
+        ean: b.ean,
+        productId: b.productId,
+        source: b.source as BarcodeSource,
+      })),
     recipeAdditions: additions,
     recipeTitles,
     meta,

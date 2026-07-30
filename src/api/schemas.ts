@@ -181,6 +181,45 @@ export const barcodeMappingSchema = z
   .object({ catalogItemId: z.string().min(1) })
   .openapi("BarcodeMapping");
 
+/**
+ * The registry's three record shapes. Declared HERE rather than beside the
+ * registry ops below, because `listSnapshotSchema` carries them too and a `const`
+ * referenced before its declaration is a runtime ReferenceError, not a type
+ * error — the module body evaluates top to bottom.
+ */
+export const productSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    brand: z.string().nullable(),
+    catalogItemId: z.string().nullable(),
+    defaultSize: amountSchema.nullable(),
+    sourceSizeText: z.string().nullable(),
+    imageUrl: z.string().nullable(),
+    createdAt: z.string(),
+    createdBy: z.string(),
+  })
+  .openapi("Product");
+
+export const catalogItemAliasSchema = z
+  .object({
+    aliasNorm: z.string(),
+    catalogItemId: z.string(),
+    createdAt: z.string(),
+    createdBy: z.string(),
+  })
+  .openapi("CatalogItemAlias");
+
+/** One EAN pointing at a product — not to be confused with `barcodeSchema`,
+ * which is the flattened read model the scan endpoint answers with. */
+export const barcodeLinkSchema = z
+  .object({
+    ean: z.string(),
+    productId: z.string(),
+    source: z.enum(["off", "manual"]),
+  })
+  .openapi("BarcodeLink");
+
 export const listSnapshotSchema = z
   .object({
     list: listSchema,
@@ -188,6 +227,13 @@ export const listSnapshotSchema = z
     catalog: z.array(catalogItemSchema),
     entries: z.array(listEntrySchema),
     contributions: z.array(contributionSchema),
+    // The registry, household-wide like `catalog`. Without it a hydrating client
+    // holds an empty registry until an op happens to arrive, and on a cold open
+    // in a shop none will — so scanning would ask again about barcodes the
+    // household answered months ago.
+    products: z.array(productSchema),
+    aliases: z.array(catalogItemAliasSchema),
+    barcodes: z.array(barcodeLinkSchema),
     // Full records, in the reducer's shape — a hydrating client needs to
     // populate SyncState.recipeAdditions, which display info cannot do.
     recipeAdditions: z.record(z.string(), recipeAdditionSchema),
@@ -374,22 +420,9 @@ const moveItemOpSchema = z.object({
 
 /**
  * The registry ops. Mirrors the `RegistryOp` union in src/lib/sync/ops.ts —
- * see there for why any of this is shaped the way it is.
+ * see there for why any of this is shaped the way it is. `productSchema` is
+ * declared with the other entities above, since the snapshot carries it too.
  */
-const productSchema = z
-  .object({
-    id: z.string(),
-    name: z.string(),
-    brand: z.string().nullable(),
-    catalogItemId: z.string().nullable(),
-    defaultSize: amountSchema.nullable(),
-    sourceSizeText: z.string().nullable(),
-    imageUrl: z.string().nullable(),
-    createdAt: z.string(),
-    createdBy: z.string(),
-  })
-  .openapi("Product");
-
 const createProductOpSchema = z.object({
   ...opBase,
   kind: z.literal("create_product"),

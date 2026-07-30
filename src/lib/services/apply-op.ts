@@ -3,6 +3,8 @@ import { EventEmitter } from "node:events";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
+  barcodes,
+  catalogItemAliases,
   catalogItems,
   contributions,
   listEntries,
@@ -11,6 +13,7 @@ import {
   products,
   purchases,
   recipeAdditions,
+  recipeIngredients,
 } from "@/db/schema";
 import {
   emptyState,
@@ -19,6 +22,7 @@ import {
   manualContributionId,
   recipeContributionId,
   type Amount,
+  type BarcodeSource,
   type Contribution,
   type Id,
   type RecordMeta,
@@ -27,7 +31,9 @@ import {
 } from "@/lib/domain";
 import {
   additionKey,
+  aliasKey,
   applyOp,
+  barcodeKey,
   catalogFieldKey,
   catalogKey,
   contributionFieldKey,
@@ -36,16 +42,22 @@ import {
   entryPriorityKey,
   listKey,
   opListId,
+  productFieldKey,
+  productKey,
   CATALOG_FIELDS,
   MANUAL_FIELDS,
+  PRODUCT_FIELDS,
   type CatalogField,
   type ManualField,
   type Op,
+  type ProductField,
 } from "@/lib/sync";
 import {
   catalogClockColumns,
   catalogFieldClocks,
   latestClock,
+  productClockColumns,
+  productFieldClocks,
 } from "./clocks";
 import {
   effectiveCatalogItemId,
@@ -95,6 +107,10 @@ interface Scope {
   manualContributionFields: Array<{ entryId: Id; field: ManualField }>;
   contributionIds: Set<Id>;
   additionIds: Set<Id>;
+  productIds: Set<Id>;
+  /** Keyed by the normalized word, which is the alias's whole identity. */
+  aliasNorms: Set<string>;
+  eans: Set<string>;
 }
 
 function emptyScope(): Scope {
@@ -105,6 +121,9 @@ function emptyScope(): Scope {
     manualContributionFields: [],
     contributionIds: new Set(),
     additionIds: new Set(),
+    productIds: new Set(),
+    aliasNorms: new Set(),
+    eans: new Set(),
   };
 }
 
@@ -193,6 +212,29 @@ async function loadStateSlice(
       // list their addition belongs to. See the op's own comment in sync/ops.ts.
       break;
     }
+    case "create_product":
+      scope.productIds.add(op.product.id);
+      break;
+    case "update_product":
+      scope.productIds.add(op.productId);
+      break;
+    // Only the barcode row. The product it points at is neither read nor written
+    // by the reducer — that is what makes two phones linking two EANs to one
+    // product a non-conflict rather than a merge nobody can perform.
+    case "link_barcode":
+      scope.eans.add(op.ean);
+      break;
+    case "delete_catalog_item":
+      scope.catalogIds.add(op.itemId);
+      break;
+    case "merge_catalog_items":
+      // The merged-away vara and the alias, and deliberately nothing else. The
+      // surviving vara is never written, and entries and contributions are never
+      // touched at all — see the reducer's own comment on this op for why that
+      // restraint is what makes a merge converge.
+      scope.catalogIds.add(op.fromItemId);
+      scope.aliasNorms.add(op.aliasNorm);
+      break;
   }
 
   const state = emptyState();
@@ -214,6 +256,9 @@ async function loadStateSlice(
     recipeContribRows,
     additionRows,
     removeRecipeContribRows,
+    productRows,
+    aliasRows,
+    barcodeRows,
   ] = await Promise.all([
     scope.listIds.size
       ? tx.select().from(lists).where(inArray(lists.id, [...scope.listIds]))
@@ -264,6 +309,20 @@ async function loadStateSlice(
           .from(contributions)
           .where(eq(contributions.recipeAdditionId, op.recipeAdditionId))
       : Promise.resolve([]),
+    scope.productIds.size
+      ? tx.select().from(products).where(inArray(products.id, [...scope.productIds]))
+      : Promise.resolve([]),
+    scope.aliasNorms.size
+      ? tx
+          .select()
+          .from(catalogItemAliases)
+          .where(
+            inArray(catalogItemAliases.aliasNorm, [...scope.aliasNorms]),
+          )
+      : Promise.resolve([]),
+    scope.eans.size
+      ? tx.select().from(barcodes).where(inArray(barcodes.ean, [...scope.eans]))
+      : Promise.resolve([]),
   ]);
 
   for (const row of listRows) {
@@ -285,17 +344,29 @@ async function loadStateSlice(
   }
 
   for (const row of catalogRows) {
+    // Tombstoned by `delete_catalog_item` or by the losing half of a merge. The
+    // CLOCK still travels — a missing clock is not "no opinion", it is "anything
+    // wins" — but the record does not, or the reducer would be handed a vara the
+    // client, running the same ops, does not have. `update_catalog_item` then
+    // no-ops on it here exactly as it does there.
+    const deleted = row.deletedAt !== null;
     state.meta[catalogKey(row.id)] = {
       at: row.updatedAt.toISOString(),
       by: row.updatedBy,
+      deleted: deleted ? true : undefined,
     };
     // Four independent clocks, read straight from their own columns. No
     // fallback to the row clock: that clock moves whenever ANY field is
     // written, so a field that fell back to it would silently inherit an
     // unrelated write's timestamp and start beating ops it should lose to.
+    //
+    // Emitted for a tombstoned row too: the field clocks outlive the record for
+    // the same reason the record clock does, and a resurrecting create must lose
+    // to a rename that genuinely came after it.
     for (const [field, clock] of catalogFieldClocks(row)) {
       state.meta[catalogFieldKey(row.id, field)] = clock;
     }
+    if (deleted) continue;
     state.catalog[row.id] = {
       id: row.id,
       name: row.name,
@@ -397,6 +468,67 @@ async function loadStateSlice(
     };
   }
 
+  for (const row of productRows) {
+    const deleted = row.deletedAt !== null;
+    state.meta[productKey(row.id)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    // Each from its OWN column, and a NULL column emits nothing at all. See
+    // productFieldClocks: NULL means "no op has ever written this field", which
+    // is the state a product born from Open Food Facts is genuinely in.
+    for (const [field, clock] of productFieldClocks(row)) {
+      state.meta[productFieldKey(row.id, field)] = clock;
+    }
+    if (deleted) continue;
+    state.products[row.id] = {
+      id: row.id,
+      name: row.name,
+      brand: row.brand,
+      catalogItemId: row.catalogItemId,
+      defaultSize: toAmount(row.defaultSizeValue, row.defaultSizeUnit),
+      sourceSizeText: row.sourceSizeText,
+      imageUrl: row.imageUrl,
+      createdAt: row.createdAt.toISOString(),
+      createdBy: row.createdBy,
+    };
+  }
+
+  for (const row of aliasRows) {
+    const deleted = row.deletedAt !== null;
+    state.meta[aliasKey(row.aliasNorm)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    if (deleted) continue;
+    state.aliases[row.aliasNorm] = {
+      aliasNorm: row.aliasNorm,
+      catalogItemId: row.catalogItemId,
+      createdAt: row.createdAt.toISOString(),
+      createdBy: row.createdBy,
+    };
+  }
+
+  for (const row of barcodeRows) {
+    const deleted = row.deletedAt !== null;
+    state.meta[barcodeKey(row.ean)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    if (deleted) continue;
+    // One editable fact — which product this EAN points at — so the record-level
+    // clock IS that fact's clock and there is nothing for a field clock to
+    // disambiguate.
+    state.barcodes[row.ean] = {
+      ean: row.ean,
+      productId: row.productId,
+      source: row.source as BarcodeSource,
+    };
+  }
+
   for (const row of additionRows) {
     const deleted = row.removedAt !== null;
     state.meta[additionKey(row.id)] = {
@@ -470,11 +602,32 @@ async function writeList(tx: Tx, id: Id, next: SyncState): Promise<void> {
 
 async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> {
   const rowMeta = next.meta[catalogKey(id)];
+  if (!rowMeta) return;
   const item = next.catalog[id];
-  // Missing item with a meta entry means update_catalog_item targeted a row
-  // we don't have — the reducer no-ops that too (see reducer.ts), so there is
-  // nothing to write.
-  if (!rowMeta || !item) return;
+  if (!item) {
+    /**
+     * Retired by `delete_catalog_item`, or the losing half of a merge.
+     *
+     * Only when the clock says so. A meta entry with no record and no tombstone
+     * means `update_catalog_item` targeted a row this server does not have — the
+     * reducer no-ops that too, so there is nothing to write.
+     *
+     * The four field clocks are deliberately NOT touched. Existence is not a
+     * field of the row, it is the record itself, and it already has the
+     * record-level clock; giving it a field clock as well would be the second
+     * clock for one fact that this codebase has paid for three times.
+     */
+    if (!rowMeta.deleted) return;
+    await tx
+      .update(catalogItems)
+      .set({
+        deletedAt: new Date(rowMeta.at),
+        updatedAt: new Date(rowMeta.at),
+        updatedBy: rowMeta.by,
+      })
+      .where(eq(catalogItems.id, id));
+    return;
+  }
 
   const fieldMeta = (field: CatalogField): RecordMeta =>
     next.meta[catalogFieldKey(id, field)] ?? rowMeta;
@@ -494,6 +647,7 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
       hasAtHome: item.hasAtHome,
       useCount: item.useCount,
       lastUsedAt: item.lastUsedAt ? new Date(item.lastUsedAt) : null,
+      deletedAt: null,
       updatedAt: new Date(touched.at),
       updatedBy: touched.by,
       ...clocks,
@@ -507,6 +661,11 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
         iconRef: item.iconRef,
         isCustom: item.isCustom,
         hasAtHome: item.hasAtHome,
+        // Cleared, so a `create_catalog_item` newer than the retirement actually
+        // brings the vara back rather than writing its fields into a row that
+        // stays invisible. Soft deletes are only reversible if something reverses
+        // them.
+        deletedAt: null,
         // `useCount` and `lastUsedAt` are deliberately NOT updated here. They
         // are maintained by the purchase side effects with an atomic
         // `use_count + 1`, and writing an absolute value loaded earlier in this
@@ -748,6 +907,156 @@ async function writeAddition(tx: Tx, id: Id, next: SyncState): Promise<void> {
   }
 }
 
+/**
+ * A product, with its four clocks in their own four column pairs.
+ *
+ * The clocks are NULLABLE here and NOT NULL for a vara, and preserving that is
+ * the whole care in this function: a product born from Open Food Facts has
+ * genuinely never had its mapping asserted by anyone, and a clock invented for it
+ * would put the machine's guess ahead of the human correction the review queue
+ * exists to collect. `productClockColumns` writes NULL for a field the reducer
+ * holds no clock for; nothing falls back to `updated_at`.
+ */
+async function writeProduct(tx: Tx, id: Id, next: SyncState): Promise<void> {
+  const rowMeta = next.meta[productKey(id)];
+  const product = next.products[id];
+  // A record with no meta cannot happen; meta with no record means either an
+  // `update_product` for a product this server has never seen (the reducer
+  // no-ops that too) or a tombstone, which is already in the column.
+  if (!rowMeta || !product) return;
+
+  const fieldMeta = (field: ProductField): RecordMeta | undefined =>
+    next.meta[productFieldKey(id, field)];
+  const clocks = productClockColumns(fieldMeta);
+  // Derived from whatever clocks exist, never stamped with whichever op arrived
+  // last — see latestClock. The row clock is not a conflict input for any field
+  // on this row; it exists so the tombstone has a timestamp and so /varor can
+  // order by recency.
+  const touched = latestClock([
+    rowMeta,
+    ...PRODUCT_FIELDS.map(fieldMeta).filter((m) => m !== undefined),
+  ]);
+
+  await tx
+    .insert(products)
+    .values({
+      id: product.id,
+      name: product.name,
+      brand: product.brand,
+      catalogItemId: product.catalogItemId,
+      defaultSizeValue: product.defaultSize?.value ?? null,
+      defaultSizeUnit: product.defaultSize?.unit ?? null,
+      sourceSizeText: product.sourceSizeText,
+      imageUrl: product.imageUrl,
+      // Earliest-wins, resolved by the reducer (`earliestCreation`) rather than
+      // here, because two offline phones scanning one unknown EAN both author a
+      // create for the same derived id and only one creation can be recorded.
+      // Written on conflict too: a losing create still lowers this.
+      createdAt: new Date(product.createdAt),
+      createdBy: product.createdBy,
+      deletedAt: null,
+      updatedAt: new Date(touched.at),
+      updatedBy: touched.by,
+      ...clocks,
+    })
+    .onConflictDoUpdate({
+      target: products.id,
+      set: {
+        name: product.name,
+        brand: product.brand,
+        catalogItemId: product.catalogItemId,
+        defaultSizeValue: product.defaultSize?.value ?? null,
+        defaultSizeUnit: product.defaultSize?.unit ?? null,
+        sourceSizeText: product.sourceSizeText,
+        imageUrl: product.imageUrl,
+        createdAt: new Date(product.createdAt),
+        createdBy: product.createdBy,
+        deletedAt: null,
+        updatedAt: new Date(touched.at),
+        updatedBy: touched.by,
+        ...clocks,
+      },
+    });
+}
+
+/**
+ * The merged-away word, kept so old recipe lines go on resolving.
+ *
+ * `createdAt`/`createdBy` come from the reducer's own record rather than from
+ * this call, so they are the WINNING merge's stamp in either arrival order — the
+ * same shape as the barcode pointer below, which the schema deliberately models
+ * on this one.
+ */
+async function writeAlias(tx: Tx, aliasNorm: string, next: SyncState): Promise<void> {
+  const meta = next.meta[aliasKey(aliasNorm)];
+  const alias = next.aliases[aliasNorm];
+  if (!meta || !alias) return;
+
+  await tx
+    .insert(catalogItemAliases)
+    .values({
+      aliasNorm: alias.aliasNorm,
+      catalogItemId: alias.catalogItemId,
+      createdAt: new Date(alias.createdAt),
+      createdBy: alias.createdBy,
+      deletedAt: null,
+      updatedAt: new Date(meta.at),
+      updatedBy: meta.by,
+    })
+    .onConflictDoUpdate({
+      target: catalogItemAliases.aliasNorm,
+      set: {
+        catalogItemId: alias.catalogItemId,
+        createdAt: new Date(alias.createdAt),
+        createdBy: alias.createdBy,
+        deletedAt: null,
+        updatedAt: new Date(meta.at),
+        updatedBy: meta.by,
+      },
+    });
+}
+
+/**
+ * One EAN, pointing at a product.
+ *
+ * `BarcodeLink` carries no creation info — the reducer has no use for it — so
+ * these columns are stamped from the record-level clock, which is the winning
+ * op's and therefore the same in either arrival order. Taking them from whichever
+ * write happened to insert the row first would make them depend on delivery
+ * order, which is the one property nothing in this file is allowed to have.
+ */
+async function writeBarcode(tx: Tx, ean: string, next: SyncState): Promise<void> {
+  const meta = next.meta[barcodeKey(ean)];
+  const link = next.barcodes[ean];
+  if (!meta || !link) return;
+  const at = new Date(meta.at);
+
+  await tx
+    .insert(barcodes)
+    .values({
+      ean: link.ean,
+      productId: link.productId,
+      source: link.source,
+      createdAt: at,
+      createdBy: meta.by,
+      deletedAt: null,
+      updatedAt: at,
+      updatedBy: meta.by,
+    })
+    .onConflictDoUpdate({
+      target: barcodes.ean,
+      set: {
+        productId: link.productId,
+        source: link.source,
+        createdAt: at,
+        createdBy: meta.by,
+        deletedAt: null,
+        updatedAt: at,
+        updatedBy: meta.by,
+      },
+    });
+}
+
 async function persist(tx: Tx, next: SyncState, scope: Scope): Promise<void> {
   for (const id of scope.listIds) await writeList(tx, id, next);
   for (const id of scope.catalogIds) await writeCatalogItem(tx, id, next);
@@ -757,6 +1066,9 @@ async function persist(tx: Tx, next: SyncState, scope: Scope): Promise<void> {
   }
   for (const id of scope.contributionIds) await writeContribution(tx, id, next);
   for (const id of scope.additionIds) await writeAddition(tx, id, next);
+  for (const id of scope.productIds) await writeProduct(tx, id, next);
+  for (const aliasNorm of scope.aliasNorms) await writeAlias(tx, aliasNorm, next);
+  for (const ean of scope.eans) await writeBarcode(tx, ean, next);
 }
 
 /**
@@ -803,6 +1115,63 @@ async function recordPurchaseIfBought(tx: Tx, op: Op, next: SyncState): Promise<
     .update(catalogItems)
     .set({ useCount: sql`${catalogItems.useCount} + 1`, lastUsedAt: new Date(op.at) })
     .where(eq(catalogItems.id, op.catalogItemId));
+}
+
+/**
+ * The other half of a merge — the half the reducer must not do.
+ *
+ * `merge_catalog_items` tombstones the losing vara and records its word as an
+ * alias, and NOTHING else, because a merge implemented as row rewriting does not
+ * converge: `merge(B→A)` at T5 followed by a long-offline `add_item(B)` at T7
+ * ends with an entry for B in one arrival order and for A in the other. So the
+ * re-pointing lives here, on the same boundary `recordPurchaseIfBought` sits on,
+ * and it is deliberately restricted to rows that carry NO clock of their own:
+ *
+ *   - `purchases` and `recipe_ingredients` never go through the reducer at all,
+ *     so moving them can contradict nothing.
+ *   - `catalog_item_aliases` DOES sync, and this moves it anyway — because the
+ *     alternative is a chain of merges leaving old words aiming at a vara that no
+ *     longer exists, which breaks the one thing the alias is for. The stated
+ *     cost: a client holding that alias keeps the old target until it rehydrates.
+ *     Bounded and self-repairing, unlike a word that resolves to a tombstone.
+ *
+ * Entries and contributions are NOT here, and that omission is the design rather
+ * than an oversight. Both arrival orders end with the same orphan entry on a
+ * tombstoned vara: visible, manually fixable, and above all identical everywhere.
+ *
+ * Idempotent by construction — every statement is `WHERE catalog_item_id =
+ * fromItemId`, which matches nothing on a second run — and gated on the op having
+ * actually WON, so a stale merge that lost to a newer one never re-points
+ * anything.
+ */
+async function repointMergedCatalogItem(
+  tx: Tx,
+  op: Op,
+  next: SyncState,
+): Promise<void> {
+  if (op.kind !== "merge_catalog_items") return;
+  if (!wonThisOp(next, catalogKey(op.fromItemId), op)) return;
+
+  // Scan-sourced purchases are deliberately untouched: they carry a product, not
+  // a vara, and resolve through it (see purchase-attribution.ts). Moving the
+  // product's mapping is a separate, human decision with its own clock.
+  await tx
+    .update(purchases)
+    .set({ catalogItemId: op.toItemId })
+    .where(eq(purchases.catalogItemId, op.fromItemId));
+
+  await tx
+    .update(recipeIngredients)
+    .set({ catalogItemId: op.toItemId })
+    .where(eq(recipeIngredients.catalogItemId, op.fromItemId));
+
+  // Aliases that already pointed at the merged-away vara. The alias this op
+  // itself creates was written by `persist` above and already names `toItemId`,
+  // so it is not matched here.
+  await tx
+    .update(catalogItemAliases)
+    .set({ catalogItemId: op.toItemId })
+    .where(eq(catalogItemAliases.catalogItemId, op.fromItemId));
 }
 
 /**
@@ -940,6 +1309,7 @@ export async function applyOpToDatabase(
     await persist(tx, next, scope);
     await recordPurchaseIfBought(tx, safeOp, next);
     await retractPurchaseIfUndo(tx, safeOp);
+    await repointMergedCatalogItem(tx, safeOp, next);
 
     const [inserted] = await tx
       .insert(opsTable)
