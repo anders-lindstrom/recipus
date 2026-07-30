@@ -420,13 +420,25 @@ export function ListScreen({
             </span>
           ))}
 
-          {/* The only way into the recipe screens. Everything else up here is
-              about the list you are standing in front of, so recipes get one
-              quiet icon rather than a nav bar competing with the tiles. */}
+          {/* The two other screens, as quiet icons rather than a nav bar
+              competing with the tiles. Everything else up here is about the list
+              you are standing in front of.
+
+              `/varor` is the household's vocabulary — the same set of things the
+              catalog well below is drawn from, which is why it takes the grid
+              glyph the aisle rail already uses for "all of it". */}
+          <Link
+            href="/varor"
+            aria-label="Varor"
+            className="ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
+          >
+            <UiIcon name="allAisles" size={19} />
+          </Link>
+
           <Link
             href="/recept"
             aria-label="Recept"
-            className="ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
+            className="flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
           >
             <UiIcon name="recipes" size={20} />
           </Link>

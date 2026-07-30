@@ -48,11 +48,36 @@ async function dropTestList(id: string) {
   await sql`update catalog_items set use_count = 0, last_used_at = null`;
 }
 
-export const test = base.extend<{
-  freshPage: Page;
-  listId: string;
-  otherListId: string;
-}>({
+export const test = base.extend<
+  {
+    freshPage: Page;
+    listId: string;
+    otherListId: string;
+  },
+  { closeDb: void }
+>({
+  /**
+   * Closing the pool, once per WORKER rather than once per file.
+   *
+   * This was a `test.afterAll`, and that was invisible until there was a second
+   * spec file. A module-level hook registers into the suite of whichever file
+   * imported the module first, so `sql.end()` ran the moment `list.spec.ts`
+   * finished — and every later file got `write CONNECTION_ENDED` from its very
+   * first fixture, which reads like a database problem and is not one.
+   *
+   * A worker-scoped auto fixture tears down when the worker does, which is
+   * exactly when the connection is genuinely finished with. It has to exist at
+   * all because postgres.js keeps an idle connection open and with it the event
+   * loop, so a worker that never ends the pool never exits.
+   */
+  closeDb: [
+    async ({}, use) => {
+      await use();
+      await sql.end();
+    },
+    { scope: "worker", auto: true },
+  ],
+
   /**
    * Depends on `page` purely for the teardown ORDER, and that dependency is
    * load-bearing.
@@ -126,10 +151,6 @@ async function settle(page: Page, timeoutMs = 2000): Promise<void> {
     await page.waitForTimeout(50);
   }
 }
-
-test.afterAll(async () => {
-  await sql.end();
-});
 
 export { expect };
 
