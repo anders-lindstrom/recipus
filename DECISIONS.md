@@ -1,4 +1,150 @@
-# Away session, 2026-07-30 — read this first
+# Hardening session, 2026-07-30 — read this first
+
+The registry gate is done, priority and modifiers are built, and the two loose
+ends from the away session are both closed. **Four decisions are waiting on you**
+— they are collected in "Decisions I did not take" below, and nowhere else.
+
+## Three data-loss bugs, all the same shape
+
+They are worth reading together, because the third one is the reason to expect a
+fourth.
+
+**A clock that outlives its value.** Clearing both fields of a manual
+contribution deleted the row, and the row is where the per-field clocks live. A
+missing clock is not "no opinion", it is *anything wins* — `wins(op, undefined)`
+is true whatever the timestamp says. So clearing an amount at 12:00 and a stale
+`set_amount` from 11:00 arriving afterwards left the server with the amount
+restored and the clearing device without it, permanently, each applying
+last-write-wins correctly against the facts it held. The row now survives
+emptied; both loaders withhold it from the records while still emitting its
+clocks.
+
+**A clock that moves.** `amount_updated_at` and `note_updated_at` were nullable
+and fell back to the row's `updated_at` when unset — and the row clock advances
+whenever *either* field is written. Setting the amount at 05:00 silently pushed
+the note's clock to 05:00, so a note genuinely written at 03:00 arriving
+afterwards lost a comparison it should have won. **In one arrival order only**,
+which is what made it invisible: two devices, two different notes, neither wrong
+by its own reckoning. Reproduced by execution before it was touched. NULL now
+means "never written" — which is exactly what the reducer holds for an untouched
+field — and no writer stamps a clock for a field its op said nothing about.
+
+**A clock shared by four facts.** `update_catalog_item` had one clock for the
+whole row, so a rename at 17:00 and a re-filing into another aisle at 14:00
+settled differently depending on which the server saw first: applied
+14-then-17 both stuck, applied the other way the re-filing lost and the item
+walked back to its old aisle. Name (with `name_norm` — one fact, two
+representations), category, icon and `has_at_home` now each carry their own
+clock. This was the registry's hard prerequisite, and it is what makes "two
+people tidying the catalog on a Sunday" safe.
+
+**The pattern to watch for:** every one of these is a clock that describes
+something other than what it is used to compare. Any new per-field clock needs
+its own column, must be absent rather than defaulted when unwritten, and must
+never be stamped by an op that did not touch its field. There are now DB
+round-trip tests for each, because the pure reducer converges on all three — it
+is the reconstruction from columns that broke, and only a test that goes through
+Postgres can see it.
+
+## Two more bugs, found by existing tests
+
+**`pruneTombstones` could not do its job.** Per-field clocks were never dropped
+(no `deleted` flag — a cleared amount is a value, not a tombstone), and
+contributions of pruned entries were never dropped either, which kept their keys
+alive, which kept the meta map growing. The map is re-serialised on every tap.
+Also: a live record's key is now matched before the key's *shape* is parsed,
+because ids contain colons — a custom item slugged "priority" makes
+`entry:hemkop:priority` look exactly like a field key, and pruning a live entry's
+clock is a resurrection bug.
+
+**The forward-compatibility test had stopped testing forward compatibility.** Its
+"op from the future" was `set_priority`, which shipped this session. Worth
+remembering when picking the next placeholder: anything on the roadmap does this
+eventually.
+
+## The mystery e2e line is explained, and gone
+
+Every full run logged exactly one `op refused by server`, on a different op and a
+different test each time. It was **not** a sync bug. Every assertion in the suite
+passes on optimistic state — that is the app's design and testing it otherwise
+would test something else — so a test could finish with its ops still in flight,
+and teardown then dropped the list out from under a POST the server had already
+accepted: a foreign-key violation on `list_entries`. The page now closes and the
+outbox settles before the list goes. Zero across three consecutive runs.
+
+The server-side `console.error` added in the away session is what made this
+diagnosable at all; before it, the client only knew "refused".
+
+## Priority and modifiers
+
+Priority is three states and uses two channels the tile already has: order
+(urgent first, convenient last, **within** the existing aisle grouping so walking
+order survives) and the item name's ink. No new tile furniture — both corners are
+taken and green means exactly one thing here. A visually-hidden suffix carries
+it, since ochre-versus-grey is otherwise the entire signal.
+
+Removal clears it, on its own clock. Without the clear urgency becomes permanent
+decoration; with a shared clock, "mark urgent" would beat a newer removal and put
+something you already bought back at the top.
+
+Modifiers are per-contribution and never in an id, per your butter observation. A
+modifier that changed identity would split one tile into two and send you past
+the fruit twice. The confirm-on-duplicate sheet is a **correction, not a
+courtesy**: modifier and amount share a record, so typing "mango 1 st" against an
+existing "2 kg mogna" silently produced "1 st mogna". It fires only from the add
+bar, only when the existing ask carries a modifier. A tile tap never opens a
+dialog.
+
+Verified in the real UI against the database: priority and modifier each written
+with their own clock, banan sorted ahead of mjölk and ost, the duplicate sheet
+firing and "Nej, vanlig" clearing the qualifier while applying the new amount,
+and removal returning priority to normal.
+
+## Decisions I did not take
+
+**1. `move_item` is now more broken than it was, and the fix needs your call.**
+It does not move contributions — a moved item arrives with no amounts, and now no
+modifier and a reset priority. The mechanical part is easy (contribution ids are
+derived from the entry id, so they can be re-keyed). The part that is not
+mechanical: a *recipe* contribution belongs to a recipe addition, and additions
+are list-scoped. So moving an item that a recipe asked for either orphans the
+recipe's share, silently drops it, or drags the addition across too. My
+inclination is **drop the recipe contributions and keep only the manual one**,
+because moving an item between shops is a statement about where you will buy it,
+not about the recipe — but that is a product judgement. Unreachable from the UI
+today, so it costs nothing until there is a "move to other list" button.
+
+**2. Nothing calls `pruneTombstones`, and nothing prunes the `ops` table.** The
+function now works correctly; it just has no caller. Wiring it up needs one
+number from you: the retention window. It must match the op log's, or a client
+staler than the tombstones resurrects things. Replay-from-genesis currently works
+because the log is small. My inclination is **30 days**, matching the comment
+already in the schema, with the op-log prune added at the same time and never
+separately.
+
+**3. Statistics needs `users`, which is never populated.** "Who bought it" has
+nothing to read. The authenticated actor is already on every op and every
+purchase row, so the cheap version is to derive the roster from distinct actors
+rather than maintain a table. That is my inclination; the table exists and
+implies otherwise, so it is worth saying out loud before `/statistik` is built.
+
+**4. Suggestion dismissal is fully unwired** — table, migration, and a promise in
+the design doc, with zero reads or writes. It is a feature gap rather than a bug,
+but it is the kind that quietly stays unbuilt because everything still works.
+
+Two smaller things I left alone deliberately: `sourceKind: "scan"` and
+`"suggestion"` are still never produced, so the entry sheet's "Skannad" and
+"Föreslagen" labels remain dead (three harmless lines; producing them needs a new
+op field), and `update_catalog_item` arriving *before* its `create_catalog_item`
+still drops the update. The second is asserted in a test rather than left
+implicit — the guarantee comes from the transport (`seq` is assigned on arrival,
+replay follows `seq`, and an update can only be authored on a device that already
+holds the item), so anything that later makes an update reachable without a
+create — a registry import, a merge, a repair path — fails loudly there.
+
+---
+
+# Away session, 2026-07-30
 
 Anders asked for four features to be specified, then built. Four parallel design
 passes ran (modifiers/priority, purchase history & modes, item registry, and a

@@ -425,6 +425,16 @@ Risk-ordered, each step independently shippable and reversible.
 
 Not caused by this work; found while reading for it. None block the build.
 
+**Status, 2026-07-30 hardening session.** 1 and 2 fixed (away session). 3 fixed —
+and reading it prompted finding a second, worse instance of the same shape in the
+per-field clocks that already existed, where a NULL fell back to the row clock and
+the row clock moves. 4 fixed as far as the reducer goes (per-field clocks and
+orphaned contributions are now pruned); the "no caller anywhere" half is a
+decision about retention and is in DECISIONS.md. 9 fixed by collapsing purchases
+to one per local day inside `analyzeCadence`. 5, 6, 7 and 8 stand, each with a
+recommendation in DECISIONS.md — 5 in particular now costs more than it did,
+since a moved item also loses its modifier and its priority.
+
 1. **`loadListSnapshot` omits removed additions' clocks entirely** — so a stale
    `add_recipe` replayed from the outbox wins against nothing and **resurrects a
    removed recipe with its contributions. Reproduced.** Fix: emit `addition:x`
