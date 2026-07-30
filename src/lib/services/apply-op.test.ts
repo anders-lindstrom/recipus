@@ -35,6 +35,34 @@ function op(kind: string, at: string, fields: Record<string, unknown>): Op {
   } as unknown as Op;
 }
 
+/**
+ * Extra catalog items created by individual tests.
+ *
+ * Tracked so `afterAll` can reach them: this suite runs against the real dev
+ * database, and an item left behind shows up as a stray tile in the app.
+ */
+const extraItems: string[] = [];
+
+async function seedItem(id: string): Promise<void> {
+  extraItems.push(id);
+  await applyOpToDatabase(
+    op("create_catalog_item", "2026-01-01T00:00:00.000Z", {
+      item: {
+        id,
+        name: id,
+        nameNorm: id,
+        categoryId: "frukt-gront",
+        iconRef: "1F34E",
+        isCustom: true,
+        hasAtHome: false,
+        useCount: 0,
+        lastUsedAt: null,
+      },
+    }),
+    ACTOR,
+  );
+}
+
 beforeAll(async () => {
   await applyOpToDatabase(
     op("create_list", "2026-01-01T00:00:00.000Z", {
@@ -65,12 +93,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db.delete(purchases).where(eq(purchases.catalogItemId, catalogItemId));
+  // FK order: purchases and entries reference catalog items, so they go first.
+  const allItems = [catalogItemId, ...extraItems];
+  await db.delete(purchases).where(inArray(purchases.catalogItemId, allItems));
   await db
     .delete(opsTable)
     .where(inArray(opsTable.actor, [ACTOR]));
   await db.delete(listEntries).where(eq(listEntries.listId, listId));
-  await db.delete(catalogItems).where(eq(catalogItems.id, catalogItemId));
+  await db.delete(catalogItems).where(inArray(catalogItems.id, allItems));
   await db.delete(lists).where(eq(lists.id, listId));
 });
 
@@ -301,3 +331,136 @@ describe("applyOpToDatabase", () => {
     expect(row.note).toBe("extra fett");
   });
 });
+
+describe("undo retracts the purchase", () => {
+  /**
+   * "Ångra" always put the item back on the list. It never removed the purchase
+   * row the removal wrote, nor undid the use_count bump — so "bought" silently
+   * accumulated everything anyone had ever mis-tapped. Purchase history is the
+   * only input to the cadence engine, so that is not a rounding error: it is the
+   * app insisting you buy something you told it you did not.
+   */
+  it("deletes the purchase, decrements use_count and recomputes last_used_at", async () => {
+    const item = `${catalogItemId}-undo`;
+    await seedItem(item);
+
+    // An earlier, genuine purchase that must SURVIVE the undo — this is what
+    // distinguishes recomputing last_used_at from simply clearing it.
+    await applyOpToDatabase(
+      op("add_item", "2026-02-01T00:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    const firstBuy = op("remove_item", "2026-02-01T10:00:00.000Z", {
+      listId,
+      catalogItemId: item,
+      bought: true,
+    });
+    await applyOpToDatabase(firstBuy, ACTOR);
+
+    // The mis-tap.
+    await applyOpToDatabase(
+      op("add_item", "2026-02-05T00:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    const misTap = op("remove_item", "2026-02-05T10:00:00.000Z", {
+      listId,
+      catalogItemId: item,
+      bought: true,
+    });
+    await applyOpToDatabase(misTap, ACTOR);
+
+    const [before] = await db
+      .select({ useCount: catalogItems.useCount })
+      .from(catalogItems)
+      .where(eq(catalogItems.id, item));
+    expect(before.useCount).toBe(2);
+
+    // Undo: an add_item naming the removal it retracts.
+    await applyOpToDatabase(
+      op("add_item", "2026-02-05T10:00:05.000Z", {
+        listId,
+        catalogItemId: item,
+        undoesClientOpId: misTap.clientOpId,
+      }),
+      ACTOR,
+    );
+
+    const rows = await db
+      .select()
+      .from(purchases)
+      .where(eq(purchases.catalogItemId, item));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].clientOpId).toBe(firstBuy.clientOpId);
+
+    const [after] = await db
+      .select({ useCount: catalogItems.useCount, lastUsedAt: catalogItems.lastUsedAt })
+      .from(catalogItems)
+      .where(eq(catalogItems.id, item));
+    expect(after.useCount).toBe(1);
+    // Rolled back to the surviving purchase, not cleared and not left on the
+    // retracted one.
+    expect(after.lastUsedAt?.toISOString()).toBe("2026-02-01T10:00:00.000Z");
+  });
+
+  it("is idempotent, so a replayed undo cannot delete a later purchase", async () => {
+    const item = `${catalogItemId}-undo-replay`;
+    await seedItem(item);
+
+    await applyOpToDatabase(
+      op("add_item", "2026-03-01T00:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    const buy = op("remove_item", "2026-03-01T10:00:00.000Z", {
+      listId,
+      catalogItemId: item,
+      bought: true,
+    });
+    await applyOpToDatabase(buy, ACTOR);
+
+    const undo = op("add_item", "2026-03-01T10:00:05.000Z", {
+      listId,
+      catalogItemId: item,
+      undoesClientOpId: buy.clientOpId,
+    });
+    await applyOpToDatabase(undo, ACTOR);
+    // Same clientOpId: the op log dedupes this, but the retraction must be safe
+    // on its own terms too, since a differently-keyed op could name the same
+    // removal.
+    await applyOpToDatabase(undo, ACTOR);
+
+    const [after] = await db
+      .select({ useCount: catalogItems.useCount })
+      .from(catalogItems)
+      .where(eq(catalogItems.id, item));
+    // Zero, not minus one: the second pass must find nothing to retract.
+    expect(after.useCount).toBe(0);
+  });
+
+  it("leaves history alone when there was no purchase to retract", async () => {
+    const item = `${catalogItemId}-undo-noop`;
+    await seedItem(item);
+
+    // A plain add carrying an undo reference that names nothing.
+    await applyOpToDatabase(
+      op("add_item", "2026-04-01T00:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        undoesClientOpId: randomUUID(),
+      }),
+      ACTOR,
+    );
+
+    const rows = await db
+      .select()
+      .from(purchases)
+      .where(eq(purchases.catalogItemId, item));
+    expect(rows).toHaveLength(0);
+
+    const [after] = await db
+      .select({ useCount: catalogItems.useCount })
+      .from(catalogItems)
+      .where(eq(catalogItems.id, item));
+    expect(after.useCount).toBe(0);
+  });
+});
+

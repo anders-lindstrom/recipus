@@ -43,7 +43,26 @@ export type Op =
       itemId: Id;
       patch: Partial<Omit<CatalogItem, "id">>;
     })
-  | (OpBase & { kind: "add_item"; listId: Id; catalogItemId: Id })
+  | (OpBase & {
+      kind: "add_item";
+      listId: Id;
+      catalogItemId: Id;
+      /**
+       * Set only by undo, naming the `remove_item` whose purchase this retracts.
+       *
+       * Putting the items back was never the whole job. Tapping a tile off the
+       * list writes a purchase row and bumps the item's use count, and undo used
+       * to leave both standing — so "bought" quietly included everything anyone
+       * had ever tapped by mistake, which is the one direction that matters for
+       * a feature whose entire output is "how often do we buy this".
+       *
+       * Optional, and the reducer ignores it: retraction is a server-side effect
+       * exactly like the purchase write it undoes, so an older client receiving
+       * this op still applies the add correctly and simply does not know about
+       * the history correction.
+       */
+      undoesClientOpId?: string;
+    })
   | (OpBase & {
       kind: "remove_item";
       listId: Id;

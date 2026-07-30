@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   catalogItems,
@@ -630,18 +630,71 @@ async function recordPurchaseIfBought(tx: Tx, op: Op, next: SyncState): Promise<
   const eid = makeEntryId(op.listId, op.catalogItemId);
   if (!wonThisOp(next, entryKey(eid), op)) return;
 
-  await tx.insert(purchases).values({
-    id: randomUUID(),
-    catalogItemId: op.catalogItemId,
-    listId: op.listId,
-    purchasedAt: new Date(op.at),
-    actor: op.actor,
-  });
+  await tx
+    .insert(purchases)
+    .values({
+      id: randomUUID(),
+      catalogItemId: op.catalogItemId,
+      listId: op.listId,
+      purchasedAt: new Date(op.at),
+      actor: op.actor,
+      clientOpId: op.clientOpId,
+    })
+    // A replayed op must not count as a second shop. The op log is already
+    // idempotent per clientOpId; this makes the purchase row idempotent on the
+    // same key, one layer down, so the two can never disagree.
+    .onConflictDoNothing({ target: purchases.clientOpId });
 
   await tx
     .update(catalogItems)
     .set({ useCount: sql`${catalogItems.useCount} + 1`, lastUsedAt: new Date(op.at) })
     .where(eq(catalogItems.id, op.catalogItemId));
+}
+
+/**
+ * Undo, on the history side.
+ *
+ * The other half of "Ångra". Putting the item back on the list is the visible
+ * half and the client does it locally; this is the half nobody could see, and
+ * without it every mis-tap left a permanent purchase behind. Since purchase
+ * history is the only input to the cadence engine, and soon to the statistics
+ * and the "probably still in the fridge" rule, a purchase the user explicitly
+ * retracted is not a small inaccuracy — it is the app confidently telling you
+ * something you already told it was wrong.
+ *
+ * Idempotent by key, so a replayed undo deletes nothing the second time.
+ */
+async function retractPurchaseIfUndo(tx: Tx, op: Op): Promise<void> {
+  if (op.kind !== "add_item" || !op.undoesClientOpId) return;
+
+  const [removed] = await tx
+    .delete(purchases)
+    .where(eq(purchases.clientOpId, op.undoesClientOpId))
+    .returning({ catalogItemId: purchases.catalogItemId });
+
+  // Nothing to undo: the purchase was never written (a `bought: false` removal,
+  // or one that lost its LWW comparison), or this undo already applied.
+  if (!removed) return;
+
+  // `lastUsedAt` is recomputed from what is left rather than simply cleared.
+  // Clearing it would erase a genuine earlier purchase, and leaving it would let
+  // the retracted timestamp go on standing in for one — either way the catalog's
+  // recency ordering, and later the fridge inference, would read a date that no
+  // purchase row supports.
+  const [latest] = await tx
+    .select({ purchasedAt: purchases.purchasedAt })
+    .from(purchases)
+    .where(eq(purchases.catalogItemId, removed.catalogItemId))
+    .orderBy(desc(purchases.purchasedAt))
+    .limit(1);
+
+  await tx
+    .update(catalogItems)
+    .set({
+      useCount: sql`greatest(${catalogItems.useCount} - 1, 0)`,
+      lastUsedAt: latest?.purchasedAt ?? null,
+    })
+    .where(eq(catalogItems.id, removed.catalogItemId));
 }
 
 // ---------------------------------------------------------------------------
@@ -711,6 +764,7 @@ export async function applyOpToDatabase(
 
     await persist(tx, next, scope);
     await recordPurchaseIfBought(tx, safeOp, next);
+    await retractPurchaseIfUndo(tx, safeOp);
 
     const [inserted] = await tx
       .insert(opsTable)

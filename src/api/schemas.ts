@@ -263,6 +263,12 @@ const addItemOpSchema = z.object({
   kind: z.literal("add_item"),
   listId: z.string(),
   catalogItemId: z.string(),
+  /**
+   * Optional, and absent from every `add_item` written before undo learned to
+   * retract purchases. A stored op replayed from the log must parse and apply
+   * exactly as it did the day it was created, so this can never become required.
+   */
+  undoesClientOpId: z.string().optional(),
 });
 
 const removeItemOpSchema = z.object({

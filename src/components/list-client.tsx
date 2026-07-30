@@ -134,11 +134,13 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     return out;
   }, [state.recipeAdditions, recipeTitles]);
 
+  /** Returns the op's `clientOpId`, which undo needs to name what it retracts. */
   const dispatch = useCallback(
-    (partial: OpDraft) => {
+    (partial: OpDraft): string => {
+      const clientOpId = crypto.randomUUID();
       const op = {
         ...partial,
-        clientOpId: crypto.randomUUID(),
+        clientOpId,
         actor: effectiveActor ?? "okand",
         at: new Date().toISOString(),
       } as Op;
@@ -147,6 +149,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
         // anything reaching here is a genuine failure worth surfacing.
         toast.error("Kunde inte spara ändringen"),
       );
+      return clientOpId;
     },
     [effectiveActor, dispatchOp],
   );
@@ -170,8 +173,8 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   }
 
   const actions = {
-    addItem: (catalogItemId: Id, amountText?: string) => {
-      dispatch({ kind: "add_item", listId, catalogItemId });
+    addItem: (catalogItemId: Id, amountText?: string, undoesClientOpId?: string) => {
+      dispatch({ kind: "add_item", listId, catalogItemId, undoesClientOpId });
       if (amountText) {
         const amount = parseAmount(amountText);
         if (amount) dispatch({ kind: "set_amount", listId, catalogItemId, amount });

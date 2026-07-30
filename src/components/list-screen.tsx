@@ -55,10 +55,20 @@ export interface ListScreenActions {
    * `amountText` is the raw trailing quantity the add bar split off ("2 l").
    * The caller parses it with the units engine — the same one the recipe
    * importer uses — so there is one implementation of "2 l" in the codebase.
+   *
+   * `undoesClientOpId` names the `remove_item` whose purchase this add retracts.
+   * Only undo passes it; see the op's own comment for why it matters.
    */
-  addItem: (catalogItemId: Id, amountText?: string) => void;
-  /** `bought` false means "changed my mind" and must not record a purchase. */
-  removeItem: (catalogItemId: Id, bought: boolean) => void;
+  addItem: (
+    catalogItemId: Id,
+    amountText?: string,
+    undoesClientOpId?: string,
+  ) => void;
+  /**
+   * `bought` false means "changed my mind" and must not record a purchase.
+   * Returns the op's `clientOpId` so undo can retract what it wrote.
+   */
+  removeItem: (catalogItemId: Id, bought: boolean) => string;
   setAmount: (catalogItemId: Id, amount: Amount | null) => void;
   createItem: (name: string, amountText: string) => void;
   removeRecipe: (recipeAdditionId: Id) => void;
@@ -94,9 +104,12 @@ export function ListScreen({
   actions,
 }: ListScreenProps) {
   const [openEntry, setOpenEntry] = useState<Id | null>(null);
-  const [undoable, setUndoable] = useState<{ id: Id; name: string } | null>(
-    null,
-  );
+  const [undoable, setUndoable] = useState<{
+    id: Id;
+    name: string;
+    /** The removal to retract. Without it undo re-adds but leaves the purchase. */
+    clientOpId: string;
+  } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
@@ -147,17 +160,18 @@ export function ListScreen({
    * heading — in normal flow, where it cannot cover a control.
    */
   function tapOnList(item: CatalogItem) {
-    actions.removeItem(item.id, true);
+    const clientOpId = actions.removeItem(item.id, true);
     if (undoTimer.current) clearTimeout(undoTimer.current);
-    setUndoable({ id: item.id, name: item.name });
+    setUndoable({ id: item.id, name: item.name, clientOpId });
     undoTimer.current = setTimeout(() => setUndoable(null), UNDO_WINDOW_MS);
   }
 
   function undoLastBuy() {
     if (!undoable) return;
-    // The same op the toast's "Ångra" dispatched, and the same one tapping the
-    // item in the catalog would: adding it straight back.
-    actions.addItem(undoable.id);
+    // Two halves, and the second one used to be missing: put the item back, and
+    // retract the purchase the removal recorded. Re-adding alone left "bought"
+    // permanently including things the user had just said they had not bought.
+    actions.addItem(undoable.id, undefined, undoable.clientOpId);
     if (undoTimer.current) clearTimeout(undoTimer.current);
     setUndoable(null);
   }

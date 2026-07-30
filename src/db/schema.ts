@@ -276,9 +276,24 @@ export const purchases = pgTable(
       .notNull()
       .defaultNow(),
     actor: text("actor").notNull(),
+    /**
+     * The `remove_item` op that recorded this purchase.
+     *
+     * Its point is undo. Tapping a tile off the list writes a purchase here, and
+     * until this column existed there was no way to find that row again — so
+     * "Ångra" put the item back on the list and left the purchase standing
+     * forever, along with the `use_count` bump. Every read of purchase history
+     * was therefore slightly wrong in the one direction users notice: it counted
+     * things they had explicitly said they did not buy.
+     *
+     * Unique, so replaying an op cannot double-count a purchase — the same
+     * guarantee `clientOpId` already gives the op log, applied one layer down.
+     */
+    clientOpId: text("client_op_id").notNull(),
   },
   (t) => [
     index("purchases_item_time_idx").on(t.catalogItemId, t.purchasedAt),
+    uniqueIndex("purchases_client_op_id_uq").on(t.clientOpId),
   ],
 );
 

@@ -15,6 +15,13 @@
       "when": 1785329192616,
       "tag": "0001_absent_red_ghost",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785389778537,
+      "tag": "0002_long_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }
