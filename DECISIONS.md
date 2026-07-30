@@ -1,3 +1,83 @@
+# Away session, 2026-07-30 — read this first
+
+Anders asked for four features to be specified, then built. Four parallel design
+passes ran (modifiers/priority, purchase history & modes, item registry, and a
+cross-cutting sync-seam review); the synthesis, with every adjudication between
+them, is
+[`docs/superpowers/specs/2026-07-30-items-history-registry.md`](./docs/superpowers/specs/2026-07-30-items-history-registry.md).
+
+**Three things need you.** They are collected in §9 of that spec and nowhere
+else: the one-tile-per-item scope reduction, whether buy-mode scanning asks or
+acts-with-undo, and the fridge-inference default. Plus one thing of yours I
+overrode: plan mode is **untinted** rather than green-tinted, because green
+already means "on the list" and a green header puts the state colour back into
+the furniture. Buy mode carries the whole signal. One line to change back.
+
+## What got built
+
+**Forward-compatibility hardening, first, because it gates everything else.**
+Every queued feature adds an op kind, and a client meeting an unknown one did not
+degrade — it crashed. Verified by running it: `applyOp` fell through its switch
+and returned `undefined`, `applyOps` threw on the next op, the store wrote
+`undefined` over the cached state and retried forever. That is an app that opens
+to an empty list in a shop and blames the network. Also fixed in the same pass:
+the server validated the whole ops batch as one schema, so a single unparseable
+op 400'd everything beside it and the outbox re-posted forever; a refused op was
+left queued for the lifetime of the install so the sync banner never cleared; and
+there was no way for a client that *had* dropped an op to know it needed
+repairing. **This must be on both phones before any new op kind ships.**
+
+**Undo now retracts the purchase.** It only ever put the item back. The purchase
+row and the `use_count` bump stood, so "bought" quietly included everything
+anyone had ever mis-tapped — and purchase history is the only input to the
+cadence engine, and shortly to the statistics you asked for. `last_used_at` is
+recomputed from the surviving purchases rather than cleared, because clearing
+would erase a genuine earlier purchase and leaving it would let a retracted
+timestamp stand in for one.
+
+## Gotchas worth your attention
+
+**The generated migration would have broken the deploy.** `drizzle-kit` emitted
+`ADD COLUMN client_op_id text NOT NULL` with no default, which aborts on any
+table that already has rows — the dev database had 18 purchases. Hand-adjusted to
+add-nullable, backfill, tighten. **Check generated migrations against real data
+before trusting them**; this one failed loudly rather than quietly, but only
+because I ran it.
+
+**The seed reverts catalog edits in production, silently.** `seed.ts` upserts
+every item on every boot, overwriting name, category and icon — the exact columns
+the registry makes editable — and `instrumentation.ts` runs it in production.
+Latent only because nothing dispatches `update_catalog_item` from the UI yet. The
+guard (`setWhere` on `updated_by`) ships before the editing UI, not with it.
+
+**`update_catalog_item` shares one clock across all its fields.** Reproduced: a
+rename at T5 plus a concurrent re-file at T2 silently loses the category. Never
+bitten because nothing dispatches it; the registry is what wakes it up.
+
+**Nothing prunes anything.** `pruneTombstones` has no caller and no job deletes
+from `ops`. The log is unbounded and client `meta` grows forever, while
+`saveState` re-serialises the whole blob on every tap. I had been designing
+against a 30-day retention rule that does not exist.
+
+**Nine pre-existing bugs** are listed in §6 of the spec. Two are reproduced and
+worth doing soon: a snapshot omits removed recipe additions' clocks, so a stale
+replayed `add_recipe` **resurrects a deleted recipe**; and clearing a manual
+amount hard-deletes its LWW clocks, after which a later `set_amount` wins
+regardless of timestamp and two devices diverge permanently.
+
+## Where the design landed, in one paragraph
+
+Your butter observation settled the hardest question. Because the logical layer
+is a household-owned taxonomy, "two mangos on the list" is not an identity
+problem — it is the household deciding mogen mango is its own vara, which gets a
+tile, an amount and a cadence for free. So `entryId` and the unique constraint are
+untouched, modifiers stay a lightweight per-contribution scribble, and the
+heavyweight answer is the registry's split. The variant key was assessed properly
+and rejected: safe to store, but it cannot roll out gradually — an un-upgraded
+phone silently merges the two tiles and then writes amounts to the wrong one.
+
+---
+
 # Decisions & gotchas — autonomous build session, 2026-07-29
 
 Read this first. Everything below happened while you were away.
