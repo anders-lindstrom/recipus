@@ -86,6 +86,23 @@ only matches rows still stamped `updated_by = 'system'`. Deleting or merging a
 vara stamps the human's name, so the seed skips it entirely. Verified in the
 code, and there is a test for the sibling case (a rename surviving a re-seed).
 
+### After the deploy succeeds: bump `DEPLOYED_THROUGH`
+
+`src/db/upgrade-path.test.ts` replays the real upgrade — it brings a scratch
+database up to the migration production is actually on, puts representative rows
+in it, applies everything since, and checks what survived. CI otherwise only ever
+proves migrations against a *fresh* schema, where none of the interesting
+failures exist: a bare `ADD COLUMN … NOT NULL` aborts on rows, a `DROP COLUMN`
+discards whatever nobody copied out first, and a backfill that misses a case
+leaves a NULL the next migration then demands a value for.
+
+It knows where production is from one constant, `DEPLOYED_THROUGH`. **Bump it to
+the highest migration now applied**, and the test starts guarding the next gap
+instead of re-proving the one that already shipped. It asserts both sides are
+non-empty, so forgetting fails the build rather than quietly testing nothing —
+but that failure arrives at the *next* deploy, which is a confusing place to
+learn it. Bump it here, in the same change that merges to `master`.
+
 ### Nothing new is needed in NPM, DDNS or Authelia
 
 `/varor` and `/api/suggestions` are new but sit under hosts and paths that are
