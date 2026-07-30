@@ -56,15 +56,21 @@ export function VarorPlaceSheet({
   /**
    * Before anything is typed, the household's most-used words.
    *
-   * An empty list under a search box is a dead end, and the answer is very often
-   * one of the eight things this household buys constantly — a scanned milk
-   * carton belongs under "mjölk" far more often than under anything you would
-   * have to go looking for.
+   * The `useCount > 0` filter is the whole point rather than tidiness. A seeded
+   * catalog starts with every count at zero, so an unfiltered "most used" falls
+   * straight through to the alphabetical head of 346 rows and offers *alkoholfri
+   * öl, allrent, aluminiumfolie* under a heading that claims they are what this
+   * household buys. That is worse than offering nothing: it is a confident wrong
+   * answer sitting exactly where a thumb lands.
+   *
+   * So the list is only ever things actually bought, and when there are none the
+   * caller shows a line of guidance instead. An empty list under a search box is
+   * a dead end; a misleading one is a trap.
    */
   const resting = useMemo(
     () =>
       catalog
-        .slice()
+        .filter((c) => c.useCount > 0)
         .sort(
           (a, b) =>
             b.useCount - a.useCount || a.name.localeCompare(b.name, "sv"),
@@ -120,11 +126,19 @@ export function VarorPlaceSheet({
         </div>
       </div>
 
-      {!name && (
-        <p className="mt-3 px-4 text-overline text-ink-faint uppercase">
-          Vanligast
-        </p>
-      )}
+      {!name &&
+        (resting.length > 0 ? (
+          <p className="mt-3 px-4 text-overline text-ink-faint uppercase">
+            Vanligast
+          </p>
+        ) : (
+          // Nothing has been bought yet, so there is no "most used" to offer and
+          // saying so is better than filling the sheet with the alphabet.
+          <p className="mt-3 px-4 text-body-sm text-ink-soft">
+            Sök efter varan den hör till — eller skriv ett nytt namn för att
+            skapa en.
+          </p>
+        ))}
 
       <ul className="mx-4 mt-1 divide-y divide-line">
         {matches.map((vara) => {
