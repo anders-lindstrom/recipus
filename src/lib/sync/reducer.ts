@@ -663,12 +663,22 @@ export function pruneTombstones(state: SyncState, olderThan: Date): SyncState {
   next.catalog = state.catalog;
   next.recipes = state.recipes;
   next.recipeAdditions = state.recipeAdditions;
-  next.contributions = state.contributions;
 
   next.entries = Object.fromEntries(
     Object.entries(state.entries).filter(
       ([, e]) => e.removedAt === null || e.removedAt >= cutoff,
     ),
+  );
+
+  // Contributions go with their entry. Removing an item tombstones the entry but
+  // deliberately leaves its contributions alone — you might put it back — so
+  // once the tombstone itself is pruned they are orphans referring to an entry
+  // nobody has any record of. They rendered nothing and were never cleaned up,
+  // which quietly made this function's whole purpose unachievable: the
+  // contributions kept their own keys alive, and the keys kept the meta map
+  // growing.
+  next.contributions = Object.fromEntries(
+    Object.entries(state.contributions).filter(([, c]) => c.entryId in next.entries),
   );
 
   const liveKeys = new Set<string>([

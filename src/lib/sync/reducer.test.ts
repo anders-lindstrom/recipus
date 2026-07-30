@@ -574,6 +574,74 @@ describe("pruneTombstones", () => {
     const pruned = pruneTombstones(state, new Date(at(30)));
     expect(Object.keys(pruned.meta)).toHaveLength(0);
   });
+
+  /**
+   * Per-field clocks have to go with their record.
+   *
+   * They carry no `deleted` flag of their own — a cleared amount is a value, not
+   * a tombstone — so the ordinary "keep unless deleted and old" rule kept them
+   * forever. Every clock this codebase has added since (amount, note, modifier,
+   * priority, and four on the catalog) would have leaked the same way, and the
+   * meta map is re-serialised on every tap.
+   */
+  it("forgets per-field clocks along with the record they describe", () => {
+    const state = applyOps(emptyState(), [
+      {
+        ...base("anders", 1),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: MILK,
+        amount: { value: 2, unit: "l" },
+      },
+      {
+        ...base("anders", 2),
+        kind: "set_modifier",
+        listId: LIST,
+        catalogItemId: MILK,
+        modifier: "laktosfri",
+      },
+      {
+        ...base("anders", 3),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: MILK,
+        priority: "urgent",
+      },
+      {
+        ...base("anders", 4),
+        kind: "remove_item",
+        listId: LIST,
+        catalogItemId: MILK,
+        bought: true,
+      },
+    ]);
+    expect(
+      Object.keys(state.meta).some((k) => k.endsWith(":modifier")),
+    ).toBe(true);
+
+    const pruned = pruneTombstones(state, new Date(at(30)));
+    expect(Object.keys(pruned.meta)).toHaveLength(0);
+  });
+
+  /**
+   * A live record's own clock survives even when its id ends in a field name.
+   *
+   * Ids contain colons (`entryId` is `listId:catalogItemId`), so a custom item
+   * slugged "priority" makes `entry:hemkop:priority` look exactly like a field
+   * key. Pruning it would drop a live entry's clock — and a missing clock is
+   * "anything wins", which is a resurrection bug.
+   */
+  it("does not mistake an item named like a field for a field clock", () => {
+    const state = applyOp(emptyState(), {
+      ...base("anders", 1),
+      kind: "add_item",
+      listId: LIST,
+      catalogItemId: "priority",
+    });
+
+    const pruned = pruneTombstones(state, new Date(at(30)));
+    expect(pruned.meta[`entry:${entryId(LIST, "priority")}`]).toBeDefined();
+  });
 });
 
 describe("forward compatibility", () => {

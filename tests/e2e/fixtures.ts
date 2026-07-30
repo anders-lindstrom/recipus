@@ -49,17 +49,60 @@ async function dropTestList(id: string) {
 }
 
 export const test = base.extend<{ freshPage: Page; listId: string }>({
-  listId: async ({}, use) => {
+  /**
+   * Depends on `page` purely for the teardown ORDER, and that dependency is
+   * load-bearing.
+   *
+   * Without it, teardown ran: drop the list, then close the page — and the page
+   * is a live client with an outbox and an SSE reconnect loop. Anything it
+   * posted in that window hit a list that no longer existed, so every full run
+   * logged one `op refused by server` against a foreign key violation, on a
+   * different op and a different test each time. It looked like a real sync bug
+   * for a while; it was the harness pulling the table out from under the client.
+   *
+   * Closing the page first makes the teardown mean what it says: the client is
+   * gone, so nothing can be in flight when the list goes.
+   */
+  listId: async ({ page }, use) => {
     const id = await createTestList();
     await use(id);
+    await page.close();
     await dropTestList(id);
   },
   freshPage: async ({ page, listId }, use) => {
     await page.goto(`/?list=${listId}`);
     await expect(page.getByText("Att handla")).toBeVisible();
     await use(page);
+    await settle(page);
   },
 });
+
+/**
+ * Wait for the client to stop having anything to say.
+ *
+ * Every assertion in this suite passes on the OPTIMISTIC state — that is the
+ * app's whole design, and testing it any other way would be testing something
+ * else. But it means a test can finish while its ops are still in flight, and
+ * teardown then drops the list out from under a POST the server has already
+ * accepted: `insert or update on table "list_entries" violates foreign key
+ * constraint`, logged once per run against a different op each time. It read
+ * like an intermittent sync bug for a while. It was the harness.
+ *
+ * Best-effort on purpose. A test that deliberately ends offline still has a full
+ * outbox, and making that a failure would break the tests this app most needs.
+ */
+async function settle(page: Page, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      if ((await outboxSize(page)) === 0) return;
+    } catch {
+      // Page already closing, or IndexedDB gone. Nothing left to drain.
+      return;
+    }
+    await page.waitForTimeout(50);
+  }
+}
 
 test.afterAll(async () => {
   await sql.end();
