@@ -809,6 +809,62 @@ describe("move_item", () => {
 });
 
 describe("pruneTombstones", () => {
+  /**
+   * The fresh-literal hazard, one level up from `writeEntry`'s.
+   *
+   * This function rebuilt its result from `emptyState()` and copied four maps
+   * across BY NAME, so every map added to `SyncState` afterwards was silently
+   * dropped — and since the client now prunes on every app open, "silently
+   * dropped" means the registry would vanish from the store the first time
+   * anyone opened the app, with no error anywhere.
+   *
+   * The fix is structural rather than three more copy lines: the result starts
+   * as a copy of the whole state and overrides only what it actually prunes, so
+   * a new map is carried by default. This test exists to fail if anyone reverses
+   * that, because the next map to be added will not come with a reminder.
+   */
+  it("carries every part of the state it does not prune", () => {
+    const state = emptyState();
+    state.products["prod:7310865004703"] = {
+      id: "prod:7310865004703",
+      name: "Arla Standardmjölk",
+      brand: "Arla",
+      catalogItemId: MILK,
+      defaultSize: { value: 1.5, unit: "l" },
+      sourceSizeText: "1,5 l",
+      imageUrl: null,
+      createdAt: at(1),
+      createdBy: "anders",
+    };
+    state.aliases["kottfars"] = {
+      aliasNorm: "kottfars",
+      catalogItemId: "notfars",
+      createdAt: at(1),
+      createdBy: "anders",
+    };
+    state.barcodes["7310865004703"] = {
+      ean: "7310865004703",
+      productId: "prod:7310865004703",
+      source: "off",
+    };
+    state.recipes["r1"] = {
+      id: "r1",
+      title: "Pannkakor",
+      sourceUrl: null,
+      servings: 4,
+      servingsUnit: "portioner",
+      imageUrl: null,
+      ingredients: [],
+    };
+
+    const pruned = pruneTombstones(state, new Date(at(60)));
+
+    expect(pruned.products).toEqual(state.products);
+    expect(pruned.aliases).toEqual(state.aliases);
+    expect(pruned.barcodes).toEqual(state.barcodes);
+    expect(pruned.recipes).toEqual(state.recipes);
+  });
+
   it("drops old tombstones and keeps live entries", () => {
     const state = applyOps(emptyState(), [
       { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },

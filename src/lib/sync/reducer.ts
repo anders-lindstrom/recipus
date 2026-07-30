@@ -1,5 +1,4 @@
 import {
-  emptyState,
   entryId,
   manualContributionId,
   recipeContributionId,
@@ -698,12 +697,20 @@ export function applyOps(state: SyncState, ops: Op[]): SyncState {
  */
 export function pruneTombstones(state: SyncState, olderThan: Date): SyncState {
   const cutoff = olderThan.toISOString();
-  const next = emptyState();
-
-  next.lists = state.lists;
-  next.catalog = state.catalog;
-  next.recipes = state.recipes;
-  next.recipeAdditions = state.recipeAdditions;
+  /**
+   * Starts as a copy of the WHOLE state, and overrides only what it prunes.
+   *
+   * This used to build up from `emptyState()` and copy four maps across by name,
+   * which made "carried" the thing you had to remember and "dropped" the
+   * default. Adding `products`, `aliases` and `barcodes` to SyncState would then
+   * have deleted the entire registry from the store on the first app open — the
+   * client prunes every time it loads — with no error anywhere.
+   *
+   * Spreading inverts that: a map added to SyncState tomorrow is carried unless
+   * someone deliberately prunes it. Not pruning something is a bounded cost;
+   * silently discarding it is not.
+   */
+  const next: SyncState = { ...state };
 
   next.entries = Object.fromEntries(
     Object.entries(state.entries).filter(
