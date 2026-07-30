@@ -9,6 +9,7 @@ import {
   lists,
   ops as opsTable,
   purchases,
+  suggestionDismissals,
 } from "@/db/schema";
 import { entryId, manualContributionId } from "@/lib/domain";
 import type { Op } from "@/lib/sync";
@@ -129,6 +130,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const all = Object.values(items);
+  await db
+    .delete(suggestionDismissals)
+    .where(inArray(suggestionDismissals.catalogItemId, all));
   await db.delete(purchases).where(inArray(purchases.catalogItemId, all));
   await db.delete(opsTable).where(eq(opsTable.actor, ACTOR));
   await db.delete(listEntries).where(eq(listEntries.listId, listId));
@@ -173,6 +177,30 @@ describe("pruneRetention", () => {
       .from(purchases)
       .where(eq(purchases.catalogItemId, items.old));
     expect(kept).toHaveLength(1);
+  });
+
+  /**
+   * Dismissals are spent the day after they are made, and nothing else forgets
+   * them — so they belong here rather than accumulating one row per declined
+   * suggestion per day forever.
+   *
+   * The comparison is lexicographic on a `YYYY-MM-DD` string, which is only
+   * correct because `localDayKey` zero-pads. An unpadded `2026-7-5` would sort
+   * after `2026-12-31` and the prune would quietly skip rows or take live ones.
+   */
+  it("forgets spent suggestion dismissals", async () => {
+    await db.insert(suggestionDismissals).values([
+      { catalogItemId: items.live, day: "2026-05-01" },
+      { catalogItemId: items.live, day: "2026-07-29" },
+    ]);
+
+    await pruneRetention(NOW);
+
+    const left = await db
+      .select()
+      .from(suggestionDismissals)
+      .where(eq(suggestionDismissals.catalogItemId, items.live));
+    expect(left.map((r) => r.day)).toEqual(["2026-07-29"]);
   });
 
   it("prunes the op log on the server clock, not the client's", async () => {

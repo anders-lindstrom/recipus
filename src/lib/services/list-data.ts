@@ -39,6 +39,7 @@ import {
   listKey,
 } from "@/lib/sync";
 import { catalogFieldClocks } from "./clocks";
+import { dismissedOn } from "./suggestion-dismissals";
 
 /**
  * Reading a list's world out of Postgres.
@@ -414,16 +415,21 @@ async function loadSuggestions(
     else byItem.set(r.catalogItemId, [r.purchasedAt]);
   }
 
-  const onList = new Set(
+  // Already wanted, or explicitly declined today. Both are the same instruction
+  // to the engine — "do not offer me this" — so they go in as one exclusion set
+  // rather than as a second concept inside `rankSuggestions`. The dismissals are
+  // household-wide by design; see src/lib/services/suggestion-dismissals.ts.
+  const exclude = new Set(
     entries.filter((e) => e.removedAt === null).map((e) => e.catalogItemId),
   );
+  for (const id of await dismissedOn(now)) exclude.add(id);
 
   return rankSuggestions(
     [...byItem.entries()].map(([catalogItemId, purchases]) => ({
       catalogItemId,
       purchases,
     })),
-    { now, excludeItemIds: onList },
+    { now, excludeItemIds: exclude },
   ).map((s) => ({ catalogItemId: s.catalogItemId, reason: s.reason }));
 }
 

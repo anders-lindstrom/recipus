@@ -94,6 +94,13 @@ export interface ListScreenActions {
    * op has to carry what it moves — see `move_item` in lib/sync/ops.ts.
    */
   moveItem: (catalogItemId: Id, toListId: Id) => void;
+  /**
+   * "Inte den här gången" — silences a cadence suggestion for the rest of the
+   * day, for the whole household. Not an op: dismissals cannot conflict, so they
+   * go straight to the server. See src/api/routes/suggestions.ts.
+   */
+  dismissSuggestion: (catalogItemId: Id) => void;
+  restoreSuggestion: (catalogItemId: Id) => void;
   openScanner: () => void;
   switchList: () => void;
 }
@@ -157,6 +164,21 @@ export function ListScreen({
   } | null>(null);
   /** The item whose "which list?" picker is open. */
   const [moving, setMoving] = useState<Id | null>(null);
+  /**
+   * Suggestions dismissed on THIS device since the last hydrate.
+   *
+   * Held locally as well as written to the server so the tile disappears under
+   * your thumb rather than after a round trip — and so the gesture still does
+   * something visible in a shop with no signal. The server's own exclusion takes
+   * over from the next snapshot onwards, at which point this set is redundant
+   * and harmlessly stale.
+   */
+  const [dismissed, setDismissed] = useState<Set<Id>>(new Set());
+  /** The one dismissal still offering "Ångra", in the Föreslås heading. */
+  const [undoableDismissal, setUndoableDismissal] = useState<{
+    id: Id;
+    name: string;
+  } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
@@ -302,6 +324,29 @@ export function ListScreen({
       })),
     [catalogByCategory, categoryName],
   );
+
+  const visibleSuggestions = useMemo(
+    () => suggestions.filter((s) => !dismissed.has(s.catalogItemId)),
+    [suggestions, dismissed],
+  );
+
+  function dismissSuggestion(id: Id, name: string) {
+    setDismissed((prev) => new Set(prev).add(id));
+    setUndoableDismissal({ id, name });
+    actions.dismissSuggestion(id);
+  }
+
+  function undoDismissal() {
+    if (!undoableDismissal) return;
+    const { id } = undoableDismissal;
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setUndoableDismissal(null);
+    actions.restoreSuggestion(id);
+  }
 
   const openItem = openEntry ? byId.get(openEntry) : undefined;
   const openView = openEntry ? views.get(openEntry) : undefined;
@@ -506,11 +551,30 @@ export function ListScreen({
           <TileGrid>{toBuyTiles.map(renderTile)}</TileGrid>
         )}
 
-        {suggestions.length > 0 && (
+        {/* Kept mounted while an undo is still offered, even with nothing left
+            to suggest — dismissing the only suggestion must not take the way to
+            change your mind down with it. */}
+        {(visibleSuggestions.length > 0 || undoableDismissal) && (
           <>
-            <SectionHeading tone="warn">Föreslås</SectionHeading>
+            <SectionHeading
+              tone="warn"
+              action={
+                undoableDismissal && (
+                  <button
+                    type="button"
+                    onClick={undoDismissal}
+                    className="flex items-center gap-1 rounded-full bg-warn-tint px-2.5 py-1 text-caption font-semibold text-ink normal-case"
+                  >
+                    <UiIcon name="undo" size={13} />
+                    Ångra {undoableDismissal.name}
+                  </button>
+                )
+              }
+            >
+              Föreslås
+            </SectionHeading>
             <TileGrid>
-              {suggestions.map((s) => {
+              {visibleSuggestions.map((s) => {
                 const item = byId.get(s.catalogItemId);
                 if (!item) return null;
                 return (
@@ -520,6 +584,12 @@ export function ListScreen({
                     iconRef={item.iconRef}
                     reason={s.reason}
                     onTap={() => actions.addItem(item.id)}
+                    // Long-press ACTS here rather than opening a sheet, which is
+                    // a departure from every other tile. A suggestion has only
+                    // two possible answers — yes and not today — and a sheet
+                    // containing one button is ceremony. The safety valve is the
+                    // Ångra above, exactly as it is for buying.
+                    onLongPress={() => dismissSuggestion(item.id, item.name)}
                   />
                 );
               })}

@@ -270,6 +270,28 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
           : null,
       });
     },
+    /**
+     * Fire-and-forget, and deliberately not through the outbox.
+     *
+     * A dismissal cannot conflict — the server key is (item, day) — so it needs
+     * neither an op nor last-write-wins. The screen has already hidden the tile
+     * by the time this runs, so a failure costs nothing visible now: the
+     * suggestion simply comes back after the next hydrate. Worth no toast, since
+     * the user's instruction was "not this time", not "record this forever".
+     */
+    dismissSuggestion: (catalogItemId: Id) => {
+      void fetch("/api/suggestions/dismissals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ catalogItemId }),
+      }).catch(() => {});
+    },
+    restoreSuggestion: (catalogItemId: Id) => {
+      void fetch(
+        `/api/suggestions/dismissals/${encodeURIComponent(catalogItemId)}`,
+        { method: "DELETE" },
+      ).catch(() => {});
+    },
     openScanner: () => {
       setScanResult(null);
       setScanning(true);

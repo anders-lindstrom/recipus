@@ -8,6 +8,7 @@ import { listsRoutes } from "./routes/lists";
 import { opsRoutes } from "./routes/ops";
 import { recipesRoutes } from "./routes/recipes";
 import { streamRoutes } from "./routes/stream";
+import { suggestionsRoutes } from "./routes/suggestions";
 
 export type ApiEnv = {
   Variables: {
@@ -41,6 +42,7 @@ export function api() {
   app.route("/stream", streamRoutes());
   app.route("/recipes", recipesRoutes());
   app.route("/barcode", barcodeRoutes());
+  app.route("/suggestions", suggestionsRoutes());
 
   app.onError((err, c) => {
     if (err instanceof HTTPException) {

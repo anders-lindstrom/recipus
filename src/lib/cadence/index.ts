@@ -94,10 +94,32 @@ export interface CadenceStats {
  * moves an interval between 0 and 1 days, which is noise against a median
  * measured in days to weeks.
  */
+/**
+ * Which LOCAL calendar day a moment falls on, as `YYYY-MM-DD`.
+ *
+ * Exported because two features ask the same question and must never answer it
+ * differently: this engine collapses purchases to one per day (see
+ * `purchaseDays`), and a suggestion dismissal silences an item "for the rest of
+ * today". Both mean the household's own day — not a UTC day, and not a rolling
+ * 24 hours. Two implementations would agree all year and diverge for one hour
+ * around a boundary, which is the least reproducible kind of bug there is.
+ *
+ * Local means the server process's zone, which the production image pins to
+ * Europe/Stockholm (see the Dockerfile and the compose file's explicit TZ).
+ *
+ * Zero-padded because this string is half of a database primary key, and
+ * `2026-7-5` neither sorts nor compares as a date.
+ */
+export function localDayKey(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
 export function purchaseDays(purchaseDates: Date[]): Date[] {
   const latestByDay = new Map<string, Date>();
   for (const date of purchaseDates) {
-    const day = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const day = localDayKey(date);
     const seen = latestByDay.get(day);
     if (!seen || date.getTime() > seen.getTime()) latestByDay.set(day, date);
   }

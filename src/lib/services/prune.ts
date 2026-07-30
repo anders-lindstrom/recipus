@@ -6,7 +6,9 @@ import {
   ops as opsTable,
   recipeAdditions,
   recipes,
+  suggestionDismissals,
 } from "@/db/schema";
+import { localDayKey } from "@/lib/cadence";
 import { retentionCutoff } from "@/lib/retention";
 
 /**
@@ -35,6 +37,7 @@ export interface PruneResult {
   recipeAdditions: number;
   lists: number;
   recipes: number;
+  suggestionDismissals: number;
 }
 
 export async function pruneRetention(now: Date): Promise<PruneResult> {
@@ -95,12 +98,28 @@ export async function pruneRetention(now: Date): Promise<PruneResult> {
       .where(lt(recipes.deletedAt, cutoff))
       .returning({ id: recipes.id });
 
+    /**
+     * "Inte den här gången" is spent the moment the day is over, and nothing
+     * else forgets it — so without this the table grows by one row per declined
+     * suggestion per day, forever, for a value that was meaningless by breakfast.
+     *
+     * `day` is a `YYYY-MM-DD` string, so this compares lexicographically. That is
+     * only correct because `localDayKey` zero-pads: an unpadded `2026-7-5` sorts
+     * AFTER `2026-12-31`, and the prune would silently skip rows it should take
+     * and take rows it should keep. The padding is load-bearing, not tidiness.
+     */
+    const prunedDismissals = await tx
+      .delete(suggestionDismissals)
+      .where(lt(suggestionDismissals.day, localDayKey(cutoff)))
+      .returning({ day: suggestionDismissals.day });
+
     return {
       ops: prunedOps.length,
       entries: prunedEntries.length,
       recipeAdditions: prunedAdditions.length,
       lists: prunedLists.length,
       recipes: prunedRecipes.length,
+      suggestionDismissals: prunedDismissals.length,
     };
   });
 }

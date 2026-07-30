@@ -4,7 +4,9 @@ import {
   analyzeCadence,
   catalogOrderScore,
   isCondimentScale,
+  localDayKey,
   probablyStillHave,
+  purchaseDays,
   rankSuggestions,
   type SuggestionInput,
 } from "@/lib/cadence";
@@ -415,5 +417,42 @@ describe("probablyStillHave", () => {
     expect(isCondimentScale({ value: 1, unit: "hg" })).toBe(true);
     expect(isCondimentScale({ value: 2, unit: "st" })).toBe(true);
     expect(isCondimentScale({ value: 3, unit: "st" })).toBe(false);
+  });
+});
+
+describe("localDayKey", () => {
+  /**
+   * One definition of "which day is this", shared by the cadence engine's
+   * per-day purchase collapsing and by suggestion dismissals.
+   *
+   * They are the same question — "the same shopping occasion" and "for the rest
+   * of today" both mean a household's local calendar day, not a UTC one and not
+   * a rolling 24 hours. Two implementations of that would drift at exactly one
+   * hour of the year and be unreproducible when they did.
+   */
+  it("is the local calendar day, zero-padded", () => {
+    expect(localDayKey(new Date(2026, 6, 5, 13, 30))).toBe("2026-07-05");
+    // Padding is not cosmetic: unpadded keys sort wrong, and this string is a
+    // database primary key component.
+    expect(localDayKey(new Date(2026, 11, 31, 23, 59))).toBe("2026-12-31");
+  });
+
+  it("puts just-before-midnight and just-after on different days", () => {
+    const before = localDayKey(new Date(2026, 6, 5, 23, 59, 59));
+    const after = localDayKey(new Date(2026, 6, 6, 0, 0, 1));
+    expect(before).not.toBe(after);
+  });
+
+  it("agrees with the day boundary purchaseDays already uses", () => {
+    // If these two ever disagree, a dismissal silences an item for a window
+    // that does not line up with the day the engine reasons about.
+    const evening = new Date(2026, 6, 5, 22, 0);
+    const nextMorning = new Date(2026, 6, 6, 7, 0);
+    expect(purchaseDays([evening, nextMorning])).toHaveLength(2);
+    expect(localDayKey(evening)).not.toBe(localDayKey(nextMorning));
+
+    const sameDay = new Date(2026, 6, 5, 8, 0);
+    expect(purchaseDays([evening, sameDay])).toHaveLength(1);
+    expect(localDayKey(evening)).toBe(localDayKey(sameDay));
   });
 });
