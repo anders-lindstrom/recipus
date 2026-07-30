@@ -60,6 +60,12 @@ export interface EntrySheetProps {
    * from the button that opened it.
    */
   onRemoveRecipe: (recipeAdditionId: string, recipeTitle: string) => void;
+  /**
+   * Opens the "which list?" picker. Undefined when the household has only one
+   * list, in which case the action is not offered at all — a button whose only
+   * possible outcome is an empty sheet is worse than no button.
+   */
+  onMove?: () => void;
   /** Removes without recording a purchase — a change of mind, not a shop. */
   onRemoveWithoutBuying: () => void;
 }
@@ -84,6 +90,7 @@ export function EntrySheet({
   onSetModifier,
   onSetPriority,
   onRemoveRecipe,
+  onMove,
   onRemoveWithoutBuying,
 }: EntrySheetProps) {
   const manual = view.contributions.find((c) => c.sourceKind === "manual");
@@ -306,6 +313,15 @@ export function EntrySheet({
                 Ta bort {c.recipeTitle ?? "receptet"}
               </SheetButton>
             ))}
+
+            {onMove && (
+              <SheetButton
+                onClick={onMove}
+                icon={<UiIcon name="toList" size={16} />}
+              >
+                Flytta till annan lista
+              </SheetButton>
+            )}
 
             {mode === "plan" && (
               <SheetButton

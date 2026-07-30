@@ -30,14 +30,14 @@ const sql = postgres(
  */
 let listSeq = 0;
 
-async function createTestList(): Promise<string> {
+async function createTestList(name = "E2E"): Promise<string> {
   const id = `e2e-${process.pid}-${++listSeq}`;
   const [{ categoryOrder }] = await sql<[{ categoryOrder: string[] }]>`
     select category_order as "categoryOrder" from lists where id = 'hemkop'
   `;
   await sql`
     insert into lists (id, name, icon, position, category_order, updated_by)
-    values (${id}, 'E2E', '1F6D2', 99, ${sql.json(categoryOrder ?? [])}, 'e2e')
+    values (${id}, ${name}, '1F6D2', 99, ${sql.json(categoryOrder ?? [])}, 'e2e')
   `;
   return id;
 }
@@ -48,7 +48,11 @@ async function dropTestList(id: string) {
   await sql`update catalog_items set use_count = 0, last_used_at = null`;
 }
 
-export const test = base.extend<{ freshPage: Page; listId: string }>({
+export const test = base.extend<{
+  freshPage: Page;
+  listId: string;
+  otherListId: string;
+}>({
   /**
    * Depends on `page` purely for the teardown ORDER, and that dependency is
    * load-bearing.
@@ -74,6 +78,25 @@ export const test = base.extend<{ freshPage: Page; listId: string }>({
     await expect(page.getByText("Att handla")).toBeVisible();
     await use(page);
     await settle(page);
+  },
+  /**
+   * A second list, for the one thing that needs two: `move_item`.
+   *
+   * Depends on `freshPage` rather than on `page` so the ordering is decided
+   * rather than incidental — it is set up last and so torn down first, while the
+   * client is still alive. Hence the `settle` before the drop: a move op naming
+   * this list arriving after the row is gone is a foreign key violation, which
+   * is exactly the harness-induced "op refused by server" this suite already
+   * spent a session mistaking for a sync bug.
+   *
+   * Opt-in, so the other tests keep seeing a household with a single list and
+   * the move affordance stays absent from them.
+   */
+  otherListId: async ({ freshPage }, use) => {
+    const id = await createTestList("E2E Andra");
+    await use(id);
+    await settle(freshPage);
+    await dropTestList(id);
   },
 });
 

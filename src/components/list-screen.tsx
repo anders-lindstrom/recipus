@@ -28,6 +28,7 @@ import { useSustained } from "@/lib/client/use-sustained";
 import { AddBar } from "./add-bar";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
+import { MoveSheet } from "./move-sheet";
 import { ItemTile, SectionHeading, TileGrid } from "./item-tile";
 import {
   DuplicateAskSheet,
@@ -87,12 +88,20 @@ export interface ListScreenActions {
   setPriority: (catalogItemId: Id, priority: Priority) => void;
   createItem: (name: string, amountText: string) => void;
   removeRecipe: (recipeAdditionId: Id) => void;
+  /**
+   * Relocates an item to another list, carrying its priority and manual
+   * contribution. The payload is built by the caller from the store, because the
+   * op has to carry what it moves — see `move_item` in lib/sync/ops.ts.
+   */
+  moveItem: (catalogItemId: Id, toListId: Id) => void;
   openScanner: () => void;
   switchList: () => void;
 }
 
 export interface ListScreenProps {
   list: List;
+  /** Every list in the household, for the move picker. May be just `list`. */
+  lists: List[];
   categories: Category[];
   catalog: CatalogItem[];
   entries: ListEntry[];
@@ -110,6 +119,7 @@ export interface ListScreenProps {
 
 export function ListScreen({
   list,
+  lists,
   categories,
   catalog,
   entries,
@@ -145,6 +155,8 @@ export function ListScreen({
     title: string;
     candidates: RecipeRemovalCandidate[];
   } | null>(null);
+  /** The item whose "which list?" picker is open. */
+  const [moving, setMoving] = useState<Id | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
@@ -293,6 +305,8 @@ export function ListScreen({
 
   const openItem = openEntry ? byId.get(openEntry) : undefined;
   const openView = openEntry ? views.get(openEntry) : undefined;
+  const movingItem = moving ? byId.get(moving) : undefined;
+  const movingView = moving ? views.get(moving) : undefined;
 
   return (
     <div className="min-h-dvh pb-28">
@@ -620,10 +634,34 @@ export function ListScreen({
             }
             setRemovingRecipe({ additionId: id, title, candidates: orphans });
           }}
+          onMove={
+            // Offered only when there is somewhere to move TO. With one list the
+            // picker would open empty, which reads as a broken button.
+            lists.length > 1
+              ? () => {
+                  setMoving(openItem.id);
+                  setOpenEntry(null);
+                }
+              : undefined
+          }
           onRemoveWithoutBuying={() => {
             remove(openItem.id, openItem.name, false);
             setOpenEntry(null);
           }}
+        />
+      )}
+
+      {movingItem && movingView && (
+        <MoveSheet
+          itemName={movingItem.name}
+          view={movingView}
+          from={list}
+          lists={lists}
+          onMove={(toListId) => {
+            actions.moveItem(movingItem.id, toListId);
+            setMoving(null);
+          }}
+          onClose={() => setMoving(null)}
         />
       )}
     </div>

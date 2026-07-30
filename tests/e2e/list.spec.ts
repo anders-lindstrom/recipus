@@ -168,3 +168,44 @@ test("buy mode's long-press escape hatch records no purchase", async ({
   await expect(onListTile(page, "banan")).toHaveCount(0);
   expect(await purchaseCount(listId)).toBe(0);
 });
+
+test("moving an item takes its amount with it and leaves this list", async ({
+  freshPage: page,
+  otherListId,
+}) => {
+  // The second list is created after the first render, so the client has not
+  // heard of it yet — and with one list there is deliberately nowhere to move
+  // to, so the affordance is absent. Reloading is the honest way to get the
+  // household the test actually describes.
+  await page.reload();
+  await expect(page.getByText("Att handla")).toBeVisible();
+
+  await page.getByLabel("Sök eller lägg till vara").fill("mjölk 2 l");
+  await page.getByLabel("Sök eller lägg till vara").press("Enter");
+  await expect(onListTile(page, "mjölk")).toContainText("2 l");
+
+  const tile = onListTile(page, "mjölk");
+  const box = await tile.boundingBox();
+  if (!box) throw new Error("no tile");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(700);
+  await page.mouse.up();
+
+  await page.getByRole("button", { name: "Flytta till annan lista" }).click();
+  // Said before the choice, not after: what does not travel is invisible once
+  // the move has happened.
+  await expect(page.getByText("2 l följer med")).toBeVisible();
+  await page.getByRole("button", { name: "E2E Andra" }).click();
+
+  // The move must actually empty this list. The store holds one list's state
+  // until a move writes an entry belonging to another, and that entry is LIVE —
+  // unfiltered, the item went on rendering here exactly as before and the move
+  // looked like it had done nothing.
+  await expect(onListTile(page, "mjölk")).toHaveCount(0);
+
+  // And it arrives at the other end with the quantity, which is the whole point:
+  // this is the defect that made a moved item show up as "mjölk, some".
+  await page.goto(`/?list=${otherListId}`);
+  await expect(onListTile(page, "mjölk")).toContainText("2 l");
+});

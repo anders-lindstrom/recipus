@@ -7,7 +7,14 @@ import { useMode } from "@/lib/client/use-mode";
 import { nextOpTimestamp } from "@/lib/client/op-clock";
 import { scanAction } from "@/lib/client/scan-action";
 import type { Op } from "@/lib/sync";
-import { entryId, type Amount, type Id, type List, type Priority } from "@/lib/domain";
+import {
+  entryId,
+  manualContributionId,
+  type Amount,
+  type Id,
+  type List,
+  type Priority,
+} from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import { parseAmount } from "@/lib/units";
 import { normalizeName, slugify } from "@/lib/utils";
@@ -231,6 +238,38 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     },
     removeRecipe: (recipeAdditionId: Id) =>
       dispatch({ kind: "remove_recipe", listId, recipeAdditionId }),
+    /**
+     * The payload is read out of the store HERE, not in the reducer.
+     *
+     * `move_item` carries what it moves — priority, and the manual
+     * amount/note/modifier — because a reducer that read the source instead
+     * could not be order-independent, and two phones would settle on different
+     * amounts at the destination. See the op's own comment. This is the one
+     * place that read happens, on the device that is actually looking at the
+     * item.
+     */
+    moveItem: (catalogItemId: Id, toListId: Id) => {
+      const eid = entryId(listId, catalogItemId);
+      const entry = state.entries[eid];
+      const manual = state.contributions[manualContributionId(eid)];
+      dispatch({
+        kind: "move_item",
+        fromListId: listId,
+        toListId,
+        catalogItemId,
+        priority: entry?.priority ?? "normal",
+        // Null when there is nothing of your own to take — which is different
+        // from "all three fields are empty", and the reducer treats it as such:
+        // it makes no claim about those fields at either end.
+        manual: manual
+          ? {
+              amount: manual.amount,
+              note: manual.note,
+              modifier: manual.modifier,
+            }
+          : null,
+      });
+    },
     openScanner: () => {
       setScanResult(null);
       setScanning(true);
@@ -325,9 +364,17 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     <>
       <ListScreen
         list={list}
+        // Offline the server sent no lists; the one you are on is still a valid
+        // (and the only sensible) choice, matching the switcher's own fallback.
+        lists={lists.length ? lists : [list]}
         categories={categories}
         catalog={Object.values(state.catalog)}
-        entries={Object.values(state.entries)}
+        // Filtered to this list, which matters only because of `move_item`: it
+        // is the one op that writes an entry belonging to a DIFFERENT list, and
+        // that entry is live. Unfiltered, moving an item left it sitting on the
+        // source list exactly as before — a move that looked like it had done
+        // nothing at all.
+        entries={Object.values(state.entries).filter((e) => e.listId === listId)}
         contributions={Object.values(state.contributions)}
         recipeAdditions={recipeAdditionInfo}
         suggestions={snapshot?.suggestions ?? []}
