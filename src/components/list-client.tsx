@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useList } from "@/lib/client/use-list";
 import { useMode } from "@/lib/client/use-mode";
 import { nextOpTimestamp } from "@/lib/client/op-clock";
+import { scanAction } from "@/lib/client/scan-action";
 import type { Op } from "@/lib/sync";
 import { entryId, type Amount, type Id, type List } from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
@@ -259,58 +260,58 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
       const entry = state.entries[entryId(listId, catalogItemId)];
       const onList = Boolean(entry && entry.removedAt === null);
 
-      /**
-       * Bidirectional, and mode-aware.
-       *
-       * Already on the list means you just picked it up; otherwise you have just
-       * run out — that part is unchanged. What the mode decides is whether a
-       * tick-off counts as a purchase, exactly as it does for a tap, so scanning
-       * cannot be a back door that writes history while planning.
-       *
-       * In buy mode an unplanned pickup is added AND bought in one gesture: the
-       * item is in your trolley, so it does not belong on the list, but it does
-       * belong in the history. No dialog — the scanner is a continuous session
-       * and fifteen confirmations would ruin it — so the undo lives in the
-       * result line instead, and retracts the purchase as well as the entry.
-       */
-      if (onList) {
-        const bought = mode === "buy";
-        const clientOpId = actions.removeItem(catalogItemId, bought);
-        setScanResult({
-          text: bought ? `${name} köpt` : `${name} avbockad`,
-          undo: () => {
-            actions.addItem(catalogItemId, undefined, clientOpId);
-            setScanResult({ text: `${name} tillbaka på listan` });
-          },
-        });
-        return;
-      }
+      // Which of the four things a scan means lives in `scanAction`, tested
+      // there. This only turns the decision into ops and Swedish.
+      switch (scanAction(mode, onList).kind) {
+        case "buy": {
+          const clientOpId = actions.removeItem(catalogItemId, true);
+          setScanResult({
+            text: `${name} köpt`,
+            undo: () => {
+              actions.addItem(catalogItemId, undefined, clientOpId);
+              setScanResult({ text: `${name} tillbaka på listan` });
+            },
+          });
+          return;
+        }
 
-      if (mode === "buy") {
-        actions.addItem(catalogItemId);
-        const clientOpId = actions.removeItem(catalogItemId, true);
-        setScanResult({
-          text: `${name} tillagd och köpt`,
-          undo: () => {
-            // Two halves: put it back so the purchase can be retracted against
-            // the op that wrote it, then take it off again WITHOUT recording a
-            // purchase — landing back where you were before the scan.
-            actions.addItem(catalogItemId, undefined, clientOpId);
-            actions.removeItem(catalogItemId, false);
-            setScanResult({ text: `${name} ångrad` });
-          },
-        });
-        return;
-      }
+        case "add_and_buy": {
+          actions.addItem(catalogItemId);
+          const clientOpId = actions.removeItem(catalogItemId, true);
+          setScanResult({
+            text: `${name} tillagd och köpt`,
+            undo: () => {
+              // Two halves: put it back so the purchase can be retracted against
+              // the op that wrote it, then take it off again WITHOUT recording a
+              // purchase — landing back where you were before the scan.
+              actions.addItem(catalogItemId, undefined, clientOpId);
+              actions.removeItem(catalogItemId, false);
+              setScanResult({ text: `${name} ångrad` });
+            },
+          });
+          return;
+        }
 
-      actions.addItem(catalogItemId);
-      setScanResult({
-        text: `${name} tillagd`,
-        undo: () => {
-          actions.removeItem(catalogItemId, false);
-          setScanResult({ text: `${name} borttagen igen` });
-        },
-      });
+        case "already_on_list": {
+          // No op, and so no undo: there is nothing to take back. Saying so is
+          // still worth a line — otherwise a scan that changed nothing looks
+          // identical to one the camera never read.
+          setScanResult({ text: `${name} finns redan på listan` });
+          return;
+        }
+
+        case "add": {
+          actions.addItem(catalogItemId);
+          setScanResult({
+            text: `${name} tillagd`,
+            undo: () => {
+              actions.removeItem(catalogItemId, false);
+              setScanResult({ text: `${name} borttagen igen` });
+            },
+          });
+          return;
+        }
+      }
     } catch {
       setScanResult({ text: "Kunde inte slå upp streckkoden" });
     }

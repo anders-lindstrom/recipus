@@ -179,6 +179,38 @@ phone silently merges the two tiles and then writes amounts to the wrong one.
 
 ---
 
+# Plan-mode scanning only ever adds, 2026-07-30
+
+You asked whether a scan in plan mode puts the item on the list. It did — but
+only when the item was not already there. Already on it, and the scan **removed**
+it, because the original scanner was bidirectional in both modes: on the list
+meant "you just picked it up", off it meant "you just ran out".
+
+That reading only holds in a shop. Standing at a screen or in front of the
+cupboard, pointing the camera at something means "we want this", and the second
+scan of the same product quietly took it back off. The scanner stays open and
+keeps firing, so a repeat read of one barcode is not an edge case — it is the
+normal way the thing gets used.
+
+So plan mode now only ever adds, and says `mjölk finns redan på listan` with no
+undo pill when there was nothing to do. Buy mode keeps the bidirectional tick-off,
+which is where it belonged all along. Nothing is lost: removing something while
+planning is one deliberate tap on the tile.
+
+The four-cell table moved out of the component into `scanAction` in
+`src/lib/client/scan-action.ts`, pure and tested. It decides whether a scan puts
+something on your shopping list or takes it off, and a wrong cell is invisible
+until a list is already wrong — that does not belong inlined where only a camera
+can reach it. One of the five tests exists solely to pin that plan mode can never
+record a purchase.
+
+Verified in the real UI against the real database, all four cells: plan/not-listed
+→ `mjölk tillagd`, 0 purchases. Plan/already-listed → `finns redan på listan`,
+still on the list, 0 purchases. Buy/listed → `mjölk köpt`, off the list, 1
+purchase. Buy/not-listed → `tillagd och köpt`, 1 purchase.
+
+---
+
 # Decisions & gotchas — autonomous build session, 2026-07-29
 
 Read this first. Everything below happened while you were away.
