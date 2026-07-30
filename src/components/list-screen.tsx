@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import type {
   Amount,
@@ -21,8 +21,8 @@ import {
   type RecipeAdditionInfo,
 } from "@/lib/services/entries";
 import { useSustained } from "@/lib/client/use-sustained";
-import { AddBar, type AddBarHandle } from "./add-bar";
-import { AisleRail } from "./aisle-rail";
+import { AddBar } from "./add-bar";
+import { AisleRail, aisleAnchorId } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
 import { ItemTile, SectionHeading, TileGrid } from "./item-tile";
 import { UiIcon } from "./ui-icon";
@@ -87,7 +87,6 @@ export function ListScreen({
   actions,
 }: ListScreenProps) {
   const [openEntry, setOpenEntry] = useState<Id | null>(null);
-  const addBar = useRef<AddBarHandle>(null);
 
   // Ops normally drain in tens of milliseconds. Only say anything once one has
   // been waiting long enough that the delay is the story.
@@ -177,11 +176,6 @@ export function ListScreen({
     [catalogByCategory, categoryName],
   );
 
-  const focusSearch = useCallback(() => {
-    window.scrollTo({ top: 0, behavior: "smooth" });
-    addBar.current?.focus();
-  }, []);
-
   const openItem = openEntry ? byId.get(openEntry) : undefined;
   const openView = openEntry ? views.get(openEntry) : undefined;
 
@@ -266,18 +260,26 @@ export function ListScreen({
             )}
           </div>
         )}
+
+        {/* Aisle navigation belongs to the whole page, not to the catalog, so it
+            pins with the header rather than appearing when the catalog starts.
+            That is what makes going back *up* possible: a rail that lived below
+            the buy zone scrolled away exactly when you wanted it. */}
+        <AisleRail aisles={aisles} />
       </header>
 
       <div className="px-3">
         <AddBar
-          ref={addBar}
           catalog={catalog}
           onListItemIds={onListIds}
           onPick={(itemId, amountText) => actions.addItem(itemId, amountText)}
           onCreate={actions.createItem}
         />
 
-        <SectionHeading count={live.length > 0 ? live.length : undefined}>
+        <SectionHeading
+          id={aisleAnchorId("__top__")}
+          count={live.length > 0 ? live.length : undefined}
+        >
           Att handla
         </SectionHeading>
 
@@ -331,11 +333,9 @@ export function ListScreen({
           household's current intent; everything below is the vocabulary it
           draws on, and the two should not look like one long list. */}
       <section className="mt-6 border-t border-line bg-surface-sunken px-3 pb-6">
-        <AisleRail aisles={aisles} onSearch={focusSearch} />
-
         {catalogByCategory.map((group) => (
           <div key={group.categoryId}>
-            <SectionHeading id={`aisle-${group.categoryId}`} tone="brand">
+            <SectionHeading id={aisleAnchorId(group.categoryId)} tone="brand">
               {categoryName.get(group.categoryId) ?? "Övrigt"}
             </SectionHeading>
             <TileGrid>

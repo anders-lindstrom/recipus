@@ -1,6 +1,6 @@
 "use client";
 
-import { useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
+import { useMemo, useState } from "react";
 import type { CatalogItem, Id } from "@/lib/domain";
 import { rankMatches, splitQuery } from "@/lib/services/search";
 import { cn, normalizeName } from "@/lib/utils";
@@ -14,16 +14,11 @@ import { UiIcon } from "./ui-icon";
  * this has to behave: match on three letters, accept a quantity inline, and
  * never make creating a new item feel like filling in a form.
  *
- * It scrolls away with the page rather than pinning. That is deliberate — the
- * aisle rail takes over the top of the screen once you are down in the catalog,
- * and two stacked sticky bars would eat a fifth of a phone screen to save a
- * flick. The rail carries a "Sök" chip that brings this back and focuses it,
- * which is what `AddBarHandle` exists for.
+ * It scrolls away with the page rather than pinning. The header already carries
+ * the list name and the aisle rail; a third pinned bar would eat a fifth of a
+ * phone screen to save one flick back to the top, and the rail's "Listan"
+ * button is that flick.
  */
-
-export interface AddBarHandle {
-  focus: () => void;
-}
 
 export interface AddBarProps {
   catalog: CatalogItem[];
@@ -31,7 +26,6 @@ export interface AddBarProps {
   onListItemIds: Set<Id>;
   onPick: (itemId: Id, amountText: string) => void;
   onCreate: (name: string, amountText: string) => void;
-  ref?: Ref<AddBarHandle>;
 }
 
 export function AddBar({
@@ -39,14 +33,10 @@ export function AddBar({
   onListItemIds,
   onPick,
   onCreate,
-  ref,
 }: AddBarProps) {
   const [raw, setRaw] = useState("");
-  const input = useRef<HTMLInputElement>(null);
   const { name, amountText } = useMemo(() => splitQuery(raw), [raw]);
   const matches = useMemo(() => rankMatches(catalog, name), [catalog, name]);
-
-  useImperativeHandle(ref, () => ({ focus: () => input.current?.focus() }), []);
 
   const exact = matches.find((m) => m.nameNorm === normalizeName(name));
   const canCreate = name.length >= 2 && !exact;
@@ -70,7 +60,6 @@ export function AddBar({
       <div className="flex items-center gap-2.5 rounded-card border border-line bg-surface-raised px-3 py-2.5">
         <UiIcon name="search" size={18} className="flex-none text-ink-faint" />
         <input
-          ref={input}
           value={raw}
           onChange={(e) => setRaw(e.target.value)}
           onKeyDown={(e) => {

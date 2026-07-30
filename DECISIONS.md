@@ -378,6 +378,53 @@ Sizes skew larger than before; item names went 11px → 13px.
   meant delaying the state change. A tap that waits is a tap that fails in a
   shop; the toast already confirms.
 
+## Aisle navigation, second pass
+
+The strip from the first pass was too slow, only went downwards, and looked
+broken. All three complaints turned out to be real, and two of them were not
+what they appeared to be.
+
+**"It can't even scroll."** It could — a touch pan and a wheel both moved it,
+measured. The actual problem was that 19 aisle names come to **1971px of chips
+inside a 390px phone**, with the scrollbar hidden, so nothing said there was
+more and the far end was five drags away. A strip is right for hopping to the
+aisle next door and useless for finding one by name. So there is now a
+right-edge fade that says "more this way", and a button that opens all 19 in a
+sheet where everything is visible at once and nothing needs dragging (measured:
+682px of content, no scrolling).
+
+**No way back up.** The rail used to live below the buy zone, which meant it
+scrolled away exactly when you wanted it. It is part of the sticky header now,
+so it is always there, and "Listan" is pinned outside the horizontal scroller
+where it cannot drift off-screen. Which also means it lights up as a
+you-are-here indicator for the whole page rather than just the catalog.
+
+**Jumps took most of a second.** `scrollIntoView({ behavior: "smooth" })` lets
+the browser own the duration and it scales with distance. `fast-scroll` replaces
+it with a fixed 180ms: measured at **150ms of actual motion for a 6608px jump**,
+the same regardless of distance. Not instant, deliberately — a cut gives you no
+sense of whether "Bröd" was above or below you. It cancels on a later tap (so
+four taps are four taps, not a queue) and yields immediately to a real thumb on
+the page. Reduced motion collapses it to one instant step, verified.
+
+### Two bugs found by measuring rather than by looking
+
+**The highlight could get permanently stuck.** Both passes derived "which aisle
+am I in" from "is a heading inside a thin band under the header". That is quietly
+wrong: a scroll which *skips* the band never reports anything inside it, so the
+highlight stays wherever it was. The 180ms jumps do exactly that, and so does
+any real flick — the rail sat there insisting you were in "Frukt & grönt" while
+you looked at "Kött & fågel". The observer is now only a "something moved"
+trigger and the answer is recomputed from actual heading positions, which cannot
+get stuck. Verified across five scroll positions.
+
+**Landing on the line is ambiguous.** A jump parks its heading 8px below the
+chrome, and sub-pixel scroll positions put it a fraction the wrong side of a
+comparison drawn at that same offset — so tapping "Skafferi" landed pixel-perfect
+and then lit "Fryst". The detection line sits ~18% into the content now, which
+also reads better: a heading just under the header means that aisle's tiles are
+what fill the screen.
+
 ## The sync banner was flashing on every tap
 
 Reported as "it makes the whole thing jump up and down very quick", and measured

@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  ArrowUp,
   BookOpen,
   Check,
   ChevronDown,
@@ -7,6 +8,7 @@ import {
   CircleAlert,
   CloudOff,
   ExternalLink,
+  LayoutGrid,
   ListPlus,
   LoaderCircle,
   Minus,
@@ -38,6 +40,7 @@ import {
  */
 
 const GLYPHS = {
+  allAisles: LayoutGrid,
   back: ChevronLeft,
   backArrow: ArrowLeft,
   check: Check,
@@ -57,6 +60,7 @@ const GLYPHS = {
   search: Search,
   spinner: LoaderCircle,
   toList: ListPlus,
+  toTop: ArrowUp,
   warning: CircleAlert,
 } as const;
 
