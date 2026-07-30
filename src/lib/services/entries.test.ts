@@ -26,6 +26,7 @@ function makeEntry(overrides: Partial<ListEntry> = {}): ListEntry {
     createdAt: "2026-03-12T10:00:00.000Z",
     createdBy: "anders",
     removedAt: null,
+    priority: "normal",
     updatedAt: "2026-03-12T10:00:00.000Z",
     updatedBy: "anders",
     ...overrides,
@@ -44,6 +45,7 @@ function recipeContribution(
     recipeAdditionId: additionId,
     amount: { value, unit },
     note: null,
+    modifier: null,
   };
 }
 
@@ -121,6 +123,7 @@ describe("buildEntryView", () => {
         recipeAdditionId: null,
         amount: { value: 3, unit: "st" },
         note: null,
+        modifier: null,
       },
     ]);
 
@@ -138,6 +141,7 @@ describe("buildEntryView", () => {
         recipeAdditionId: null,
         amount: null,
         note: null,
+        modifier: null,
       },
     ]);
 
@@ -156,6 +160,7 @@ describe("buildEntryView", () => {
         recipeAdditionId: null,
         amount: { value: 99, unit: "dl" },
         note: null,
+        modifier: null,
       },
     ]);
 
@@ -173,6 +178,7 @@ describe("buildEntryView", () => {
           recipeAdditionId: null,
           amount: { value: 1, unit: "dl" },
           note: null,
+          modifier: null,
         },
         recipeContribution("add-muffins", 8, "dl"),
       ],
@@ -191,6 +197,7 @@ describe("buildEntryView", () => {
         recipeAdditionId: null,
         amount: null,
         note: "helst ekologisk",
+        modifier: null,
       },
       { ...recipeContribution("add-a", 2, "dl"), note: "   " },
     ]);
@@ -266,6 +273,7 @@ describe("itemsOnlyWantedByRecipe", () => {
       createdAt: "2026-03-12T10:00:00.000Z",
       createdBy: "anders",
       removedAt: removed ? "2026-03-12T11:00:00.000Z" : null,
+      priority: "normal",
       updatedAt: "2026-03-12T10:00:00.000Z",
       updatedBy: "anders",
     };
@@ -279,6 +287,7 @@ describe("itemsOnlyWantedByRecipe", () => {
       recipeAdditionId: additionId,
       amount: { value: 2, unit: "dl" },
       note: null,
+      modifier: null,
     };
   }
 
@@ -290,6 +299,7 @@ describe("itemsOnlyWantedByRecipe", () => {
       recipeAdditionId: null,
       amount: { value: 1, unit: "st" },
       note: null,
+      modifier: null,
     };
   }
 

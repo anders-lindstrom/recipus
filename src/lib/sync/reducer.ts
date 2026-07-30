@@ -3,11 +3,13 @@ import {
   entryId,
   manualContributionId,
   recipeContributionId,
+  isClearedManualContribution,
   type Amount,
   type CatalogItem,
   type Contribution,
   type Id,
   type ListEntry,
+  type Priority,
   type RecordMeta,
   type SyncState,
 } from "@/lib/domain";
@@ -46,11 +48,27 @@ export const catalogKey = (id: Id): MetaKey => `catalog:${id}`;
 export const entryKey = (id: Id): MetaKey => `entry:${id}`;
 export const contributionKey = (id: Id): MetaKey => `contribution:${id}`;
 export const additionKey = (id: Id): MetaKey => `addition:${id}`;
-/** The amount and the note carry independent clocks — see setManualField. */
-export const contributionFieldKey = (
-  id: Id,
-  field: "amount" | "note",
-): MetaKey => `contribution:${id}:${field}`;
+/**
+ * The amount, the note and the modifier carry independent clocks — see
+ * setManualField.
+ */
+export type ManualField = "amount" | "note" | "modifier";
+export const MANUAL_FIELDS: readonly ManualField[] = [
+  "amount",
+  "note",
+  "modifier",
+];
+export const contributionFieldKey = (id: Id, field: ManualField): MetaKey =>
+  `contribution:${id}:${field}`;
+
+/**
+ * Priority is clocked separately from the entry's own add/remove state.
+ *
+ * They are different questions — "is this on the list" and "how much does it
+ * matter" — and one clock for both means marking something urgent would beat a
+ * newer removal, putting an item you have already bought back in front of you.
+ */
+export const entryPriorityKey = (id: Id): MetaKey => `entry:${id}:priority`;
 
 /**
  * The editable facts about a catalog item, each with its own clock.
@@ -185,6 +203,13 @@ function writeEntry(
     createdAt: creation.at,
     createdBy: creation.by,
     removedAt: removed ? op.at : null,
+    // Carried forward explicitly. This literal is rebuilt from scratch on every
+    // write, so anything not named here is silently reset — re-adding an item
+    // would quietly drop its urgency, and `add_item` is dispatched by more paths
+    // than anyone remembers (scan, suggestion, undo, the add bar). Clearing on
+    // REMOVAL is a separate, deliberate act with its own clock; see the
+    // remove_item case.
+    priority: existing?.priority ?? "normal",
     updatedAt: op.at,
     updatedBy: op.actor,
   };
@@ -234,12 +259,12 @@ function setManualField(
   op: Op,
   listId: Id,
   itemId: Id,
-  field: "amount" | "note",
+  field: ManualField,
   value: Amount | string | null,
 ): SyncState {
   const eid = entryId(listId, itemId);
   const cid = manualContributionId(eid);
-  const key = `${contributionKey(cid)}:${field}`;
+  const key = contributionFieldKey(cid, field);
   if (!wins(op, state.meta[key])) return state;
 
   const existing = state.contributions[cid];
@@ -250,12 +275,16 @@ function setManualField(
     recipeAdditionId: null,
     amount: field === "amount" ? (value as Amount | null) : (existing?.amount ?? null),
     note: field === "note" ? (value as string | null) : (existing?.note ?? null),
+    modifier:
+      field === "modifier"
+        ? (value as string | null)
+        : (existing?.modifier ?? null),
   };
 
   const meta = { ...state.meta, [key]: metaOf(op) };
   // Nothing left to say about the item — but the entry itself stays, because
   // "bread, amount unspecified" is a perfectly good thing to want.
-  if (next.amount === null && next.note === null) {
+  if (isClearedManualContribution(next)) {
     return patch(state, {
       contributions: omit(state.contributions, cid),
       meta,
@@ -264,6 +293,35 @@ function setManualField(
   return patch(state, {
     contributions: { ...state.contributions, [cid]: next },
     meta,
+  });
+}
+
+/**
+ * Set an entry's priority, on its own clock.
+ *
+ * Separate from the entry's add/remove clock on purpose: they answer different
+ * questions, and sharing one would let "mark urgent" beat a newer removal and
+ * push something you have already bought back to the top of the list.
+ */
+function setPriority(
+  state: SyncState,
+  op: Op,
+  listId: Id,
+  itemId: Id,
+  priority: Priority,
+): SyncState {
+  const id = entryId(listId, itemId);
+  const key = entryPriorityKey(id);
+  if (!wins(op, state.meta[key])) return state;
+
+  const existing = state.entries[id];
+  // No entry to carry the priority. Recording the clock alone would be a claim
+  // about a record that does not exist; the op that creates it will set its own.
+  if (!existing) return state;
+
+  return patch(state, {
+    entries: { ...state.entries, [id]: { ...existing, priority } },
+    meta: { ...state.meta, [key]: metaOf(op) },
   });
 }
 
@@ -428,8 +486,15 @@ export function applyOp(state: SyncState, op: Op): SyncState {
     case "add_item":
       return upsertEntry(state, op, op.listId, op.catalogItemId);
 
-    case "remove_item":
-      return tombstoneEntry(state, op, op.listId, op.catalogItemId);
+    case "remove_item": {
+      const removed = tombstoneEntry(state, op, op.listId, op.catalogItemId);
+      // Removal clears urgency, on the priority clock rather than the entry's,
+      // so a genuinely newer "mark urgent" still wins. Without the clear,
+      // urgency becomes permanent decoration: buy the urgent milk, re-add it
+      // next week, still ochre, still first — and once a third of the list is
+      // urgent, nothing is.
+      return setPriority(removed, op, op.listId, op.catalogItemId, "normal");
+    }
 
     case "set_amount": {
       // Setting an amount implies wanting the item, so make sure it is on the
@@ -455,6 +520,32 @@ export function applyOp(state: SyncState, op: Op): SyncState {
         op.catalogItemId,
         "note",
         op.note,
+      );
+    }
+
+    case "set_modifier": {
+      const withEntry = upsertEntry(state, op, op.listId, op.catalogItemId);
+      return setManualField(
+        withEntry,
+        op,
+        op.listId,
+        op.catalogItemId,
+        "modifier",
+        op.modifier,
+      );
+    }
+
+    case "set_priority": {
+      // Saying something matters implies wanting it, exactly as setting an
+      // amount does — otherwise marking a suggestion urgent would record a
+      // priority for something invisible.
+      const withEntry = upsertEntry(state, op, op.listId, op.catalogItemId);
+      return setPriority(
+        withEntry,
+        op,
+        op.listId,
+        op.catalogItemId,
+        op.priority,
       );
     }
 
@@ -484,6 +575,7 @@ export function applyOp(state: SyncState, op: Op): SyncState {
           entryId: entryId(op.listId, item.catalogItemId),
           sourceKind: "recipe",
           recipeAdditionId: op.recipeAdditionId,
+          modifier: null,
           // Already scaled by the caller. Multiplying here as well would double
           // every quantity — the exact failure this app exists to prevent.
           amount: item.amount,
@@ -588,10 +680,44 @@ export function pruneTombstones(state: SyncState, olderThan: Date): SyncState {
   ]);
 
   next.meta = Object.fromEntries(
-    Object.entries(state.meta).filter(
-      ([key, m]) => liveKeys.has(key) || !m.deleted || m.at >= cutoff,
-    ),
+    Object.entries(state.meta).filter(([key, m]) => {
+      // A live record's own key always wins, checked FIRST. Ids contain colons
+      // (`entryId` is `listId:catalogItemId`), so a custom item slugged
+      // "priority" would make `entry:hemkop:priority` look like a field key —
+      // and pruning a live entry's clock is a resurrection bug. Asking "is this
+      // a record I still hold" before parsing the shape removes the ambiguity.
+      if (liveKeys.has(key)) return true;
+      // Per-field clocks (`entry:x:priority`, `contribution:x:amount`, …) live
+      // or die with the record they describe. They carry no `deleted` flag of
+      // their own — a cleared amount is a value, not a tombstone — so without
+      // this they survive every prune and the meta map grows forever, which is
+      // exactly what this function exists to stop.
+      const parent = parentMetaKey(key);
+      if (parent !== null) return liveKeys.has(parent);
+      return !m.deleted || m.at >= cutoff;
+    }),
   );
 
   return next;
+}
+
+/**
+ * `entry:hemkop:mjolk:priority` → `entry:hemkop:mjolk`, and null for a
+ * record-level key.
+ *
+ * Recognised by the suffix rather than by counting colons, because ids contain
+ * colons themselves (`entryId` is `listId:catalogItemId`). A field name is a
+ * closed set; an id is not.
+ */
+const FIELD_SUFFIXES: readonly string[] = [
+  ...MANUAL_FIELDS,
+  "priority",
+  ...CATALOG_FIELDS,
+];
+
+function parentMetaKey(key: string): string | null {
+  const cut = key.lastIndexOf(":");
+  if (cut < 0) return null;
+  const suffix = key.slice(cut + 1);
+  return FIELD_SUFFIXES.includes(suffix) ? key.slice(0, cut) : null;
 }

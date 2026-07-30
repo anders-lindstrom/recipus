@@ -7,7 +7,7 @@ import { useMode } from "@/lib/client/use-mode";
 import { nextOpTimestamp } from "@/lib/client/op-clock";
 import { scanAction } from "@/lib/client/scan-action";
 import type { Op } from "@/lib/sync";
-import { entryId, type Amount, type Id, type List } from "@/lib/domain";
+import { entryId, type Amount, type Id, type List, type Priority } from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import { parseAmount } from "@/lib/units";
 import { normalizeName, slugify } from "@/lib/utils";
@@ -203,6 +203,10 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     },
     setAmount: (catalogItemId: Id, amount: Amount | null) =>
       dispatch({ kind: "set_amount", listId, catalogItemId, amount }),
+    setModifier: (catalogItemId: Id, modifier: string | null) =>
+      dispatch({ kind: "set_modifier", listId, catalogItemId, modifier }),
+    setPriority: (catalogItemId: Id, priority: Priority) =>
+      dispatch({ kind: "set_priority", listId, catalogItemId, priority }),
     createItem: (name: string, amountText: string) => {
       const trimmed = name.trim();
       if (!trimmed) return;

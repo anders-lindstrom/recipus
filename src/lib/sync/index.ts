@@ -10,7 +10,9 @@ export {
   contributionFieldKey,
   contributionKey,
   entryKey,
+  entryPriorityKey,
   listKey,
   CATALOG_FIELDS,
+  MANUAL_FIELDS,
 } from "./reducer";
-export type { CatalogField } from "./reducer";
+export type { CatalogField, ManualField } from "./reducer";

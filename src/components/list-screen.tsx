@@ -10,10 +10,12 @@ import type {
   Id,
   List,
   ListEntry,
+  Priority,
 } from "@/lib/domain";
 import {
   activeEntries,
   buildEntryView,
+  byPriority,
   groupByCategory,
   itemsOnlyWantedByRecipe,
   shouldGroupByAisle,
@@ -27,6 +29,10 @@ import { AddBar } from "./add-bar";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
 import { ItemTile, SectionHeading, TileGrid } from "./item-tile";
+import {
+  DuplicateAskSheet,
+  type DuplicateAsk,
+} from "./duplicate-ask-sheet";
 import {
   RecipeRemovalSheet,
   type RecipeRemovalCandidate,
@@ -77,6 +83,8 @@ export interface ListScreenActions {
    */
   removeItem: (catalogItemId: Id, bought: boolean) => string;
   setAmount: (catalogItemId: Id, amount: Amount | null) => void;
+  setModifier: (catalogItemId: Id, modifier: string | null) => void;
+  setPriority: (catalogItemId: Id, priority: Priority) => void;
   createItem: (name: string, amountText: string) => void;
   removeRecipe: (recipeAdditionId: Id) => void;
   openScanner: () => void;
@@ -131,6 +139,7 @@ export function ListScreen({
    * wants have to be computed BEFORE the contributions go, since afterwards
    * there is nothing left to tell them apart from anything else on the list.
    */
+  const [duplicateAsk, setDuplicateAsk] = useState<DuplicateAsk | null>(null);
   const [removingRecipe, setRemovingRecipe] = useState<{
     additionId: Id;
     title: string;
@@ -221,7 +230,17 @@ export function ListScreen({
 
   const grouped = shouldGroupByAisle(live.length);
 
+  // Urgent first, convenient last — and crucially WITHIN whatever grouping is
+  // already in force, so aisle walking order survives. A stable sort keeps
+  // everything else exactly where it was, which is what makes the reordering
+  // read as emphasis rather than as the list rearranging itself.
   const toBuyTiles = live
+    .slice()
+    .sort((a, b) => {
+      const av = views.get(a.catalogItemId);
+      const bv = views.get(b.catalogItemId);
+      return av && bv ? byPriority(av, bv) : 0;
+    })
     .map((e) => byId.get(e.catalogItemId))
     .filter((c): c is CatalogItem => Boolean(c));
 
@@ -234,6 +253,8 @@ export function ListScreen({
         iconRef={item.iconRef}
         quantityLabel={view?.totalLabel}
         fromRecipe={view?.hasRecipeSource}
+        priority={view?.priority}
+        modifier={view?.modifier}
         onList
         animateIn
         onTap={() => tapOnList(item)}
@@ -408,7 +429,23 @@ export function ListScreen({
         <AddBar
           catalog={catalog}
           onListItemIds={onListIds}
-          onPick={(itemId, amountText) => actions.addItem(itemId, amountText)}
+          onPick={(itemId, amountText) => {
+            // The one case where adding from the bar is not unambiguous: the
+            // item is already on the list carrying a qualifier, and the amount
+            // about to be written shares a record with it. Applying silently
+            // would deliver "1 st mogna" to someone who asked for one mango.
+            const existing = views.get(itemId);
+            if (existing?.modifier) {
+              setDuplicateAsk({
+                itemId,
+                itemName: byId.get(itemId)?.name ?? itemId,
+                existingModifier: existing.modifier,
+                amountText,
+              });
+              return;
+            }
+            actions.addItem(itemId, amountText);
+          }}
           onCreate={actions.createItem}
         />
 
@@ -527,6 +564,22 @@ export function ListScreen({
         />
       )}
 
+      {duplicateAsk && (
+        <DuplicateAskSheet
+          ask={duplicateAsk}
+          onClose={() => setDuplicateAsk(null)}
+          onKeepModifier={() => {
+            actions.addItem(duplicateAsk.itemId, duplicateAsk.amountText);
+            setDuplicateAsk(null);
+          }}
+          onClearModifier={() => {
+            actions.addItem(duplicateAsk.itemId, duplicateAsk.amountText);
+            actions.setModifier(duplicateAsk.itemId, null);
+            setDuplicateAsk(null);
+          }}
+        />
+      )}
+
       {openItem && openView && (
         <EntrySheet
           itemName={openItem.name}
@@ -541,6 +594,14 @@ export function ListScreen({
             setOpenEntry(null);
           }}
           onClose={() => setOpenEntry(null)}
+          onSetModifier={(modifier) => {
+            actions.setModifier(openItem.id, modifier);
+            setOpenEntry(null);
+          }}
+          // Deliberately does NOT close the sheet. Priority is the one control
+          // here you might tap twice — set it, look at it, change your mind —
+          // and closing would make trying the middle option feel like a mistake.
+          onSetPriority={(priority) => actions.setPriority(openItem.id, priority)}
           onSetAmount={(amount) => {
             actions.setAmount(openItem.id, amount);
             setOpenEntry(null);

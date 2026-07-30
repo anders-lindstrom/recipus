@@ -587,12 +587,20 @@ describe("forward compatibility", () => {
    * Every future op kind depends on this behaviour already being deployed, which
    * is why it is tested rather than assumed.
    */
+  /**
+   * A kind this build genuinely does not have.
+   *
+   * It used to be `set_priority`, which has since shipped — so this test quietly
+   * stopped testing forward compatibility and started testing priority. Worth
+   * knowing when picking the next placeholder: anything on the roadmap will do
+   * this again. `set_colour` is not, and will not be, a thing.
+   */
   const fromTheFuture = {
     ...base("maria", 3),
-    kind: "set_priority",
+    kind: "set_colour",
     listId: LIST,
     catalogItemId: CREAM,
-    priority: "urgent",
+    colour: "ochre",
   } as unknown as Op;
 
   it("ignores an op kind it does not know, leaving state untouched", () => {
@@ -685,6 +693,249 @@ describe("meta convergence", () => {
     for (const ordering of orderings) {
       const probed = applyOp(applyOps(emptyState(), ordering), probe);
       expect(observable(probed)).toEqual(reference);
+    }
+  });
+});
+
+describe("priority", () => {
+  const add: Op = {
+    ...base("anders", 1),
+    kind: "add_item",
+    listId: LIST,
+    catalogItemId: CREAM,
+  };
+
+  it("defaults to normal", () => {
+    const state = applyOp(emptyState(), add);
+    expect(state.entries[entryId(LIST, CREAM)].priority).toBe("normal");
+  });
+
+  /**
+   * The `writeEntry` fresh-literal hazard.
+   *
+   * Every entry write rebuilds the record from scratch, so anything not carried
+   * forward explicitly is silently reset. `add_item` is dispatched by far more
+   * paths than anyone keeps in their head — the add bar, a scan, a suggestion,
+   * undo, `set_amount`, `set_note` — and each of them would quietly clear the
+   * urgency of an item already on the list.
+   */
+  it("survives a later add_item", () => {
+    const state = applyOps(emptyState(), [
+      add,
+      {
+        ...base("maria", 2),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: CREAM,
+        priority: "urgent",
+      },
+      { ...base("anders", 3), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      {
+        ...base("anders", 4),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: CREAM,
+        amount: { value: 2, unit: "dl" },
+      },
+    ]);
+    expect(state.entries[entryId(LIST, CREAM)].priority).toBe("urgent");
+  });
+
+  /**
+   * Removal clears it, which is what keeps urgency meaning anything. Without the
+   * clear, buying the urgent milk and re-adding it next week leaves it ochre and
+   * first — and once a third of the list is urgent, nothing is.
+   */
+  it("is cleared by removal, and stays cleared through a re-add", () => {
+    const state = applyOps(emptyState(), [
+      add,
+      {
+        ...base("maria", 2),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: CREAM,
+        priority: "urgent",
+      },
+      {
+        ...base("anders", 3),
+        kind: "remove_item",
+        listId: LIST,
+        catalogItemId: CREAM,
+        bought: true,
+      },
+      { ...base("anders", 9), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+    ]);
+    const entry = state.entries[entryId(LIST, CREAM)];
+    expect(entry.removedAt).toBeNull();
+    expect(entry.priority).toBe("normal");
+  });
+
+  /**
+   * A genuinely newer "mark urgent" must survive an older removal arriving late.
+   *
+   * This is why priority has its own clock rather than riding the entry's: with
+   * one clock, whichever op the network delivered second would win outright, and
+   * the two devices would settle on different lists.
+   */
+  it("converges when a removal and a newer priority cross", () => {
+    const remove: Op = {
+      ...base("anders", 5),
+      kind: "remove_item",
+      listId: LIST,
+      catalogItemId: CREAM,
+      bought: true,
+    };
+    const urgent: Op = {
+      ...base("maria", 9),
+      kind: "set_priority",
+      listId: LIST,
+      catalogItemId: CREAM,
+      priority: "urgent",
+    };
+
+    const a = applyOps(emptyState(), [add, remove, urgent]);
+    const b = applyOps(emptyState(), [add, urgent, remove]);
+    expect(observable(a)).toEqual(observable(b));
+    expect(a.entries[entryId(LIST, CREAM)].priority).toBe("urgent");
+  });
+
+  it("converges under every ordering of priority, add and remove", () => {
+    const ops: Op[] = [
+      add,
+      {
+        ...base("maria", 4),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: CREAM,
+        priority: "convenient",
+      },
+      {
+        ...base("anders", 6),
+        kind: "remove_item",
+        listId: LIST,
+        catalogItemId: CREAM,
+        bought: true,
+      },
+      { ...base("maria", 8), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+    ];
+
+    const orderings = permutations(ops);
+    const reference = observable(applyOps(emptyState(), orderings[0]));
+    for (const ordering of orderings) {
+      expect(observable(applyOps(emptyState(), ordering))).toEqual(reference);
+    }
+  });
+});
+
+describe("modifiers", () => {
+  /**
+   * A third independent fact on one record needs a third independent clock.
+   *
+   * Folding the modifier onto `set_amount` would reproduce the data-loss bug
+   * this codebase has already paid for twice: an older write to one field
+   * arriving after a newer write to another takes the first field's value with
+   * it.
+   */
+  it("does not lose an amount to a later modifier, in either order", () => {
+    const amount: Op = {
+      ...base("anders", 5),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: { value: 2, unit: "dl" },
+    };
+    const modifier: Op = {
+      ...base("maria", 3),
+      kind: "set_modifier",
+      listId: LIST,
+      catalogItemId: CREAM,
+      modifier: "vispbar",
+    };
+
+    const a = applyOps(emptyState(), [amount, modifier]);
+    const b = applyOps(emptyState(), [modifier, amount]);
+    expect(observable(a)).toEqual(observable(b));
+
+    const cid = manualContributionId(entryId(LIST, CREAM));
+    expect(a.contributions[cid].amount).toEqual({ value: 2, unit: "dl" });
+    expect(a.contributions[cid].modifier).toBe("vispbar");
+  });
+
+  it("drops the contribution only when all three fields are empty", () => {
+    const cid = manualContributionId(entryId(LIST, CREAM));
+
+    const withBoth = applyOps(emptyState(), [
+      {
+        ...base("anders", 1),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: CREAM,
+        amount: { value: 2, unit: "dl" },
+      },
+      {
+        ...base("anders", 2),
+        kind: "set_modifier",
+        listId: LIST,
+        catalogItemId: CREAM,
+        modifier: "vispbar",
+      },
+    ]);
+
+    // Clearing the amount leaves the modifier, so the record stays.
+    const amountCleared = applyOp(withBoth, {
+      ...base("anders", 3),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: null,
+    });
+    expect(amountCleared.contributions[cid]).toBeDefined();
+    expect(amountCleared.contributions[cid].modifier).toBe("vispbar");
+
+    const allCleared = applyOp(amountCleared, {
+      ...base("anders", 4),
+      kind: "set_modifier",
+      listId: LIST,
+      catalogItemId: CREAM,
+      modifier: null,
+    });
+    expect(allCleared.contributions[cid]).toBeUndefined();
+    // The entry stays — "grädde, mängd ospecificerad" is a thing you want.
+    expect(allCleared.entries[entryId(LIST, CREAM)].removedAt).toBeNull();
+  });
+
+  it("converges under every ordering of the three manual fields", () => {
+    const ops: Op[] = [
+      { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      {
+        ...base("maria", 5),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: CREAM,
+        amount: { value: 2, unit: "dl" },
+      },
+      {
+        ...base("anders", 3),
+        kind: "set_note",
+        listId: LIST,
+        catalogItemId: CREAM,
+        note: "helst ekologisk",
+      },
+      {
+        ...base("maria", 4),
+        kind: "set_modifier",
+        listId: LIST,
+        catalogItemId: CREAM,
+        modifier: "vispbar",
+      },
+    ];
+
+    const orderings = permutations(ops);
+    const reference = applyOps(emptyState(), orderings[0]);
+    for (const ordering of orderings) {
+      const state = applyOps(emptyState(), ordering);
+      expect(observable(state)).toEqual(observable(reference));
+      expect(state.meta).toEqual(reference.meta);
     }
   });
 });

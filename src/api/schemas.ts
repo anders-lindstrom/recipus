@@ -84,6 +84,10 @@ export const listSchema = z
   })
   .openapi("List");
 
+export const prioritySchema = z
+  .enum(["urgent", "normal", "convenient"])
+  .openapi("Priority");
+
 export const listEntrySchema = z
   .object({
     id: z.string(),
@@ -92,6 +96,7 @@ export const listEntrySchema = z
     createdAt: z.string(),
     createdBy: z.string(),
     removedAt: z.string().nullable(),
+    priority: prioritySchema,
     updatedAt: z.string(),
     updatedBy: z.string(),
   })
@@ -105,6 +110,7 @@ export const contributionSchema = z
     recipeAdditionId: z.string().nullable(),
     amount: amountSchema.nullable(),
     note: z.string().nullable(),
+    modifier: z.string().nullable(),
   })
   .openapi("Contribution");
 
@@ -307,6 +313,22 @@ const setNoteOpSchema = z.object({
   note: z.string().nullable(),
 });
 
+const setModifierOpSchema = z.object({
+  ...opBase,
+  kind: z.literal("set_modifier"),
+  listId: z.string(),
+  catalogItemId: z.string(),
+  modifier: z.string().nullable(),
+});
+
+const setPriorityOpSchema = z.object({
+  ...opBase,
+  kind: z.literal("set_priority"),
+  listId: z.string(),
+  catalogItemId: z.string(),
+  priority: prioritySchema,
+});
+
 const addRecipeOpSchema = z.object({
   ...opBase,
   kind: z.literal("add_recipe"),
@@ -345,6 +367,8 @@ export const opSchema = z
     removeItemOpSchema,
     setAmountOpSchema,
     setNoteOpSchema,
+    setModifierOpSchema,
+    setPriorityOpSchema,
     addRecipeOpSchema,
     removeRecipeOpSchema,
     moveItemOpSchema,

@@ -3,6 +3,7 @@ import type {
   Contribution,
   Id,
   ListEntry,
+  Priority,
   SourceKind,
 } from "@/lib/domain";
 import { formatAmounts, mergeAmounts, toBase, unitFamily } from "@/lib/units";
@@ -75,6 +76,32 @@ export interface EntryView {
   /** Drives the 📖 badge on the tile. */
   hasRecipeSource: boolean;
   notes: string[];
+  priority: Priority;
+  /**
+   * The household's own qualifier — "mogna", "osaltat".
+   *
+   * Only the manual contribution's. A recipe asks for an ingredient, not for a
+   * kind of it, so there is never more than one of these to merge.
+   */
+  modifier: string | null;
+}
+
+/**
+ * Urgent first, convenient last — WITHIN the existing grouping.
+ *
+ * Order is the one channel that costs nothing: the zone already renders in
+ * whatever order the map happened to produce, so using it for priority adds no
+ * DOM and no layout shift. Sorting across aisle groups instead would trade a
+ * useful signal for the far more useful one of not walking back across the shop.
+ */
+const PRIORITY_RANK: Record<Priority, number> = {
+  urgent: 0,
+  normal: 1,
+  convenient: 2,
+};
+
+export function byPriority(a: EntryView, b: EntryView): number {
+  return PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
 }
 
 export interface RecipeAdditionInfo {
@@ -143,6 +170,9 @@ export function buildEntryView(
     notes: mine
       .map((c) => c.note)
       .filter((n): n is string => Boolean(n && n.trim())),
+    priority: entry.priority,
+    modifier:
+      mine.find((c) => c.sourceKind === "manual")?.modifier?.trim() || null,
   };
 }
 

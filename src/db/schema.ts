@@ -167,6 +167,25 @@ export const listEntries = pgTable(
     // was offline silently resurrect something already bought; last-write-wins
     // needs something to compare against. Pruned with the ops at 30 days.
     removedAt: timestamp("removed_at", { withTimezone: true }),
+    /*
+     * How much this one matters on the way round the shop.
+     *
+     * Cleared by removal, which is the rule that keeps it meaning anything:
+     * without it, urgency survives being bought and re-added, and once a third
+     * of the list is ochre nothing on it reads as urgent.
+     *
+     * Its own clock, separate from the row's. They answer different questions —
+     * "is this on the list" and "how much does it matter" — and sharing one
+     * would let "mark urgent" beat a newer removal and push something you have
+     * already bought back to the top. NULL means nobody has ever set it, which
+     * is not the same as "normal" and is what lets any first write land.
+     */
+    priority: text("priority")
+      .$type<"urgent" | "normal" | "convenient">()
+      .notNull()
+      .default("normal"),
+    priorityUpdatedAt: timestamp("priority_updated_at", { withTimezone: true }),
+    priorityUpdatedBy: text("priority_updated_by"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -200,6 +219,16 @@ export const contributions = pgTable(
     amountValue: doublePrecision("amount_value"),
     amountUnit: text("amount_unit"),
     note: text("note"),
+    /*
+     * What kind of the thing — "mogna", "osaltat", "laktosfri".
+     *
+     * On the contribution and never in the entry's id. A modifier that changed
+     * identity would split one tile into two and send you past the fruit twice.
+     * When ripe mango genuinely deserves its own cadence, that is the registry's
+     * split — a decision about the household's own taxonomy — not something
+     * typing a word into the add bar should do behind their back.
+     */
+    modifier: text("modifier"),
     /*
      * The amount and the note carry SEPARATE last-write-wins clocks, and they
      * have to survive the round trip through this table.
@@ -237,6 +266,8 @@ export const contributions = pgTable(
     amountUpdatedBy: text("amount_updated_by"),
     noteUpdatedAt: timestamp("note_updated_at", { withTimezone: true }),
     noteUpdatedBy: text("note_updated_by"),
+    modifierUpdatedAt: timestamp("modifier_updated_at", { withTimezone: true }),
+    modifierUpdatedBy: text("modifier_updated_by"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

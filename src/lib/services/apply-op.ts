@@ -32,10 +32,12 @@ import {
   contributionFieldKey,
   contributionKey,
   entryKey,
+  entryPriorityKey,
   listKey,
   opListId,
   CATALOG_FIELDS,
   type CatalogField,
+  type ManualField,
   type Op,
 } from "@/lib/sync";
 import {
@@ -80,7 +82,7 @@ interface Scope {
    * never both, and never more than one entry — so this is a single optional
    * slot rather than a set.
    */
-  manualContributionField: { entryId: Id; field: "amount" | "note" } | null;
+  manualContributionField: { entryId: Id; field: ManualField } | null;
   contributionIds: Set<Id>;
   additionIds: Set<Id>;
 }
@@ -125,15 +127,23 @@ async function loadStateSlice(
       break;
     case "add_item":
     case "remove_item":
+    // Priority lives on the entry row, so it needs no contribution loaded.
+    case "set_priority":
       scope.entryIds.add(makeEntryId(op.listId, op.catalogItemId));
       break;
     case "set_amount":
-    case "set_note": {
+    case "set_note":
+    case "set_modifier": {
       const eid = makeEntryId(op.listId, op.catalogItemId);
       scope.entryIds.add(eid);
       scope.manualContributionField = {
         entryId: eid,
-        field: op.kind === "set_amount" ? "amount" : "note",
+        field:
+          op.kind === "set_amount"
+            ? "amount"
+            : op.kind === "set_note"
+              ? "note"
+              : "modifier",
       };
       break;
     }
@@ -277,6 +287,16 @@ async function loadStateSlice(
       by: row.updatedBy,
       deleted: row.removedAt !== null ? true : undefined,
     };
+    // Its own clock, and absent when never written — the same rule as the
+    // contribution fields, for the same reason: the row clock moves on every
+    // add and removal, so falling back to it would let a tap on the tile
+    // silently outrank a genuine priority edit.
+    if (row.priorityUpdatedAt && row.priorityUpdatedBy) {
+      state.meta[entryPriorityKey(row.id)] = {
+        at: row.priorityUpdatedAt.toISOString(),
+        by: row.priorityUpdatedBy,
+      };
+    }
     // Entries stay in the map even when tombstoned — removedAt is a normal
     // field on ListEntry, not an omission like lists/catalog/additions.
     state.entries[row.id] = {
@@ -286,6 +306,7 @@ async function loadStateSlice(
       createdAt: row.createdAt.toISOString(),
       createdBy: row.createdBy,
       removedAt: row.removedAt?.toISOString() ?? null,
+      priority: row.priority,
       updatedAt: row.updatedAt.toISOString(),
       updatedBy: row.updatedBy,
     };
@@ -305,6 +326,7 @@ async function loadStateSlice(
     for (const [field, at, by] of [
       ["amount", row.amountUpdatedAt, row.amountUpdatedBy],
       ["note", row.noteUpdatedAt, row.noteUpdatedBy],
+      ["modifier", row.modifierUpdatedAt, row.modifierUpdatedBy],
     ] as const) {
       if (at && by) state.meta[contributionFieldKey(row.id, field)] = {
         at: at.toISOString(),
@@ -318,6 +340,7 @@ async function loadStateSlice(
       recipeAdditionId: null,
       amount: toAmount(row.amountValue, row.amountUnit),
       note: row.note,
+      modifier: row.modifier,
     };
     // The clocks above always travel; the record only when there is something
     // left to record. An emptied row is how a clearing survives in the database
@@ -341,6 +364,7 @@ async function loadStateSlice(
       recipeAdditionId: row.recipeAdditionId,
       amount: toAmount(row.amountValue, row.amountUnit),
       note: row.note,
+      modifier: row.modifier,
     };
   }
 
@@ -470,6 +494,17 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
 async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
   const entry = next.entries[id];
   if (!entry) return;
+  // Written only when the reducer actually holds a priority clock. Stamping one
+  // unconditionally would turn every ordinary add and removal into a claim about
+  // when the priority was last set, which is the moving-clock bug this codebase
+  // has now paid for twice.
+  const priorityMeta = next.meta[entryPriorityKey(id)];
+  const priorityColumns = priorityMeta
+    ? {
+        priorityUpdatedAt: new Date(priorityMeta.at),
+        priorityUpdatedBy: priorityMeta.by,
+      }
+    : {};
   // NOTE: this insert can violate the catalog_item_id foreign key if the op
   // references a catalog item this server has never heard of (e.g. a
   // create_catalog_item op for it hasn't arrived yet). The reducer is
@@ -489,6 +524,8 @@ async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
       createdAt: new Date(entry.createdAt),
       createdBy: entry.createdBy,
       removedAt: entry.removedAt ? new Date(entry.removedAt) : null,
+      priority: entry.priority,
+      ...priorityColumns,
       updatedAt: new Date(entry.updatedAt),
       updatedBy: entry.updatedBy,
     })
@@ -498,6 +535,8 @@ async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
         createdAt: new Date(entry.createdAt),
         createdBy: entry.createdBy,
         removedAt: entry.removedAt ? new Date(entry.removedAt) : null,
+        priority: entry.priority,
+        ...priorityColumns,
         updatedAt: new Date(entry.updatedAt),
         updatedBy: entry.updatedBy,
       },
@@ -524,7 +563,7 @@ async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
 async function writeManualContribution(
   tx: Tx,
   entryId: Id,
-  field: "amount" | "note",
+  field: ManualField,
   next: SyncState,
 ): Promise<void> {
   const cid = manualContributionId(entryId);
@@ -552,6 +591,7 @@ async function writeManualContribution(
     recipeAdditionId: null,
     amount: null,
     note: null,
+    modifier: null,
   };
 
   /**
@@ -568,7 +608,9 @@ async function writeManualContribution(
   const fieldColumns =
     field === "amount"
       ? { amountUpdatedAt: new Date(meta.at), amountUpdatedBy: meta.by }
-      : { noteUpdatedAt: new Date(meta.at), noteUpdatedBy: meta.by };
+      : field === "note"
+        ? { noteUpdatedAt: new Date(meta.at), noteUpdatedBy: meta.by }
+        : { modifierUpdatedAt: new Date(meta.at), modifierUpdatedBy: meta.by };
 
   // "Last touched, either field" — informational, and the only clock recipe and
   // scan contributions have. This call IS the most recent touch by construction.
@@ -584,6 +626,7 @@ async function writeManualContribution(
       amountValue: contribution.amount?.value ?? null,
       amountUnit: contribution.amount?.unit ?? null,
       note: contribution.note,
+      modifier: contribution.modifier,
       updatedAt: touched.at,
       updatedBy: touched.by,
       ...fieldColumns,
@@ -594,6 +637,7 @@ async function writeManualContribution(
         amountValue: contribution.amount?.value ?? null,
         amountUnit: contribution.amount?.unit ?? null,
         note: contribution.note,
+        modifier: contribution.modifier,
         updatedAt: touched.at,
         updatedBy: touched.by,
         ...fieldColumns,

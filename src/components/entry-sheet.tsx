@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Amount } from "@/lib/domain";
+import type { Amount, Priority } from "@/lib/domain";
 import type { ShopMode } from "@/lib/client/use-mode";
 import type { EntryView } from "@/lib/services/entries";
 import { formatAmount, parseAmount } from "@/lib/units";
@@ -23,6 +23,20 @@ import { UiIcon } from "./ui-icon";
  * remove the item — a listed item with no stated quantity is the normal case.
  */
 
+/**
+ * Three states, labelled from the shopper's point of view.
+ *
+ * "Om du hinner" rather than "Låg prioritet": the whole reason this state exists
+ * is the instruction "grab it if you pass it", which is a different thing from
+ * "this matters less" — and phrasing it as a rank invites the list to become a
+ * ranking, which is exactly how urgency stops meaning anything.
+ */
+const PRIORITY_CHOICES: ReadonlyArray<{ value: Priority; label: string }> = [
+  { value: "urgent", label: "Bråttom" },
+  { value: "normal", label: "Vanlig" },
+  { value: "convenient", label: "Om du hinner" },
+];
+
 export interface EntrySheetProps {
   itemName: string;
   view: EntryView;
@@ -37,6 +51,9 @@ export interface EntrySheetProps {
   onClose: () => void;
   /** Sets the manual amount. Null clears it, leaving the item on the list. */
   onSetAmount: (amount: Amount | null) => void;
+  /** Sets the household's qualifier — "mogna". Null clears it. */
+  onSetModifier: (modifier: string | null) => void;
+  onSetPriority: (priority: Priority) => void;
   /**
    * `recipeTitle` is the label this sheet actually rendered on the button. Passed
    * along so the confirmation that follows cannot name the recipe differently
@@ -64,11 +81,15 @@ export function EntrySheet({
   onMarkBought,
   onClose,
   onSetAmount,
+  onSetModifier,
+  onSetPriority,
   onRemoveRecipe,
   onRemoveWithoutBuying,
 }: EntrySheetProps) {
   const manual = view.contributions.find((c) => c.sourceKind === "manual");
-  const [editing, setEditing] = useState(false);
+  // One editor slot rather than two booleans: the amount and the sort are edited
+  // in the same place, and two flags would eventually both be true.
+  const [editing, setEditing] = useState<"amount" | "modifier" | null>(null);
   const [draft, setDraft] = useState("");
 
   const recipeSources = view.contributions.filter(
@@ -83,10 +104,21 @@ export function EntrySheet({
 
   function startEditing() {
     setDraft(manual?.amount ? formatAmount(manual.amount) : "");
-    setEditing(true);
+    setEditing("amount");
+  }
+
+  function startModifier() {
+    setDraft(view.modifier ?? "");
+    setEditing("modifier");
   }
 
   function save() {
+    if (editing === "modifier") {
+      // Empty clears it. A modifier is free text, so there is nothing to fail to
+      // parse and no reason to make the user delete a word twice.
+      onSetModifier(trimmed === "" ? null : trimmed);
+      return;
+    }
     if (unparseable) return;
     onSetAmount(parsed);
   }
@@ -107,7 +139,7 @@ export function EntrySheet({
             htmlFor="entry-amount"
             className="mb-1.5 block text-overline text-ink-faint uppercase"
           >
-            Mängd
+            {editing === "modifier" ? "Sort" : "Mängd"}
           </label>
           <input
             id="entry-amount"
@@ -117,7 +149,7 @@ export function EntrySheet({
             onKeyDown={(e) => {
               if (e.key === "Enter") save();
             }}
-            placeholder="2 dl"
+            placeholder={editing === "modifier" ? "mogna" : "2 dl"}
             inputMode="text"
             autoComplete="off"
             autoCapitalize="off"
@@ -126,7 +158,9 @@ export function EntrySheet({
             enterKeyHint="done"
             className={cn(
               "w-full rounded-control border bg-surface px-3.5 py-3 text-body text-ink outline-none placeholder:text-ink-faint",
-              unparseable ? "border-danger" : "border-line",
+              unparseable && editing === "amount"
+                ? "border-danger"
+                : "border-line",
             )}
           />
 
@@ -135,20 +169,26 @@ export function EntrySheet({
           <p
             className={cn(
               "mt-2 min-h-[1.25rem] text-caption",
-              unparseable ? "text-danger" : "text-ink-soft",
+              unparseable && editing === "amount"
+                ? "text-danger"
+                : "text-ink-soft",
             )}
           >
-            {unparseable
-              ? `"${trimmed}" går inte att tolka som en mängd.`
-              : parsed
-                ? `Sparas som ${formatAmount(parsed)}.`
-                : "Lämna tomt för att ta bort mängden."}
+            {editing === "modifier"
+              ? trimmed === ""
+                ? "Lämna tomt för att ta bort sorten."
+                : `Visas som "${trimmed}" på brickan.`
+              : unparseable
+                ? `"${trimmed}" går inte att tolka som en mängd.`
+                : parsed
+                  ? `Sparas som ${formatAmount(parsed)}.`
+                  : "Lämna tomt för att ta bort mängden."}
           </p>
 
           <div className="mt-3 flex gap-2">
             <button
               type="button"
-              onClick={() => setEditing(false)}
+              onClick={() => setEditing(null)}
               className="flex-1 rounded-control bg-surface px-3 py-3 text-body font-semibold text-ink"
             >
               Avbryt
@@ -156,7 +196,7 @@ export function EntrySheet({
             <button
               type="button"
               onClick={save}
-              disabled={unparseable}
+              disabled={unparseable && editing === "amount"}
               className="flex-1 rounded-control bg-brand px-3 py-3 text-body font-semibold text-on-brand transition-transform duration-100 active:scale-[0.98] disabled:opacity-40"
             >
               Spara
@@ -206,12 +246,52 @@ export function EntrySheet({
             </div>
           )}
 
+          {/* Priority sits above the actions, as a segmented control rather
+              than a button, because it is a STATE with three values and not a
+              thing you do. A row of three buttons would make "Normal" look like
+              a command; this shows which one is in force without being asked. */}
+          <div className="px-4 pt-3 pb-1">
+            <p className="mb-1.5 text-overline text-ink-faint uppercase">
+              Hur bråttom
+            </p>
+            <div
+              role="group"
+              aria-label="Prioritet"
+              className="flex gap-1 rounded-control border border-line p-1"
+            >
+              {PRIORITY_CHOICES.map((choice) => (
+                <button
+                  key={choice.value}
+                  type="button"
+                  aria-pressed={view.priority === choice.value}
+                  onClick={() => onSetPriority(choice.value)}
+                  className={cn(
+                    "flex-1 rounded-[0.5rem] px-2 py-2 text-caption font-semibold",
+                    "transition-colors duration-150",
+                    view.priority === choice.value
+                      ? "bg-ink text-surface"
+                      : "text-ink-soft",
+                  )}
+                >
+                  {choice.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <SheetActions>
             <SheetButton
               onClick={startEditing}
               icon={<UiIcon name="edit" size={16} />}
             >
               {manual?.amount ? "Ändra mängd" : "Ange mängd"}
+            </SheetButton>
+
+            <SheetButton
+              onClick={startModifier}
+              icon={<UiIcon name="edit" size={16} />}
+            >
+              {view.modifier ? `Sort: ${view.modifier}` : "Ange sort"}
             </SheetButton>
 
             {recipeSources.map((c) => (

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import type { Priority } from "@/lib/domain";
 import { cn } from "@/lib/utils";
 import { ItemIcon } from "./icon";
 import { UiIcon } from "./ui-icon";
@@ -34,6 +35,10 @@ export interface ItemTileProps {
   fromRecipe?: boolean;
   /** Cadence engine's reason, e.g. "6 dgr sen". Suggestion tiles only. */
   reason?: string;
+  /** Urgent first and ochre, convenient last and muted. Never a badge. */
+  priority?: Priority;
+  /** The household's qualifier — "mogna". Rendered under the name. */
+  modifier?: string | null;
   /** Colour of the member who added it, for the recent-change dot. */
   actorColor?: string;
   /** Dimmed while a pending change has not yet reached the server. */
@@ -56,6 +61,8 @@ export function ItemTile({
   onList = false,
   fromRecipe = false,
   reason,
+  priority = "normal",
+  modifier = null,
   actorColor,
   pending = false,
   animateIn = false,
@@ -154,14 +161,39 @@ export function ItemTile({
         )}
       />
 
+      {/* Priority rides the ink of text that is already here — no extra DOM, no
+          layout shift, and no second colour on the tile. Both corners are
+          already spoken for (recipe badge right, actor dot left), and green has
+          exactly one meaning in this app: on the list. Ochre on the NAME reads
+          as "this one" without competing for that meaning.
+
+          The visually-hidden suffix is not decoration: ochre-versus-grey is the
+          entire signal, so without it the distinction simply does not exist for
+          a screen reader, and it is invisible to anyone who cannot separate the
+          two hues. */}
       <span
         className={cn(
           "mt-1.5 text-label text-balance",
           onList ? "text-ink" : "text-ink-soft",
+          priority === "urgent" && "font-bold text-warn",
+          priority === "convenient" && "text-ink-soft",
         )}
       >
         {name}
+        {priority !== "normal" ? (
+          <span className="sr-only">
+            {priority === "urgent" ? ", bråttom" : ", om du hinner"}
+          </span>
+        ) : null}
       </span>
+
+      {/* The household's own qualifier, under the name and above the quantity —
+          "mogna" belongs to the thing, the amount belongs to the ask. */}
+      {modifier ? (
+        <span className="mt-0.5 text-caption text-ink-faint italic">
+          {modifier}
+        </span>
+      ) : null}
 
       {quantityLabel ? (
         <span className="mt-1 text-caption font-bold text-brand-ink">

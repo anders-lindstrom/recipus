@@ -912,6 +912,166 @@ describe("per-field clocks survive the database", () => {
   });
 });
 
+describe("priority and modifiers survive the database", () => {
+  /**
+   * Priority must not ride the entry's own clock through the round trip.
+   *
+   * The entry row's `updated_at` moves on every add and removal, so if priority
+   * fell back to it, tapping a tile would silently outrank a genuine priority
+   * edit — and only in one arrival order, which is the shape that leaves two
+   * devices disagreeing with no error anywhere.
+   */
+  it("converges when a removal and a newer priority arrive in either order", async () => {
+    const first = `${catalogItemId}-prio-a`;
+    const second = `${catalogItemId}-prio-b`;
+    await seedItem(first);
+    await seedItem(second);
+
+    const add = (id: string) =>
+      applyOpToDatabase(
+        op("add_item", "2026-10-01T08:00:00.000Z", { listId, catalogItemId: id }),
+        ACTOR,
+      );
+    const remove = (id: string) =>
+      applyOpToDatabase(
+        op("remove_item", "2026-10-01T09:00:00.000Z", {
+          listId,
+          catalogItemId: id,
+          bought: false,
+        }),
+        ACTOR,
+      );
+    const urgent = (id: string) =>
+      applyOpToDatabase(
+        op("set_priority", "2026-10-01T11:00:00.000Z", {
+          listId,
+          catalogItemId: id,
+          priority: "urgent",
+        }),
+        ACTOR,
+      );
+
+    await add(first);
+    await remove(first);
+    await urgent(first);
+
+    await add(second);
+    await urgent(second);
+    await remove(second);
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const read = (id: string) => {
+      const e = snapshot!.entries.find((x) => x.catalogItemId === id)!;
+      return { priority: e.priority, removed: e.removedAt !== null };
+    };
+
+    expect(read(first)).toEqual(read(second));
+    // The priority is newer than the removal, so it wins and the item is back.
+    expect(read(first)).toEqual({ priority: "urgent", removed: false });
+  });
+
+  /**
+   * Removal clears priority — and the clearing has to survive the round trip
+   * too, or urgency comes back from the database after a reload.
+   */
+  it("clears priority on removal, through the snapshot", async () => {
+    const item = `${catalogItemId}-prio-clear`;
+    await seedItem(item);
+
+    await applyOpToDatabase(
+      op("set_priority", "2026-10-02T08:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        priority: "urgent",
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-10-02T09:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        bought: true,
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("add_item", "2026-10-02T10:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const entry = snapshot!.entries.find((e) => e.catalogItemId === item)!;
+    expect(entry.removedAt).toBeNull();
+    expect(entry.priority).toBe("normal");
+  });
+
+  /**
+   * The third manual field needs its own column pair for the same reason the
+   * first two did. Amount, note and modifier share a row; an older write to one
+   * arriving after a newer write to another must not take the first down.
+   */
+  it("keeps all three manual fields whatever order they arrive in", async () => {
+    const first = `${catalogItemId}-mod-a`;
+    const second = `${catalogItemId}-mod-b`;
+    await seedItem(first);
+    await seedItem(second);
+
+    const setAmount = (id: string) =>
+      applyOpToDatabase(
+        op("set_amount", "2026-10-03T09:00:00.000Z", {
+          listId,
+          catalogItemId: id,
+          amount: { value: 2, unit: "kg" },
+        }),
+        ACTOR,
+      );
+    const setModifier = (id: string) =>
+      applyOpToDatabase(
+        op("set_modifier", "2026-10-03T07:00:00.000Z", {
+          listId,
+          catalogItemId: id,
+          modifier: "mogna",
+        }),
+        ACTOR,
+      );
+    const setNote = (id: string) =>
+      applyOpToDatabase(
+        op("set_note", "2026-10-03T08:00:00.000Z", {
+          listId,
+          catalogItemId: id,
+          note: "till smoothien",
+        }),
+        ACTOR,
+      );
+
+    await setAmount(first);
+    await setNote(first);
+    await setModifier(first);
+
+    await setModifier(second);
+    await setNote(second);
+    await setAmount(second);
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const read = (id: string) => {
+      const cid = manualContributionId(entryId(listId, id));
+      const c = snapshot!.contributions.find((x) => x.id === cid);
+      return {
+        amount: c?.amount ?? null,
+        note: c?.note ?? null,
+        modifier: c?.modifier ?? null,
+      };
+    };
+
+    expect(read(first)).toEqual(read(second));
+    expect(read(first)).toEqual({
+      amount: { value: 2, unit: "kg" },
+      note: "till smoothien",
+      modifier: "mogna",
+    });
+  });
+});
+
 describe("seed corrections versus household edits", () => {
   /**
    * The seed runs on every server boot in production (src/instrumentation.ts)

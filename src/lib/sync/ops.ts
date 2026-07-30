@@ -1,4 +1,4 @@
-import type { Amount, CatalogItem, Id, List } from "@/lib/domain";
+import type { Amount, CatalogItem, Id, List, Priority } from "@/lib/domain";
 
 /**
  * The operation log.
@@ -83,6 +83,26 @@ export type Op =
       note: string | null;
     })
   | (OpBase & {
+      /**
+       * Its own op with its own clock, deliberately not folded onto set_amount.
+       *
+       * A third independent fact on one record needs a third independent clock.
+       * Sharing one is the bug already recorded twice in this codebase: an older
+       * write to one field arriving after a newer write to another takes the
+       * first field's value down with it.
+       */
+      kind: "set_modifier";
+      listId: Id;
+      catalogItemId: Id;
+      modifier: string | null;
+    })
+  | (OpBase & {
+      kind: "set_priority";
+      listId: Id;
+      catalogItemId: Id;
+      priority: Priority;
+    })
+  | (OpBase & {
       kind: "add_recipe";
       listId: Id;
       recipeId: Id;
@@ -111,6 +131,8 @@ export function opListId(op: Op): Id | null {
     case "remove_item":
     case "set_amount":
     case "set_note":
+    case "set_modifier":
+    case "set_priority":
     case "add_recipe":
     case "remove_recipe":
       return op.listId;

@@ -132,6 +132,17 @@ export interface Contribution {
   /** Null means "some, unspecified" — the correct default for bread. */
   amount: Amount | null;
   note: string | null;
+  /**
+   * What kind of the thing — "mogna", "osaltat", "laktosfri".
+   *
+   * On the contribution and never in an id. A modifier that changed the entry's
+   * identity would split one tile into two, and you would walk past the fruit
+   * twice. When the household genuinely wants ripe mango tracked as its own
+   * thing with its own cadence, that is the registry's split — a decision about
+   * their taxonomy — not something typing a word into the add bar should do
+   * behind their back.
+   */
+  modifier: string | null;
 }
 
 /**
@@ -148,8 +159,23 @@ export interface Contribution {
  * its record.
  */
 export function isClearedManualContribution(c: Contribution): boolean {
-  return c.sourceKind === "manual" && c.amount === null && c.note === null;
+  return (
+    c.sourceKind === "manual" &&
+    c.amount === null &&
+    c.note === null &&
+    c.modifier === null
+  );
 }
+
+/**
+ * How much this one matters, on the way round the shop.
+ *
+ * Three states rather than a flag, because "grab it if you pass it" is a real
+ * and different instruction from "we are out of it" — and a two-state urgent
+ * flag makes everything else read as "not urgent", which is not what a normal
+ * item is.
+ */
+export type Priority = "urgent" | "normal" | "convenient";
 
 export interface ListEntry {
   id: Id;
@@ -163,6 +189,14 @@ export interface ListEntry {
    * resurrect something you already bought. Pruned after 30 days with the ops.
    */
   removedAt: string | null;
+  /**
+   * Cleared by removal, deliberately.
+   *
+   * Otherwise urgency becomes permanent decoration: buy the urgent milk, re-add
+   * it next week, and it is still ochre and still first. Once a third of the
+   * list is urgent, nothing is.
+   */
+  priority: Priority;
   /** LWW metadata: whoever wrote last, and when, by client clock. */
   updatedAt: string;
   updatedBy: string;

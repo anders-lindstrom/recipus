@@ -35,6 +35,7 @@ import {
   contributionFieldKey,
   contributionKey,
   entryKey,
+  entryPriorityKey,
   listKey,
 } from "@/lib/sync";
 import { catalogFieldClocks } from "./clocks";
@@ -216,6 +217,15 @@ export async function loadListSnapshot(
       // Same shape as the bug already fixed once in `writeEntry`.
       deleted: e.removedAt !== null ? true : undefined,
     };
+    // Absent when never written, exactly as in `apply-op`'s loader: NULL means
+    // no op has set a priority, and the first one to arrive should land whatever
+    // its timestamp.
+    if (e.priorityUpdatedAt && e.priorityUpdatedBy) {
+      meta[entryPriorityKey(e.id)] = {
+        at: e.priorityUpdatedAt.toISOString(),
+        by: e.priorityUpdatedBy,
+      };
+    }
   }
   for (const c of contributionRows) {
     const row = { at: c.updatedAt.toISOString(), by: c.updatedBy };
@@ -236,6 +246,12 @@ export async function loadListSnapshot(
       meta[contributionFieldKey(c.id, "note")] = {
         at: c.noteUpdatedAt.toISOString(),
         by: c.noteUpdatedBy,
+      };
+    }
+    if (c.modifierUpdatedAt && c.modifierUpdatedBy) {
+      meta[contributionFieldKey(c.id, "modifier")] = {
+        at: c.modifierUpdatedAt.toISOString(),
+        by: c.modifierUpdatedBy,
       };
     }
   }
@@ -276,6 +292,7 @@ export async function loadListSnapshot(
     createdAt: e.createdAt.toISOString(),
     createdBy: e.createdBy,
     removedAt: e.removedAt?.toISOString() ?? null,
+    priority: e.priority,
     updatedAt: e.updatedAt.toISOString(),
     updatedBy: e.updatedBy,
   }));
@@ -309,6 +326,7 @@ export async function loadListSnapshot(
         recipeAdditionId: c.recipeAdditionId,
         amount: toAmount(c.amountValue, c.amountUnit),
         note: c.note,
+        modifier: c.modifier,
       }))
       .filter((c) => !isClearedManualContribution(c)),
     recipeAdditions: additions,
