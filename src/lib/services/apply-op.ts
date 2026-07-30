@@ -14,9 +14,11 @@ import {
 import {
   emptyState,
   entryId as makeEntryId,
+  isClearedManualContribution,
   manualContributionId,
   recipeContributionId,
   type Amount,
+  type Contribution,
   type Id,
   type RecordMeta,
   type SyncState,
@@ -293,7 +295,7 @@ async function loadStateSlice(
       row.noteUpdatedAt && row.noteUpdatedBy
         ? { at: row.noteUpdatedAt.toISOString(), by: row.noteUpdatedBy }
         : rowClock;
-    state.contributions[row.id] = {
+    const contribution: Contribution = {
       id: row.id,
       entryId: row.entryId,
       sourceKind: "manual",
@@ -301,6 +303,13 @@ async function loadStateSlice(
       amount: toAmount(row.amountValue, row.amountUnit),
       note: row.note,
     };
+    // The clocks above always travel; the record only when there is something
+    // left to record. An emptied row is how a clearing survives in the database
+    // (see writeManualContribution) — loading it as a record would hand the
+    // reducer a contribution the client, running the same ops, does not have.
+    if (!isClearedManualContribution(contribution)) {
+      state.contributions[row.id] = contribution;
+    }
   }
 
   for (const row of [...recipeContribRows, ...removeRecipeContribRows]) {
@@ -486,12 +495,28 @@ async function writeManualContribution(
   const meta = next.meta[contributionFieldKey(cid, field)];
   if (!meta) return;
 
-  const contribution = next.contributions[cid];
-  if (!contribution) {
-    // Both fields cleared — setManualField drops the row entirely.
-    await tx.delete(contributions).where(eq(contributions.id, cid));
-    return;
-  }
+  /**
+   * Both fields cleared. The RECORD goes — the reducer holds none, so keeping
+   * one here would put the server out of step with every client — but the ROW
+   * stays, emptied, because the row is where the per-field clocks live.
+   *
+   * Deleting it was a real divergence bug, and a quiet one. A missing clock is
+   * not "no opinion", it is "anything wins": `wins(op, undefined)` returns true
+   * whatever the op's timestamp says. So clearing an amount here at T3 and a
+   * stale `set_amount` from T2 arriving afterwards left the server with the
+   * amount restored and the clearing device without it — and neither would ever
+   * budge, because each was applying last-write-wins correctly against the facts
+   * it had. Two shopping lists, permanently disagreeing about how much milk,
+   * with no error anywhere.
+   */
+  const contribution = next.contributions[cid] ?? {
+    id: cid,
+    entryId,
+    sourceKind: "manual" as const,
+    recipeAdditionId: null,
+    amount: null,
+    note: null,
+  };
 
   const fieldColumns =
     field === "amount"

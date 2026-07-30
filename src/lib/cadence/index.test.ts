@@ -118,6 +118,53 @@ describe("analyzeCadence", () => {
     expect(stats.overdueScore).toBeCloseTo(7.5, 5);
     expect(stats.overdueScore).toBeGreaterThan(2);
   });
+
+  /**
+   * The bug this dedup exists for.
+   *
+   * Two people shopping at different shops on the same Saturday, or one item
+   * ticked off on both the Hemköp and the ICA list, and every one of those days
+   * contributes a zero-day interval. Half the intervals being zero drags the
+   * median to half its true value, and the engine starts suggesting weekly items
+   * every three or four days.
+   */
+  it("does not let a same-day double purchase halve the median", () => {
+    const weekly = datesFromIntervals(START, [7, 7, 7, 7, 7, 7, 7]);
+    const doubled = weekly.flatMap((d) => [d, new Date(d.getTime() + 3 * 60 * 60 * 1000)]);
+
+    const clean = analyzeCadence(weekly, addDays(START, 60));
+    const withDoubles = analyzeCadence(doubled, addDays(START, 60));
+
+    expect(clean.medianIntervalDays).toBe(7);
+    expect(withDoubles.medianIntervalDays).toBe(7);
+    expect(withDoubles.purchaseCount).toBe(clean.purchaseCount);
+    // Confidence too: zero-day intervals inflate the MAD as well as moving the
+    // median, so an item bought like clockwork looked erratic.
+    expect(withDoubles.confidence).toBeCloseTo(clean.confidence, 10);
+  });
+
+  /**
+   * Dedup keeps the LAST purchase of a day, not the first.
+   *
+   * Keeping the first would make the app think you shopped longer ago than you
+   * did, which is the direction that produces a false "you're out of this".
+   */
+  it("measures daysSinceLast from the last purchase of the day", () => {
+    const morning = new Date("2026-02-10T08:00:00.000Z");
+    const evening = new Date("2026-02-10T19:00:00.000Z");
+    const now = new Date("2026-02-11T19:00:00.000Z");
+    const stats = analyzeCadence([morning, evening], now);
+    expect(stats.purchaseCount).toBe(1);
+    expect(stats.daysSinceLast).toBe(1);
+  });
+
+  /** Two genuinely separate days are still two purchases. */
+  it("does not collapse purchases on different days", () => {
+    const purchases = datesFromIntervals(START, [1, 1]);
+    const stats = analyzeCadence(purchases, addDays(START, 3));
+    expect(stats.purchaseCount).toBe(3);
+    expect(stats.medianIntervalDays).toBe(1);
+  });
 });
 
 describe("rankSuggestions", () => {

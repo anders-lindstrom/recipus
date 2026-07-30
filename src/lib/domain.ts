@@ -134,6 +134,23 @@ export interface Contribution {
   note: string | null;
 }
 
+/**
+ * A manual contribution with nothing left to say — the reducer holds no record
+ * for one of these (see `setManualField`), but its CLOCKS still matter.
+ *
+ * Both database loaders need this exact test, because the row and the record are
+ * not the same thing here: the row has to survive so the per-field clocks
+ * survive with it, while the record must stay absent so the server's state
+ * matches what the client reducer produces from the same ops.
+ *
+ * Restricted to `manual` on purpose. A recipe contribution with no amount is a
+ * perfectly ordinary "the recipe wants salt, quantity unstated" and must keep
+ * its record.
+ */
+export function isClearedManualContribution(c: Contribution): boolean {
+  return c.sourceKind === "manual" && c.amount === null && c.note === null;
+}
+
 export interface ListEntry {
   id: Id;
   listId: Id;

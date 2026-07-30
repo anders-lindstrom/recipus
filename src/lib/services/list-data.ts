@@ -10,6 +10,7 @@ import {
   recipeAdditions,
   recipes,
 } from "@/db/schema";
+import { isClearedManualContribution } from "@/lib/domain";
 import type {
   CatalogItem,
   Category,
@@ -276,14 +277,21 @@ export async function loadListSnapshot(
     })),
     catalog,
     entries,
-    contributions: contributionRows.map((c) => ({
-      id: c.id,
-      entryId: c.entryId,
-      sourceKind: c.sourceKind,
-      recipeAdditionId: c.recipeAdditionId,
-      amount: toAmount(c.amountValue, c.amountUnit),
-      note: c.note,
-    })),
+    // Emptied manual rows are withheld, exactly as `apply-op`'s loader withholds
+    // them and for the same reason: the row exists only to carry the per-field
+    // clocks emitted above, and a hydrating client that took it as a record
+    // would hold a contribution the reducer never produces. Only the clock
+    // travels — the same shape as a removed recipe addition.
+    contributions: contributionRows
+      .map((c) => ({
+        id: c.id,
+        entryId: c.entryId,
+        sourceKind: c.sourceKind,
+        recipeAdditionId: c.recipeAdditionId,
+        amount: toAmount(c.amountValue, c.amountUnit),
+        note: c.note,
+      }))
+      .filter((c) => !isClearedManualContribution(c)),
     recipeAdditions: additions,
     recipeTitles,
     meta,

@@ -569,6 +569,156 @@ describe("snapshot meta for removed records", () => {
   });
 });
 
+describe("clearing an amount keeps its clock", () => {
+  /**
+   * The clock has to outlive the value it describes.
+   *
+   * Clearing both fields of a manual contribution used to DELETE its row, and
+   * the row is where `amount_updated_at`/`_by` live. A missing clock is not "no
+   * opinion", it is "anything wins" — `wins(op, undefined)` is true whatever the
+   * op's timestamp says — so a stale `set_amount` arriving afterwards was
+   * applied as though it were news.
+   *
+   * The divergence is permanent and silent. The clearing device keeps the clock
+   * in its own meta, so the stale op loses there; the server has no clock, so it
+   * wins there. Both are applying last-write-wins correctly against the facts
+   * they hold, and nothing ever reconciles them: two phones showing different
+   * quantities for the same item, with no error anywhere.
+   */
+  it("makes a stale set_amount lose against a clearing that already happened", async () => {
+    const item = `${catalogItemId}-cleared-clock`;
+    await seedItem(item);
+
+    await applyOpToDatabase(
+      op("set_amount", "2026-07-01T10:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        amount: { value: 2, unit: "l" },
+      }),
+      ACTOR,
+    );
+    // Cleared at 12:00. The row now holds nothing but its clocks.
+    await applyOpToDatabase(
+      op("set_amount", "2026-07-01T12:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        amount: null,
+      }),
+      ACTOR,
+    );
+
+    // A phone that was offline since 11:00 finally posts its op. It is OLDER
+    // than the clearing, so it must lose — that is the whole point of the clock.
+    await applyOpToDatabase(
+      op("set_amount", "2026-07-01T11:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        amount: { value: 99, unit: "l" },
+      }),
+      ACTOR,
+    );
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const cid = manualContributionId(entryId(listId, item));
+
+    // The stale amount must NOT be back.
+    const contribution = snapshot!.contributions.find((c) => c.id === cid);
+    expect(contribution).toBeUndefined();
+
+    // And the clock must still be readable by a hydrating client, still at the
+    // clearing's timestamp — otherwise the same stale op wins on the next device
+    // to hydrate, and the divergence just moves rather than being fixed.
+    const clock = snapshot!.meta[`contribution:${cid}:amount`];
+    expect(clock).toBeDefined();
+    expect(clock.at).toBe("2026-07-01T12:00:00.000Z");
+  });
+
+  /**
+   * The emptied row must not come back as a record.
+   *
+   * It exists only to carry the clocks. If either loader handed it to the
+   * reducer as a contribution, the server would hold a record the client — running
+   * the same ops through the same reducer — does not, which is the drift the
+   * two-loaders-one-reducer design exists to prevent.
+   */
+  it("withholds the emptied row from the snapshot's records", async () => {
+    const item = `${catalogItemId}-cleared-record`;
+    await seedItem(item);
+
+    await applyOpToDatabase(
+      op("set_note", "2026-07-02T10:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        note: "grön",
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("set_note", "2026-07-02T11:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        note: null,
+      }),
+      ACTOR,
+    );
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const cid = manualContributionId(entryId(listId, item));
+    expect(snapshot!.contributions.find((c) => c.id === cid)).toBeUndefined();
+    expect(snapshot!.meta[`contribution:${cid}:note`].at).toBe(
+      "2026-07-02T11:00:00.000Z",
+    );
+
+    // The entry itself stays: "bread, amount unspecified" is a thing you want.
+    const entry = snapshot!.entries.find((e) => e.catalogItemId === item);
+    expect(entry?.removedAt).toBeNull();
+  });
+
+  /**
+   * A recipe contribution with no amount is NOT an emptied row.
+   *
+   * "The recipe wants salt, quantity unstated" is an ordinary record and must
+   * survive both loaders. Pinned because the withholding rule is a null check,
+   * and the obvious way to write it catches this too.
+   */
+  it("keeps a recipe contribution that has no amount", async () => {
+    const item = `${catalogItemId}-recipe-no-amount`;
+    await seedItem(item);
+
+    const recipeId = `${item}-recipe`;
+    extraRecipes.push(recipeId);
+    await db.insert(recipes).values({
+      id: recipeId,
+      title: "Saltkaka",
+      servings: 4,
+      servingsUnit: "portioner",
+      createdBy: ACTOR,
+      updatedBy: ACTOR,
+    });
+
+    const additionId = `${item}-addition`;
+    await applyOpToDatabase(
+      op("add_recipe", "2026-07-03T10:00:00.000Z", {
+        listId,
+        recipeId,
+        recipeAdditionId: additionId,
+        scaleFactor: 1,
+        items: [{ catalogItemId: item, amount: null }],
+      }),
+      ACTOR,
+    );
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const contribution = snapshot!.contributions.find(
+      (c) => c.recipeAdditionId === additionId,
+    );
+    expect(contribution).toBeDefined();
+    expect(contribution!.amount).toBeNull();
+
+    await db.delete(recipeAdditions).where(eq(recipeAdditions.id, additionId));
+  });
+});
+
 describe("seed corrections versus household edits", () => {
   /**
    * The seed runs on every server boot in production (src/instrumentation.ts)

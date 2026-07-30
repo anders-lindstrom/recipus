@@ -68,7 +68,47 @@ export interface CadenceStats {
  * intervals (e.g. 3, 90, 12, 200 days apart) has cv well above 0.8 and scores
  * near zero regardless of count.
  */
-export function analyzeCadence(purchaseDates: Date[], now: Date): CadenceStats {
+/**
+ * One purchase per calendar day, keeping the latest.
+ *
+ * Cadence is measured in intervals between consecutive purchases, so two
+ * purchases on the same day inject a zero-day interval — and since the median is
+ * taken over every interval, enough of those halve it. That is not a rare shape:
+ * two people shopping at different shops on a Saturday, or one item ticked off
+ * on both the Hemköp and the ICA list, produce it without anyone doing anything
+ * unusual. The engine would then decide you buy milk every three days and start
+ * suggesting it on Tuesday.
+ *
+ * Collapsing to days is the honest unit anyway. Nothing downstream can act on
+ * finer resolution than a day — `overdueScore`, the suggestion reasons and the
+ * fridge inference are all expressed in whole days — so a distinction the engine
+ * cannot use is only there to be wrong.
+ *
+ * The LAST purchase of a day is the one kept, which leaves `daysSinceLast`
+ * exactly as it was: dedup must not make the app think you shopped longer ago
+ * than you did.
+ *
+ * Days are LOCAL days, not UTC. The boundary is a proxy for "the same shopping
+ * occasion" and there is no exact answer, but a household's sense of "today" is
+ * the one on their own clock. Getting the boundary wrong by an hour either way
+ * moves an interval between 0 and 1 days, which is noise against a median
+ * measured in days to weeks.
+ */
+export function purchaseDays(purchaseDates: Date[]): Date[] {
+  const latestByDay = new Map<string, Date>();
+  for (const date of purchaseDates) {
+    const day = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const seen = latestByDay.get(day);
+    if (!seen || date.getTime() > seen.getTime()) latestByDay.set(day, date);
+  }
+  return [...latestByDay.values()].sort((a, b) => a.getTime() - b.getTime());
+}
+
+export function analyzeCadence(rawPurchaseDates: Date[], now: Date): CadenceStats {
+  // Deliberately before the count is taken: `purchaseCount` feeds MIN_PURCHASES,
+  // and three purchases in one afternoon is one data point about cadence, not
+  // three.
+  const purchaseDates = purchaseDays(rawPurchaseDates);
   const purchaseCount = purchaseDates.length;
 
   if (purchaseCount === 0) {
