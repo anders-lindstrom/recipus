@@ -378,6 +378,53 @@ Sizes skew larger than before; item names went 11px → 13px.
   meant delaying the state change. A tap that waits is a tap that fails in a
   shop; the toast already confirms.
 
+## "Ändra mängd" never did anything
+
+Not a regression, and not subtle once looked at: `onEditAmount` was wired to
+`() => setOpenEntry(null)`. It closed the sheet. There was no amount editor
+behind it and never had been, even though the whole op path underneath —
+`set_amount`, the reducer's per-field clocks, the tests around them — was built
+and working.
+
+It edits the **manual** contribution only. That is the one you own; the recipe
+rows belong to their recipes, and quietly rewriting one would make the breakdown
+printed directly above it a lie. Parsing goes through the same `parseAmount` the
+add bar and the recipe importer use, so "1½ msk" means one thing in this app.
+Unparseable input disables Spara and says so rather than saving nothing. An empty
+field clears the amount and **leaves the item on the list** — an item with no
+stated quantity is the ordinary case, not a deletion.
+
+The button also now reads "Ange mängd" when there is nothing to change yet.
+
+Verified end to end: set "3 dl" → tile reads 3 dl → survives a reload, so the op
+reached the store rather than just React. Garbage rejected. Clearing leaves the
+item listed.
+
+## Toasts were covering the buttons
+
+Two independent problems, and only one of them was the toast — worth separating,
+because "Ändra mängd does nothing" and "the toast is in the way" had different
+causes and the first would have survived fixing the second.
+
+The buy toast sat bottom-centre for five seconds. Measured against an open entry
+sheet: toast 772-828px, the sheet's action row starting at 728px — so it covered
+the button below "Ändra mängd". And the core loop is tapping tile after tile, so
+tap three's confirmation was still in the way when you made tap four.
+
+A shopping list does not need a banner to say an item left it. The tile
+disappears from the zone and the count drops; both are already on screen. So the
+buy toast is gone entirely.
+
+What the toast did carry was **undo**, and that is worth keeping: an item tapped
+off by mistake drops back into its aisle somewhere down a 341-item catalog, not
+somewhere you can see. Undo moved into the "Att handla" heading, in normal flow,
+where it physically cannot cover a control. The heading reserves the height
+whether or not the chip is there — measured 28px and the first tile at y=205
+before and after a purchase, because this app has already been bitten once by
+chrome that changes height under your thumb.
+
+The surviving toasts are one-off confirmations and errors, down from 5s to 3s.
+
 ## Aisle navigation, second pass
 
 The strip from the first pass was too slow, only went downwards, and looked

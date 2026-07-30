@@ -34,7 +34,15 @@ test("tapping an item on the list buys it and it can be undone", async ({
   await expect(onListTile(page, "banan")).toHaveCount(0);
 
   // The undo affordance is the safety valve for a one-tap destructive action.
-  await expect(page.getByRole("button", { name: "Ångra" })).toBeVisible();
+  // It lives in the "Att handla" heading rather than in a toast, so it cannot
+  // end up covering the buttons of a sheet opened over it.
+  const undo = page.getByRole("button", { name: /^Ångra/ });
+  await expect(undo).toBeVisible();
+
+  // And it has to actually put the item back, not merely offer to.
+  await undo.click();
+  await expect(onListTile(page, "banan")).toBeVisible();
+  await expect(undo).toHaveCount(0);
 });
 
 test("typing a quantity puts it on the tile", async ({ freshPage: page }) => {

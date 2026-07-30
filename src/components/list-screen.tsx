@@ -1,8 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { toast } from "sonner";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Amount,
   CatalogItem,
@@ -42,6 +41,14 @@ import { UiIcon } from "./ui-icon";
  * boundary between "my list" and "everything" is a change of ground rather than
  * a heading you have to read.
  */
+
+/**
+ * How long "Ångra" stays offered after a purchase.
+ *
+ * Longer than the toast it replaces, because it costs nothing to leave up: it
+ * sits in the heading's own row rather than floating over the controls.
+ */
+const UNDO_WINDOW_MS = 8000;
 
 export interface ListScreenActions {
   /**
@@ -87,6 +94,17 @@ export function ListScreen({
   actions,
 }: ListScreenProps) {
   const [openEntry, setOpenEntry] = useState<Id | null>(null);
+  const [undoable, setUndoable] = useState<{ id: Id; name: string } | null>(
+    null,
+  );
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+    },
+    [],
+  );
 
   // Ops normally drain in tens of milliseconds. Only say anything once one has
   // been waiting long enough that the delay is the story.
@@ -113,16 +131,35 @@ export function ListScreen({
     return map;
   }, [live, contributions, recipeAdditions]);
 
+  /**
+   * Buying something used to raise a toast, and the toast was the problem.
+   *
+   * It sat bottom-centre for five seconds, on top of the entry sheet's own
+   * buttons (measured: it covered the row below "Ändra mängd"), and the core
+   * loop is tapping tile after tile — so the confirmation for tap three was
+   * still in the way when you made tap four. A shopping list does not need a
+   * banner to announce this: the tile leaves the zone, the count drops, and both
+   * are already on screen.
+   *
+   * What the toast did carry was undo, which is worth keeping, because an item
+   * tapped off by mistake drops back into its aisle somewhere down the catalog
+   * rather than staying where you can see it. So undo moves into the section
+   * heading — in normal flow, where it cannot cover a control.
+   */
   function tapOnList(item: CatalogItem) {
     actions.removeItem(item.id, true);
-    toast(`${item.name} köpt`, {
-      action: {
-        label: "Ångra",
-        // Undo re-adds. The item is also sitting right below in its category,
-        // so this is belt and braces rather than the only way back.
-        onClick: () => actions.addItem(item.id),
-      },
-    });
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndoable({ id: item.id, name: item.name });
+    undoTimer.current = setTimeout(() => setUndoable(null), UNDO_WINDOW_MS);
+  }
+
+  function undoLastBuy() {
+    if (!undoable) return;
+    // The same op the toast's "Ångra" dispatched, and the same one tapping the
+    // item in the catalog would: adding it straight back.
+    actions.addItem(undoable.id);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndoable(null);
   }
 
   const grouped = shouldGroupByAisle(live.length);
@@ -279,6 +316,18 @@ export function ListScreen({
         <SectionHeading
           id={aisleAnchorId("__top__")}
           count={live.length > 0 ? live.length : undefined}
+          action={
+            undoable && (
+              <button
+                type="button"
+                onClick={undoLastBuy}
+                className="flex items-center gap-1 rounded-full bg-brand-tint px-2.5 py-1 text-caption font-semibold text-brand-ink normal-case"
+              >
+                <UiIcon name="undo" size={13} />
+                Ångra {undoable.name}
+              </button>
+            )
+          }
         >
           Att handla
         </SectionHeading>
@@ -368,7 +417,10 @@ export function ListScreen({
           itemName={openItem.name}
           view={openView}
           onClose={() => setOpenEntry(null)}
-          onEditAmount={() => setOpenEntry(null)}
+          onSetAmount={(amount) => {
+            actions.setAmount(openItem.id, amount);
+            setOpenEntry(null);
+          }}
           onRemoveRecipe={(id) => {
             actions.removeRecipe(id);
             setOpenEntry(null);

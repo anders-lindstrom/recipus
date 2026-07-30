@@ -188,25 +188,34 @@ export function SectionHeading({
   count,
   tone = "muted",
   id,
+  action,
 }: {
   children: React.ReactNode;
   count?: number;
   tone?: "muted" | "brand" | "warn";
   /** Set on aisle headings so the rail can scroll to them. */
   id?: string;
+  /**
+   * A control on the right, before the count. The row is tall enough to hold one
+   * whether or not it is there — a heading that grows when an action appears
+   * would shove the whole list down, which is the jitter this app has already
+   * been bitten by once.
+   */
+  action?: React.ReactNode;
 }) {
   return (
     <h2
       id={id}
       className={cn(
-        "mx-0.5 mt-5 mb-2 flex items-baseline justify-between text-overline uppercase",
+        "mx-0.5 mt-5 mb-2 flex min-h-7 items-center gap-2 text-overline uppercase",
         id && "aisle-anchor",
         tone === "muted" && "text-ink-faint",
         tone === "brand" && "text-ink-soft",
         tone === "warn" && "text-warn",
       )}
     >
-      <span>{children}</span>
+      <span className="flex-1">{children}</span>
+      {action}
       {count !== undefined && (
         <span className="text-ink-faint tabular-nums">{count}</span>
       )}

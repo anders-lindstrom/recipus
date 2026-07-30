@@ -18,6 +18,7 @@ import {
   ScanLine,
   Search,
   Trash2,
+  Undo2,
   X,
 } from "lucide-react";
 
@@ -61,6 +62,7 @@ const GLYPHS = {
   spinner: LoaderCircle,
   toList: ListPlus,
   toTop: ArrowUp,
+  undo: Undo2,
   warning: CircleAlert,
 } as const;
 

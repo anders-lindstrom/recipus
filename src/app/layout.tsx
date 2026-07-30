@@ -53,9 +53,13 @@ export default function RootLayout({
         {children}
         <Toaster
           position="bottom-center"
-          // Undo is the whole point of these toasts, and the app is used
-          // one-handed while walking. Give it time to be tapped.
-          duration={5000}
+          // Nothing in here is interactive any more. Undo used to live in a
+          // toast, which is why these sat for five seconds — long enough that
+          // the confirmation for one tap was still covering the buttons when you
+          // made the next one. Undo now lives in the list's own heading, so what
+          // is left is one-off confirmations and errors: long enough to read,
+          // short enough to stay out of the way.
+          duration={3000}
           // The toast is the only surface that inverts against the page, which
           // is what makes it read as a passing message rather than new UI.
           toastOptions={{
