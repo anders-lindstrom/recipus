@@ -61,16 +61,34 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+
+      # Must precede `pnpm test`: the service container starts empty, and the
+      # suites that exercise apply-op / prune / entries / search hit a real
+      # database. Running them first fails with `relation "ops" does not exist`,
+      # which reads like a broken test rather than an unmigrated database.
+      #
+      # This is still the "do the migrations apply to a FRESH database?" check —
+      # it is the first thing in the job to touch postgres. The entrypoint
+      # auto-migrates production on every deploy, so a migration that does not
+      # apply cleanly has to die here instead.
+      #
+      # This ordering was lost once already (see `Prepare the beelink deploy`)
+      # and the branch carried a CI that could not have passed. Keep the step
+      # here rather than after the suite.
+      - name: Migrations and seed apply to a fresh database
+        # The seed is not optional scaffolding for the suite: apply-op.test.ts
+        # attaches its fixture to the real category `frukt-gront`, so an unseeded
+        # database fails it on a foreign-key violation rather than on anything
+        # the test is actually asserting. Matches what the e2e job already does.
+        run: |
+          echo "DATABASE_URL=$DATABASE_URL" > .env
+          pnpm db:migrate
+          pnpm db:seed
+
       - run: pnpm test
       - run: pnpm tsc --noEmit
       - run: pnpm lint
 
-      # The entrypoint auto-migrates production on every deploy, so a migration
-      # that does not apply cleanly has to die here instead.
-      - name: Migrations apply to a fresh database
-        run: |
-          echo "DATABASE_URL=$DATABASE_URL" > .env
-          pnpm db:migrate
       - name: Seed is idempotent and migrations re-run clean
         # The server re-seeds on every boot (src/instrumentation.ts), so "runs
         # twice without complaint" is a production invariant, not a nicety.
