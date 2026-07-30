@@ -604,14 +604,55 @@ export function applyOp(state: SyncState, op: Op): SyncState {
       return next;
     }
 
+    /**
+     * A move relocates the entry; it does not copy it.
+     *
+     * Everything written here comes from the op itself — see the op's own
+     * comment in ops.ts for why it carries its payload rather than reading the
+     * source. That leaves this case looking almost mechanical, which is the
+     * point: it is the same set of per-field writes any other op makes, aimed at
+     * two entries instead of one.
+     *
+     * Each field goes through the ordinary writer and so resolves on its own
+     * clock. That matters at BOTH ends. At the destination, a genuinely newer
+     * `set_amount` still wins — the move is a claim about the amount, not a
+     * privileged one. At the source, the emptying is stamped too, because a
+     * cleared value whose clock stayed behind is not "no opinion", it is
+     * "anything wins": `wins(op, undefined)` is true whatever the op's timestamp
+     * says, so the first stale write to reach it would refill the record the
+     * move just emptied.
+     */
     case "move_item": {
-      const moved = tombstoneEntry(
-        state,
-        op,
-        op.fromListId,
-        op.catalogItemId,
-      );
-      return upsertEntry(moved, op, op.toListId, op.catalogItemId);
+      let next = tombstoneEntry(state, op, op.fromListId, op.catalogItemId);
+      // The urgency travels with the item rather than staying behind. Leaving it
+      // is the "permanent decoration" bug removal already guards against: put
+      // cream back on this list next week and it would still be ochre and still
+      // first, for a reason nobody remembers.
+      next = setPriority(next, op, op.fromListId, op.catalogItemId, "normal");
+
+      next = upsertEntry(next, op, op.toListId, op.catalogItemId);
+      next = setPriority(next, op, op.toListId, op.catalogItemId, op.priority);
+
+      // Null means the moving device saw no manual contribution, so the op makes
+      // no claim about those three fields and must not stamp their clocks at
+      // either end — the same rule that stops `update_catalog_item` touching the
+      // icon's clock when the patch is silent about the icon. A contribution
+      // written concurrently and not yet seen therefore stays on the source,
+      // under the tombstone, rather than being silently erased from both lists.
+      if (op.manual) {
+        for (const [field, value] of [
+          ["amount", op.manual.amount],
+          ["note", op.manual.note],
+          ["modifier", op.manual.modifier],
+        ] as const) {
+          next = setManualField(next, op, op.fromListId, op.catalogItemId, field, null);
+          next = setManualField(next, op, op.toListId, op.catalogItemId, field, value);
+        }
+      }
+
+      // Recipe contributions are deliberately untouched, so they stay on the
+      // list the recipe was added to. See the op's `manual` field comment.
+      return next;
     }
 
     /**

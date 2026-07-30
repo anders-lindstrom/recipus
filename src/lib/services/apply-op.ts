@@ -36,6 +36,7 @@ import {
   listKey,
   opListId,
   CATALOG_FIELDS,
+  MANUAL_FIELDS,
   type CatalogField,
   type ManualField,
   type Op,
@@ -78,11 +79,15 @@ interface Scope {
   catalogIds: Set<Id>;
   entryIds: Set<Id>;
   /**
-   * set_amount/set_note touch exactly one manual contribution's ONE field —
-   * never both, and never more than one entry — so this is a single optional
-   * slot rather than a set.
+   * Which manual contribution fields this op can write, as (entry, field) pairs.
+   *
+   * set_amount/set_note/set_modifier each contribute exactly one pair. move_item
+   * contributes six — two entries, three fields each — because the manual
+   * contribution travels with the item and both ends have to be written: the
+   * destination gains the values, and the source is emptied while keeping the
+   * row, since the row is where its clocks live.
    */
-  manualContributionField: { entryId: Id; field: ManualField } | null;
+  manualContributionFields: Array<{ entryId: Id; field: ManualField }>;
   contributionIds: Set<Id>;
   additionIds: Set<Id>;
 }
@@ -92,7 +97,7 @@ function emptyScope(): Scope {
     listIds: new Set(),
     catalogIds: new Set(),
     entryIds: new Set(),
-    manualContributionField: null,
+    manualContributionFields: [],
     contributionIds: new Set(),
     additionIds: new Set(),
   };
@@ -136,7 +141,7 @@ async function loadStateSlice(
     case "set_modifier": {
       const eid = makeEntryId(op.listId, op.catalogItemId);
       scope.entryIds.add(eid);
-      scope.manualContributionField = {
+      scope.manualContributionFields.push({
         entryId: eid,
         field:
           op.kind === "set_amount"
@@ -144,7 +149,7 @@ async function loadStateSlice(
             : op.kind === "set_note"
               ? "note"
               : "modifier",
-      };
+      });
       break;
     }
     case "add_recipe": {
@@ -160,13 +165,40 @@ async function loadStateSlice(
     case "remove_recipe":
       scope.additionIds.add(op.recipeAdditionId);
       break;
-    case "move_item":
-      scope.entryIds.add(makeEntryId(op.fromListId, op.catalogItemId));
-      scope.entryIds.add(makeEntryId(op.toListId, op.catalogItemId));
+    case "move_item": {
+      const from = makeEntryId(op.fromListId, op.catalogItemId);
+      const to = makeEntryId(op.toListId, op.catalogItemId);
+      scope.entryIds.add(from);
+      scope.entryIds.add(to);
+      // Both rows and all three fields of each, whether or not this particular
+      // op carries a manual contribution. The scope's job is to cover everything
+      // the reducer COULD write; narrowing it on the op's payload would silently
+      // stop covering the reducer the day the reducer changes, and only on the
+      // server — the half nobody looks at, because the client would still be
+      // right and the two would just quietly disagree.
+      //
+      // Loading a row the reducer then leaves alone costs an UPSERT of unchanged
+      // values, which this file already accepts everywhere else.
+      for (const eid of [from, to]) {
+        for (const field of MANUAL_FIELDS) {
+          scope.manualContributionFields.push({ entryId: eid, field });
+        }
+      }
+      // Recipe contributions are deliberately NOT in scope: they stay on the
+      // list their addition belongs to. See the op's own comment in sync/ops.ts.
       break;
+    }
   }
 
   const state = emptyState();
+
+  // Deduplicated: move_item names three fields per row, and they all live on the
+  // one row.
+  const manualIds = [
+    ...new Set(
+      scope.manualContributionFields.map((f) => manualContributionId(f.entryId)),
+    ),
+  ];
 
   const [
     listRows,
@@ -203,16 +235,8 @@ async function loadStateSlice(
             and(eq(listEntries.listId, op.listId), isNull(listEntries.removedAt)),
           )
       : Promise.resolve([]),
-    scope.manualContributionField
-      ? tx
-          .select()
-          .from(contributions)
-          .where(
-            eq(
-              contributions.id,
-              manualContributionId(scope.manualContributionField.entryId),
-            ),
-          )
+    manualIds.length
+      ? tx.select().from(contributions).where(inArray(contributions.id, manualIds))
       : Promise.resolve([]),
     scope.contributionIds.size
       ? tx
@@ -723,8 +747,7 @@ async function persist(tx: Tx, next: SyncState, scope: Scope): Promise<void> {
   for (const id of scope.listIds) await writeList(tx, id, next);
   for (const id of scope.catalogIds) await writeCatalogItem(tx, id, next);
   for (const id of scope.entryIds) await writeEntry(tx, id, next);
-  if (scope.manualContributionField) {
-    const { entryId, field } = scope.manualContributionField;
+  for (const { entryId, field } of scope.manualContributionFields) {
     await writeManualContribution(tx, entryId, field, next);
   }
   for (const id of scope.contributionIds) await writeContribution(tx, id, next);

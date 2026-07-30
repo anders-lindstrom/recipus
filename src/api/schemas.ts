@@ -354,6 +354,22 @@ const moveItemOpSchema = z.object({
   fromListId: z.string(),
   toListId: z.string(),
   catalogItemId: z.string(),
+  /**
+   * Required, unlike `add_item.undoesClientOpId`, because no `move_item` has
+   * ever been written: nothing dispatches one yet, and the `ops` table holds
+   * none. A stored op must replay exactly as it did the day it was created, so
+   * the moment the first one IS logged these can never become optional again.
+   *
+   * The reducer needs them both to stay order-independent — see sync/ops.ts.
+   */
+  priority: prioritySchema,
+  manual: z
+    .object({
+      amount: amountSchema.nullable(),
+      note: z.string().nullable(),
+      modifier: z.string().nullable(),
+    })
+    .nullable(),
 });
 
 export const opSchema = z

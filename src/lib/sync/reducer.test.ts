@@ -8,9 +8,17 @@ import {
   type SyncState,
 } from "@/lib/domain";
 import type { Op } from "./ops";
-import { applyOp, applyOps, pruneTombstones } from "./reducer";
+import {
+  applyOp,
+  applyOps,
+  contributionFieldKey,
+  entryPriorityKey,
+  pruneTombstones,
+} from "./reducer";
 
 const LIST = "hemkop";
+/** The other shop, for move_item. A different aisle order, a different trip. */
+const OTHER = "bauhaus";
 const CREAM = "gradde";
 const MILK = "mjolk";
 
@@ -511,20 +519,292 @@ describe("amounts and notes", () => {
 });
 
 describe("move_item", () => {
+  /**
+   * The move carries what it moves.
+   *
+   * `move_item` is the only op that would otherwise have to READ the state it
+   * rewrites — "take whatever is on the source and put it over there" — and a
+   * read-modify-write cannot be order-independent. A `set_amount` the mover had
+   * not seen yet is present in one arrival order and absent in the other, so the
+   * two devices settle on different amounts at the destination and neither is
+   * wrong by its own reckoning. Putting the payload IN the op makes the reducer a
+   * pure function of the op set again, which is the property everything here
+   * rests on. The permutation test at the bottom of this block is what proves it.
+   */
+  function moveOp(
+    actor: string,
+    minute: number,
+    carried: {
+      priority?: "urgent" | "normal" | "convenient";
+      manual?: Extract<Op, { kind: "move_item" }>["manual"];
+    } = {},
+  ): Op {
+    return {
+      ...base(actor, minute),
+      kind: "move_item",
+      fromListId: LIST,
+      toListId: OTHER,
+      catalogItemId: CREAM,
+      priority: carried.priority ?? "normal",
+      manual: carried.manual ?? null,
+    };
+  }
+
+  const FULL = {
+    priority: "urgent" as const,
+    manual: {
+      amount: { value: 5, unit: "dl" as const },
+      note: "helst ekologisk",
+      modifier: "vispgrädde",
+    },
+  };
+
   it("moves an item between lists", () => {
     const state = applyOps(emptyState(), [
       { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
-      {
-        ...base("anders", 2),
-        kind: "move_item",
-        fromListId: LIST,
-        toListId: "bauhaus",
-        catalogItemId: CREAM,
-      },
+      moveOp("anders", 2),
     ]);
 
     expect(state.entries[entryId(LIST, CREAM)].removedAt).not.toBeNull();
-    expect(state.entries[entryId("bauhaus", CREAM)].removedAt).toBeNull();
+    expect(state.entries[entryId(OTHER, CREAM)].removedAt).toBeNull();
+  });
+
+  it("carries the amount, note, modifier and priority to the destination", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      moveOp("anders", 5, FULL),
+    ]);
+
+    expect(state.entries[entryId(OTHER, CREAM)].priority).toBe("urgent");
+    expect(state.contributions[manualContributionId(entryId(OTHER, CREAM))]).toEqual({
+      id: manualContributionId(entryId(OTHER, CREAM)),
+      entryId: entryId(OTHER, CREAM),
+      sourceKind: "manual",
+      recipeAdditionId: null,
+      amount: { value: 5, unit: "dl" },
+      note: "helst ekologisk",
+      modifier: "vispgrädde",
+    });
+  });
+
+  /**
+   * A move relocates; it does not copy. Leaving the qualifier behind would mean
+   * the item is at Bauhaus and the "helst ekologisk" is still at Hemköp, waiting
+   * to reappear the moment anyone puts cream back on the first list.
+   */
+  it("takes the manual contribution and the urgency off the source", () => {
+    // Built with real ops rather than asserted against an empty source: an
+    // implementation that never touches the source passes vacuously otherwise,
+    // which is exactly the defect this test exists to catch.
+    const state = applyOps(emptyState(), [
+      {
+        ...base("anders", 1),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: CREAM,
+        amount: { value: 5, unit: "dl" },
+      },
+      {
+        ...base("anders", 2),
+        kind: "set_note",
+        listId: LIST,
+        catalogItemId: CREAM,
+        note: "helst ekologisk",
+      },
+      {
+        ...base("anders", 3),
+        kind: "set_modifier",
+        listId: LIST,
+        catalogItemId: CREAM,
+        modifier: "vispgrädde",
+      },
+      {
+        ...base("anders", 4),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: CREAM,
+        priority: "urgent",
+      },
+      moveOp("anders", 5, FULL),
+    ]);
+
+    const source = state.entries[entryId(LIST, CREAM)];
+    expect(source.removedAt).not.toBeNull();
+    // The urgency travelled with the item; it did not stay behind to reappear
+    // the next time anyone puts cream back on this list.
+    expect(source.priority).toBe("normal");
+    expect(
+      state.contributions[manualContributionId(entryId(LIST, CREAM))],
+    ).toBeUndefined();
+    // And it really did arrive at the other end, from the source's own values.
+    expect(
+      state.contributions[manualContributionId(entryId(OTHER, CREAM))].note,
+    ).toBe("helst ekologisk");
+  });
+
+  /**
+   * The values move with their clocks, or the move is a data-loss bug waiting for
+   * the next op.
+   *
+   * A written value whose clock is absent is not "no opinion", it is "anything
+   * wins" — `wins(op, undefined)` is true whatever the op's timestamp says. So a
+   * destination amount with no clock loses to the first stale `set_amount` that
+   * turns up, and the source's surviving clocks would let a stale write refill
+   * the record the move just emptied.
+   */
+  it("stamps both ends' clocks, so neither is open to a stale write", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      moveOp("anders", 5, FULL),
+    ]);
+
+    const stamp = { at: at(5), by: "anders" };
+    for (const field of ["amount", "note", "modifier"] as const) {
+      expect(
+        state.meta[
+          contributionFieldKey(manualContributionId(entryId(OTHER, CREAM)), field)
+        ],
+      ).toEqual(stamp);
+      expect(
+        state.meta[
+          contributionFieldKey(manualContributionId(entryId(LIST, CREAM)), field)
+        ],
+      ).toEqual(stamp);
+    }
+    expect(state.meta[entryPriorityKey(entryId(OTHER, CREAM))]).toEqual(stamp);
+  });
+
+  it("loses the carried amount to a genuinely newer write on the destination", () => {
+    const state = applyOps(emptyState(), [
+      moveOp("anders", 5, FULL),
+      {
+        ...base("maria", 9),
+        kind: "set_amount",
+        listId: OTHER,
+        catalogItemId: CREAM,
+        amount: { value: 1, unit: "l" },
+      },
+    ]);
+    const cid = manualContributionId(entryId(OTHER, CREAM));
+    expect(state.contributions[cid].amount).toEqual({ value: 1, unit: "l" });
+    // Only the amount lost. The note and the modifier were nobody else's claim.
+    expect(state.contributions[cid].note).toBe("helst ekologisk");
+  });
+
+  it("beats a write on the destination that predates it", () => {
+    const state = applyOps(emptyState(), [
+      {
+        ...base("maria", 2),
+        kind: "set_amount",
+        listId: OTHER,
+        catalogItemId: CREAM,
+        amount: { value: 1, unit: "l" },
+      },
+      moveOp("anders", 5, FULL),
+    ]);
+    expect(
+      state.contributions[manualContributionId(entryId(OTHER, CREAM))].amount,
+    ).toEqual({ value: 5, unit: "dl" });
+  });
+
+  /**
+   * A recipe's share stays on the list the recipe was added to.
+   *
+   * Recipe additions are list-scoped (`recipe_additions.list_id`), so a recipe
+   * that asked for cream at Hemköp has no meaning at Bauhaus — dragging its
+   * contribution across would make one recipe appear on two lists. Moving an item
+   * is a statement about where you will buy it, not about the recipe. The manual
+   * contribution is different: its id is a pure function of the entry, and the
+   * ask is the person's own.
+   */
+  it("leaves a recipe's share on the list the recipe was added to", () => {
+    const state = applyOps(emptyState(), [
+      {
+        ...base("anders", 1),
+        kind: "add_recipe",
+        listId: LIST,
+        recipeId: "r1",
+        recipeAdditionId: "ra1",
+        scaleFactor: 1,
+        items: [{ catalogItemId: CREAM, amount: { value: 8, unit: "dl" } }],
+      },
+      moveOp("anders", 5),
+    ]);
+
+    const share = state.contributions[recipeContributionId("ra1", CREAM)];
+    expect(share.entryId).toBe(entryId(LIST, CREAM));
+    expect(share.amount).toEqual({ value: 8, unit: "dl" });
+    expect(
+      state.contributions[manualContributionId(entryId(OTHER, CREAM))],
+    ).toBeUndefined();
+  });
+
+  /**
+   * The test that has caught every real bug in this codebase, pointed at the op
+   * that re-treads all of their ground at once: two entries, two priority clocks,
+   * three manual field clocks, and edits landing on both lists.
+   */
+  const interleaved: Op[] = [
+    { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+    {
+      ...base("maria", 2),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: { value: 5, unit: "dl" },
+    },
+    {
+      ...base("anders", 3),
+      kind: "set_amount",
+      listId: OTHER,
+      catalogItemId: CREAM,
+      amount: { value: 1, unit: "l" },
+    },
+    moveOp("anders", 4, {
+      priority: "urgent",
+      manual: { amount: { value: 2, unit: "dl" }, note: "till såsen", modifier: null },
+    }),
+    {
+      ...base("maria", 6),
+      kind: "set_priority",
+      listId: OTHER,
+      catalogItemId: CREAM,
+      priority: "convenient",
+    },
+  ];
+
+  it("converges under every ordering of a move and edits on both lists", () => {
+    const orderings = permutations(interleaved);
+    expect(orderings.length).toBe(120);
+
+    const reference = observable(applyOps(emptyState(), orderings[0]));
+    for (const ordering of orderings) {
+      expect(observable(applyOps(emptyState(), ordering))).toEqual(reference);
+    }
+  });
+
+  it("converges on the bookkeeping too, and on one further op after it", () => {
+    // What the user sees agreeing is not enough: `meta` is what the NEXT op
+    // resolves against, so a clock that ended up different diverges one write
+    // later, long after the ordering that caused it is forgotten.
+    const probe: Op = {
+      ...base("maria", 9),
+      kind: "set_amount",
+      listId: OTHER,
+      catalogItemId: CREAM,
+      amount: { value: 3, unit: "dl" },
+    };
+
+    const orderings = permutations(interleaved);
+    const first = applyOps(emptyState(), orderings[0]);
+    const referenceMeta = first.meta;
+    const referenceProbed = observable(applyOp(first, probe));
+
+    for (const ordering of orderings) {
+      const state = applyOps(emptyState(), ordering);
+      expect(state.meta).toEqual(referenceMeta);
+      expect(observable(applyOp(state, probe))).toEqual(referenceProbed);
+    }
   });
 });
 

@@ -431,9 +431,17 @@ per-field clocks that already existed, where a NULL fell back to the row clock a
 the row clock moves. 4 fixed as far as the reducer goes (per-field clocks and
 orphaned contributions are now pruned); the "no caller anywhere" half is a
 decision about retention and is in DECISIONS.md. 9 fixed by collapsing purchases
-to one per local day inside `analyzeCadence`. 5, 6, 7 and 8 stand, each with a
-recommendation in DECISIONS.md — 5 in particular now costs more than it did,
-since a moved item also loses its modifier and its priority.
+to one per local day inside `analyzeCadence`. 6, 7 and 8 stand, each with a
+recommendation in DECISIONS.md.
+
+**5 fixed, 2026-07-30 (later).** It turned out to be three defects, not one: the
+contributions did not move, the priority was silently reset at the destination
+while the source kept it, and `opListId` returned only `toListId` so a device with
+the SOURCE list open never received the op at all. The op now carries what it
+moves — the payload is IN the op rather than read out of state, because a
+read-modify-write cannot be order-independent — and it routes household-wide.
+Anders ruled that only the manual contribution travels; a recipe's share stays on
+the list its addition belongs to.
 
 1. **`loadListSnapshot` omits removed additions' clocks entirely** — so a stale
    `add_recipe` replayed from the outbox wins against nothing and **resurrects a
@@ -451,7 +459,8 @@ since a moved item also loses its modifier and its priority.
    grows forever while `saveState` re-serialises the whole blob on every tap. My
    brief's 30-day-retention premise was simply wrong.
 5. **`move_item` does not move contributions** — a moved item arrives with no
-   amounts, and after this work, no modifiers or priority either.
+   amounts, and after this work, no modifiers or priority either. *(Fixed; see
+   the status note above.)*
 6. **Suggestion dismissal is entirely unwired** — table and migration exist,
    zero reads or writes, and the design doc promises it.
 7. **`users` is never populated or read** in production, which blocks "who bought

@@ -1,8 +1,9 @@
 # Hardening session, 2026-07-30 — read this first
 
-The registry gate is done, priority and modifiers are built, and the two loose
-ends from the away session are both closed. **Four decisions are waiting on you**
-— they are collected in "Decisions I did not take" below, and nowhere else.
+The registry gate is done, priority and modifiers are built, `move_item` is
+fixed, and the two loose ends from the away session are both closed. **Three
+decisions are waiting on you** — they are collected in "Decisions I did not take"
+below, and nowhere else.
 
 ## Three data-loss bugs, all the same shape
 
@@ -100,21 +101,51 @@ with their own clock, banan sorted ahead of mjölk and ost, the duplicate sheet
 firing and "Nej, vanlig" clearing the qualifier while applying the new amount,
 and removal returning priority to normal.
 
+## `move_item`, and the thing it taught
+
+Three defects, not the one that was written down. Contributions did not move.
+Priority was silently reset at the destination while the *source* kept it, which
+is backwards. And `opListId` returned only `toListId`, so a phone with the source
+list open never received the op at all — two people, one moves milk from Hemköp
+to Bauhaus, and the other goes on seeing milk at Hemköp until something makes
+their client re-hydrate.
+
+**The interesting one is the shape of the fix.** A move is the only op that would
+have to READ the state it rewrites — "take whatever is on the source and put it
+over there" — and a read-modify-write cannot be order-independent. A `set_amount`
+the mover had not seen yet is present in one arrival order and absent in the
+other, so two devices settle on different amounts at the destination and neither
+is wrong by its own reckoning. So the op now **carries what it moves**: the
+moving device names the priority and the amount/note/modifier, and the reducer
+stays a pure function of the op set. That is not a detail — it is the difference
+between a move that converges and one that quietly does not, and the
+120-permutation test only fails for the read-from-state version. I checked that
+by writing it, running it, and watching it fail before restoring the fix.
+
+The price is bounded and worth naming: an edit the mover had not seen does not
+travel. It stays on the source entry under the tombstone, recoverable by putting
+the item back on that list. The alternative is two lists disagreeing forever with
+no error anywhere.
+
+Your two rulings are in: only the **manual** contribution travels (a recipe's
+share is keyed to a list-scoped addition, so a recipe that asked for cream at
+Hemköp has no meaning at Bauhaus), and the fan-out is **`opListId` → null**,
+household-wide, which both the live SSE filter and the catch-up query already
+treat correctly. Deliberately over-broad, and cheaper than teaching the event
+shape to carry two ids for this one case.
+
+Also: the urgency now travels rather than staying behind. Leaving it on the
+source is the same "permanent decoration" bug that removal already guards
+against.
+
+Four new tests, and the DB round-trip one is the one that matters: the pure
+reducer converges on all of this, and it is the reconstruction from columns that
+has broken three times. The old single `move_item` test would have passed with
+all three defects present.
+
 ## Decisions I did not take
 
-**1. `move_item` is now more broken than it was, and the fix needs your call.**
-It does not move contributions — a moved item arrives with no amounts, and now no
-modifier and a reset priority. The mechanical part is easy (contribution ids are
-derived from the entry id, so they can be re-keyed). The part that is not
-mechanical: a *recipe* contribution belongs to a recipe addition, and additions
-are list-scoped. So moving an item that a recipe asked for either orphans the
-recipe's share, silently drops it, or drags the addition across too. My
-inclination is **drop the recipe contributions and keep only the manual one**,
-because moving an item between shops is a statement about where you will buy it,
-not about the recipe — but that is a product judgement. Unreachable from the UI
-today, so it costs nothing until there is a "move to other list" button.
-
-**2. Nothing calls `pruneTombstones`, and nothing prunes the `ops` table.** The
+**1. Nothing calls `pruneTombstones`, and nothing prunes the `ops` table.** The
 function now works correctly; it just has no caller. Wiring it up needs one
 number from you: the retention window. It must match the op log's, or a client
 staler than the tombstones resurrects things. Replay-from-genesis currently works
@@ -122,13 +153,13 @@ because the log is small. My inclination is **30 days**, matching the comment
 already in the schema, with the op-log prune added at the same time and never
 separately.
 
-**3. Statistics needs `users`, which is never populated.** "Who bought it" has
+**2. Statistics needs `users`, which is never populated.** "Who bought it" has
 nothing to read. The authenticated actor is already on every op and every
 purchase row, so the cheap version is to derive the roster from distinct actors
 rather than maintain a table. That is my inclination; the table exists and
 implies otherwise, so it is worth saying out loud before `/statistik` is built.
 
-**4. Suggestion dismissal is fully unwired** — table, migration, and a promise in
+**3. Suggestion dismissal is fully unwired** — table, migration, and a promise in
 the design doc, with zero reads or writes. It is a feature gap rather than a bug,
 but it is the kind that quietly stays unbuilt because everything still works.
 

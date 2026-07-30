@@ -27,6 +27,8 @@ import { loadListSnapshot } from "./list-data";
 const ACTOR = "test-apply-op-actor";
 const RUN = randomUUID().slice(0, 8);
 const listId = `test-apply-op-list-${RUN}`;
+/** The other shop. Only move_item needs two lists; everything else uses one. */
+const otherListId = `test-apply-op-list-other-${RUN}`;
 const catalogItemId = `test-apply-op-item-${RUN}`;
 
 function op(kind: string, at: string, fields: Record<string, unknown>): Op {
@@ -81,6 +83,16 @@ beforeAll(async () => {
     ACTOR,
   );
   await applyOpToDatabase(
+    op("create_list", "2026-01-01T00:00:00.000Z", {
+      listId: otherListId,
+      name: "Test (andra affären)",
+      icon: "1F6D2",
+      position: 998,
+      categoryOrder: [],
+    }),
+    ACTOR,
+  );
+  await applyOpToDatabase(
     op("create_catalog_item", "2026-01-01T00:00:00.000Z", {
       item: {
         id: catalogItemId,
@@ -105,9 +117,11 @@ afterAll(async () => {
   await db
     .delete(opsTable)
     .where(inArray(opsTable.actor, [ACTOR]));
-  await db.delete(listEntries).where(eq(listEntries.listId, listId));
+  await db
+    .delete(listEntries)
+    .where(inArray(listEntries.listId, [listId, otherListId]));
   await db.delete(catalogItems).where(inArray(catalogItems.id, allItems));
-  await db.delete(lists).where(eq(lists.id, listId));
+  await db.delete(lists).where(inArray(lists.id, [listId, otherListId]));
   await db.delete(recipes).where(inArray(recipes.id, extraRecipes));
 });
 
@@ -1069,6 +1083,200 @@ describe("priority and modifiers survive the database", () => {
       note: "till smoothien",
       modifier: "mogna",
     });
+  });
+});
+
+describe("move_item survives the database", () => {
+  /**
+   * The pure reducer converges on all of this on its own — it keeps its clocks
+   * in a map. What breaks is the ROUND TRIP: the server rebuilds that map from
+   * columns, and a move writes to two entries and two contribution rows at once,
+   * which is more of the loader and the writer than any other op touches.
+   *
+   * Every data-loss bug in this codebase so far has been a clock that describes
+   * something other than what it is compared against, and every one of them was
+   * invisible to the pure reducer. So the move is driven through Postgres here.
+   */
+  const move = (
+    itemId: string,
+    at: string,
+    carried: {
+      priority?: string;
+      manual?: {
+        amount: { value: number; unit: string } | null;
+        note: string | null;
+        modifier: string | null;
+      } | null;
+    } = {},
+  ) =>
+    applyOpToDatabase(
+      op("move_item", at, {
+        fromListId: listId,
+        toListId: otherListId,
+        catalogItemId: itemId,
+        priority: carried.priority ?? "normal",
+        manual: carried.manual ?? null,
+      }),
+      ACTOR,
+    );
+
+  it("carries the whole entry across and leaves the source empty", async () => {
+    const item = `${catalogItemId}-move`;
+    await seedItem(item);
+
+    await applyOpToDatabase(
+      op("set_amount", "2026-11-01T08:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        amount: { value: 5, unit: "dl" },
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("set_note", "2026-11-01T08:10:00.000Z", {
+        listId,
+        catalogItemId: item,
+        note: "helst ekologisk",
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("set_modifier", "2026-11-01T08:20:00.000Z", {
+        listId,
+        catalogItemId: item,
+        modifier: "vispgrädde",
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("set_priority", "2026-11-01T08:30:00.000Z", {
+        listId,
+        catalogItemId: item,
+        priority: "urgent",
+      }),
+      ACTOR,
+    );
+
+    await move(item, "2026-11-01T09:00:00.000Z", {
+      priority: "urgent",
+      manual: {
+        amount: { value: 5, unit: "dl" },
+        note: "helst ekologisk",
+        modifier: "vispgrädde",
+      },
+    });
+
+    const destination = await loadListSnapshot(otherListId, new Date());
+    const arrived = destination!.entries.find((e) => e.catalogItemId === item)!;
+    expect(arrived.removedAt).toBeNull();
+    expect(arrived.priority).toBe("urgent");
+    const carried = destination!.contributions.find(
+      (c) => c.id === manualContributionId(entryId(otherListId, item)),
+    )!;
+    expect(carried.amount).toEqual({ value: 5, unit: "dl" });
+    expect(carried.note).toBe("helst ekologisk");
+    expect(carried.modifier).toBe("vispgrädde");
+
+    const source = await loadListSnapshot(listId, new Date());
+    const left = source!.entries.find((e) => e.catalogItemId === item)!;
+    expect(left.removedAt).not.toBeNull();
+    expect(left.priority).toBe("normal");
+    expect(
+      source!.contributions.find(
+        (c) => c.id === manualContributionId(entryId(listId, item)),
+      ),
+    ).toBeUndefined();
+  });
+
+  /**
+   * The clocks have to arrive with the values, at BOTH ends.
+   *
+   * A written value whose clock did not survive the round trip is not "no
+   * opinion", it is "anything wins" — `wins(op, undefined)` is true whatever the
+   * op's timestamp says. So a stale `set_amount` predating the move would land
+   * unopposed on the destination, and would refill the source record the move
+   * just emptied. Both directions are asserted, because the source row is the
+   * one that has to survive EMPTIED rather than deleted, purely to keep its
+   * clocks alive.
+   */
+  it("refuses writes that predate the move, at either end", async () => {
+    const item = `${catalogItemId}-move-stale`;
+    await seedItem(item);
+
+    await applyOpToDatabase(
+      op("set_amount", "2026-11-02T08:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        amount: { value: 5, unit: "dl" },
+      }),
+      ACTOR,
+    );
+    await move(item, "2026-11-02T09:00:00.000Z", {
+      manual: { amount: { value: 5, unit: "dl" }, note: null, modifier: null },
+    });
+
+    // Both queued while offline BEFORE the move, arriving after it.
+    await applyOpToDatabase(
+      op("set_amount", "2026-11-02T08:30:00.000Z", {
+        listId: otherListId,
+        catalogItemId: item,
+        amount: { value: 99, unit: "l" },
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("set_note", "2026-11-02T08:30:00.000Z", {
+        listId,
+        catalogItemId: item,
+        note: "spöknotis",
+      }),
+      ACTOR,
+    );
+
+    const destination = await loadListSnapshot(otherListId, new Date());
+    expect(
+      destination!.contributions.find(
+        (c) => c.id === manualContributionId(entryId(otherListId, item)),
+      )!.amount,
+    ).toEqual({ value: 5, unit: "dl" });
+
+    const source = await loadListSnapshot(listId, new Date());
+    expect(
+      source!.contributions.find(
+        (c) => c.id === manualContributionId(entryId(listId, item)),
+      ),
+    ).toBeUndefined();
+
+    // The emptied source row itself must still be there — it is where the
+    // clocks that refused those two writes live.
+    const [row] = await db
+      .select()
+      .from(contributions)
+      .where(eq(contributions.id, manualContributionId(entryId(listId, item))));
+    expect(row).toBeDefined();
+    expect(row.amountValue).toBeNull();
+    expect(row.note).toBeNull();
+    expect(row.amountUpdatedAt?.toISOString()).toBe("2026-11-02T09:00:00.000Z");
+    expect(row.noteUpdatedAt?.toISOString()).toBe("2026-11-02T09:00:00.000Z");
+  });
+
+  /**
+   * A move concerns two lists, and the op log routes on a single id. Logging it
+   * against the destination meant a device with the SOURCE list open never
+   * received it — neither live (src/api/routes/stream.ts filters on this) nor on
+   * catch-up (`opsCatchUpWhere`) — so it went on showing the item at the old shop
+   * indefinitely. Null is what both of those already treat as household-wide.
+   */
+  it("logs the op household-wide so the source list hears about it too", async () => {
+    const item = `${catalogItemId}-move-fanout`;
+    await seedItem(item);
+    const { seq } = await move(item, "2026-11-03T09:00:00.000Z");
+
+    const [row] = await db
+      .select({ listId: opsTable.listId })
+      .from(opsTable)
+      .where(eq(opsTable.seq, seq));
+    expect(row.listId).toBeNull();
   });
 });
 

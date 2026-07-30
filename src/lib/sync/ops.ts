@@ -113,10 +113,46 @@ export type Op =
     })
   | (OpBase & { kind: "remove_recipe"; listId: Id; recipeAdditionId: Id })
   | (OpBase & {
+      /**
+       * Buy it at the other shop instead.
+       *
+       * The op carries what it moves, and that is the whole design. Every other
+       * op states its own change outright; a move phrased as "take whatever is
+       * on the source and put it over there" would have to READ the state it
+       * rewrites, and a read-modify-write cannot be order-independent. A
+       * `set_amount` the mover had not seen yet is present in one arrival order
+       * and absent in the other, so two devices settle on different amounts at
+       * the destination and neither is wrong by its own reckoning — the exact
+       * silent divergence this log exists to rule out.
+       *
+       * So the moving device names the payload, and the reducer stays a pure
+       * function of the op set. The cost is that a concurrent edit the mover had
+       * not seen does not travel: it stays on the source entry, invisible under
+       * the tombstone, until someone puts the item back on that list. That is a
+       * bounded, recoverable loss, and it is the one this trade buys — the
+       * alternative is two lists that disagree forever with no error anywhere.
+       */
       kind: "move_item";
       fromListId: Id;
       toListId: Id;
       catalogItemId: Id;
+      /** The source entry's urgency, travelling with it rather than staying behind. */
+      priority: Priority;
+      /**
+       * The source entry's own amount/note/modifier, or null when it had none.
+       *
+       * Only the MANUAL contribution moves. A recipe's share is keyed to a
+       * recipe addition, and additions are list-scoped
+       * (`recipe_additions.list_id`) — a recipe that asked for cream at Hemköp
+       * has no meaning at Bauhaus, and dragging its contribution across would
+       * make one recipe appear on two lists. Moving an item is a statement about
+       * where you will buy it, not about the recipe.
+       */
+      manual: {
+        amount: Amount | null;
+        note: string | null;
+        modifier: string | null;
+      } | null;
     });
 
 export type OpKind = Op["kind"];
@@ -136,11 +172,21 @@ export function opListId(op: Op): Id | null {
     case "add_recipe":
     case "remove_recipe":
       return op.listId;
+    // A move concerns TWO lists, and this function returns one id. Returning
+    // `toListId` meant a device with the SOURCE list open never received the op
+    // at all — src/api/routes/stream.ts filters on this value — so it went on
+    // showing milk at Hemköp indefinitely after someone else moved it to
+    // Bauhaus, until something happened to make it re-hydrate.
+    //
+    // Null means household-wide, which both the live filter and the catch-up
+    // query (`opsCatchUpWhere`) already treat as "deliver to every list". It is
+    // deliberately over-broad: a move is rare and the extra delivery is a few
+    // bytes to at most a couple of devices, whereas widening the event to carry
+    // two ids would change the event contract for this one case.
     case "move_item":
-      return op.toListId;
+    // Catalog changes are household-wide, not list-scoped.
     case "create_catalog_item":
     case "update_catalog_item":
-      // Catalog changes are household-wide, not list-scoped.
       return null;
   }
 }
