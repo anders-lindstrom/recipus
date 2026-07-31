@@ -66,6 +66,17 @@ export interface EntrySheetProps {
    * possible outcome is an empty sheet is worse than no button.
    */
   onMove?: () => void;
+  /**
+   * Straight to this item's entry in the registry.
+   *
+   * The list is about *this shop, today*; the registry is about what the thing
+   * IS — its aisle, its name, the products under it. There was no way across, so
+   * noticing in a shop that surdegsbröd is filed under Övrigt meant remembering
+   * it until you were home and then finding it again among everything else.
+   * Deep-linked with `?vara=`, so it opens on the item rather than on a screen of
+   * all of them.
+   */
+  onOpenVara?: () => void;
   /** Removes without recording a purchase — a change of mind, not a shop. */
   onRemoveWithoutBuying: () => void;
 }
@@ -91,6 +102,7 @@ export function EntrySheet({
   onSetPriority,
   onRemoveRecipe,
   onMove,
+  onOpenVara,
   onRemoveWithoutBuying,
 }: EntrySheetProps) {
   const manual = view.contributions.find((c) => c.sourceKind === "manual");
@@ -320,6 +332,15 @@ export function EntrySheet({
                 icon={<UiIcon name="toList" size={16} />}
               >
                 Flytta till annan lista
+              </SheetButton>
+            )}
+
+            {onOpenVara && (
+              <SheetButton
+                onClick={onOpenVara}
+                icon={<UiIcon name="allAisles" size={16} />}
+              >
+                Om {itemName.toLowerCase()} — kategori, produkter
               </SheetButton>
             )}
 

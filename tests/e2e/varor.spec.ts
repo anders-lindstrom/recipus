@@ -1,8 +1,11 @@
 import type { Page } from "@playwright/test";
+import { slugify } from "@/lib/utils";
 import {
+  catalogTile,
   dropCatalogItems,
   dropProducts,
   expect,
+  onListTile,
   outboxSize,
   test,
 } from "./fixtures";
@@ -328,4 +331,79 @@ test("a vara on the list cannot be deleted until it is taken off it", async ({
   // Deleted through the UI, but that delete is soft by design — the row is still
   // there, tombstoned, and teardown is what actually removes it.
   await dropCatalogItems([varaId]);
+});
+
+test("an item you invented can be moved out of Övrigt, and it stays moved", async ({
+  page,
+  listId,
+}) => {
+  const suffix = unique();
+  // One token, no trailing digits: the add bar splits a trailing quantity off a
+  // query ("mjölk 2 l"), so a name ending in numbers would be created without
+  // them and nothing here would match.
+  const varaName = `Surdegsbrod${suffix.replace(/-/g, "")}`;
+
+  // Created the way the household actually creates things: typed into the add
+  // bar. Everything that route makes lands in Övrigt on purpose — guessing an
+  // aisle sends you to the wrong end of the shop — and Övrigt sorts LAST, so an
+  // item left there is one you walk back for on every trip. Being able to re-file
+  // it is the whole reason the category carries a clock of its own.
+  await page.goto(`/?list=${listId}`);
+  await page.getByLabel("Sök eller lägg till vara").fill(varaName);
+  // The label wraps the name in curly quotes, so match on the suffix rather
+  // than reproducing the punctuation.
+  await page
+    .getByRole("button", { name: new RegExp(`Lägg till.*${varaName}`) })
+    .click();
+  await expect(onListTile(page, varaName)).toBeVisible();
+
+  await page.goto(`/varor?list=${listId}`);
+  await page.getByRole("button", { name: new RegExp(varaName) }).click();
+
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByRole("button", { name: /Byt kategori/ })).toContainText(
+    "övrigt",
+  );
+  await sheet.getByRole("button", { name: /Byt kategori/ }).click();
+  await page.getByRole("button", { name: /Bröd/ }).first().click();
+
+  // Survives a reload, which is the half that matters: the op has to have
+  // reached the server and come back in the snapshot, not merely repainted.
+  await page.reload();
+  await page.getByRole("button", { name: new RegExp(varaName) }).click();
+  await expect(
+    page.getByRole("dialog").getByRole("button", { name: /Byt kategori/ }),
+  ).not.toContainText("övrigt");
+
+  // slugify folds diacritics, so "Surdegsbröd" becomes "surdegsbrod-…" —
+  // reproducing that by hand here would leave the row behind on every run.
+  await dropCatalogItems([slugify(varaName)]);
+});
+
+test("a listed item links straight to its own vara", async ({ page, listId }) => {
+  // The gap this closes: the list is about *this shop, today*, the registry is
+  // about what the thing IS. Noticing mid-shop that something is filed in the
+  // wrong aisle used to mean remembering it until you were home, and then
+  // finding it again among everything else.
+  await page.goto(`/?list=${listId}`);
+  await catalogTile(page, "banan").click();
+  await expect(onListTile(page, "banan")).toBeVisible();
+
+  const tile = onListTile(page, "banan");
+  const box = await tile.boundingBox();
+  if (!box) throw new Error("no tile");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(700);
+  await page.mouse.up();
+
+  await page.getByRole("button", { name: /Om banan/ }).click();
+
+  // Lands ON the item, not on a screen of all of them — otherwise the link has
+  // saved you nothing over navigating there yourself.
+  await expect(page).toHaveURL(/\/varor\?.*vara=banan/);
+  await expect(page.getByRole("dialog")).toContainText("banan");
+  await expect(
+    page.getByRole("dialog").getByRole("button", { name: /Byt kategori/ }),
+  ).toBeVisible();
 });

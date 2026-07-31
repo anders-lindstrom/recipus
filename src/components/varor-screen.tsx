@@ -55,6 +55,10 @@ export interface VarorScreenActions {
   /** Creates the vara, then places the product on it. */
   createVaraAndPlace: (productId: Id, name: string) => void;
   renameVara: (varaId: Id, name: string) => void;
+  /** Re-file into another aisle — the edit that decides where you meet it in the shop. */
+  recategorizeVara: (varaId: Id, categoryId: Id) => void;
+  /** Staples, excluded by default when a recipe is added to a list. */
+  setHasAtHome: (varaId: Id, hasAtHome: boolean) => void;
   /** Creates `newName`, then moves exactly `productIds` onto it. The source stays. */
   splitVara: (varaId: Id, newName: string, productIds: Id[]) => void;
   /** Moves the products across, then tombstones `fromId` and keeps its word as an alias. */
@@ -66,6 +70,14 @@ export interface VarorScreenActions {
 
 export interface VarorScreenProps {
   varor: VaraView[];
+  /**
+   * Opened on arrival, from `?vara=` on the URL.
+   *
+   * The list screen hands you straight here from an item you long-pressed, so
+   * landing on a screen of everything and having to find it again would undo the
+   * point of the link.
+   */
+  openVaraId?: Id | null;
   /** Products nobody has placed yet. The count is the debt. */
   queue: Product[];
   catalog: Record<Id, CatalogItem>;
@@ -86,6 +98,7 @@ type OpenSheet =
 
 export function VarorScreen({
   varor,
+  openVaraId = null,
   queue,
   catalog,
   categories,
@@ -95,7 +108,11 @@ export function VarorScreen({
   actions,
 }: VarorScreenProps) {
   const [query, setQuery] = useState("");
-  const [sheet, setSheet] = useState<OpenSheet>(null);
+  const [sheet, setSheet] = useState<OpenSheet>(
+    // Read once, as the initial value rather than in an effect: an effect would
+    // render the screen and then pop the sheet over it, which reads as a glitch.
+    openVaraId ? { kind: "vara", id: openVaraId } : null,
+  );
   /** The one placement still offering "Ångra", in the queue's own heading. */
   const [undoable, setUndoable] = useState<{
     productId: Id;
@@ -392,11 +409,21 @@ export function VarorScreen({
           categoryName={
             categoryName.get(openVara.item.categoryId) ?? "Övrigt"
           }
+          categories={categories}
           listName={listName}
           onRename={(name) => {
             actions.renameVara(openVara.item.id, name);
             setSheet(null);
           }}
+          onRecategorize={(categoryId) => {
+            actions.recategorizeVara(openVara.item.id, categoryId);
+            setSheet(null);
+          }}
+          // Deliberately does NOT close: it is a toggle you may want to look at
+          // after flipping, and closing would make trying it feel like a commit.
+          onSetHasAtHome={(hasAtHome) =>
+            actions.setHasAtHome(openVara.item.id, hasAtHome)
+          }
           onSplit={() => setSheet({ kind: "split", id: openVara.item.id })}
           onMerge={() => setSheet({ kind: "merge", id: openVara.item.id })}
           onDelete={() => {

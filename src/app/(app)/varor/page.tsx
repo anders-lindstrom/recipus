@@ -24,9 +24,9 @@ export const dynamic = "force-dynamic";
 export default async function VarorPage({
   searchParams,
 }: {
-  searchParams: Promise<{ list?: string }>;
+  searchParams: Promise<{ list?: string; vara?: string }>;
 }) {
-  const { list: requestedList } = await searchParams;
+  const { list: requestedList, vara: openVaraId } = await searchParams;
 
   let actor: string | null = null;
   try {
@@ -64,6 +64,7 @@ export default async function VarorPage({
         actor={actor}
         list={chosen}
         categories={categories}
+        openVaraId={openVaraId ?? null}
       />
     </main>
   );

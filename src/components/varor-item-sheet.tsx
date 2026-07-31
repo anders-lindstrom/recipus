@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import type { Id, Product } from "@/lib/domain";
+import type { Category, Id, Product } from "@/lib/domain";
+import { cn } from "@/lib/utils";
 import { ItemIcon } from "./icon";
 import { Sheet, SheetActions, SheetButton } from "./sheet";
 import { UiIcon } from "./ui-icon";
@@ -26,11 +27,31 @@ import { deletionBlockers, productSubtitle, type VaraView } from "./varor-model"
 
 export interface VarorItemSheetProps {
   vara: VaraView;
-  /** The aisle it is filed under. Shown, not editable — categories stay seed-owned. */
+  /** The aisle it is filed under. */
   categoryName: string;
+  /** Every aisle, in the household's own walking order, for re-filing. */
+  categories: Category[];
   /** Names a list this vara sits on. Falls back to the id when the list is unknown here. */
   listName: (listId: Id) => string;
   onRename: (name: string) => void;
+  /**
+   * Re-file into another aisle.
+   *
+   * The single most load-bearing edit on this screen, because the aisle decides
+   * where the item appears on the walk round the shop. Anything the household
+   * types into the add bar is created in "Övrigt" — deliberately, since guessing
+   * an aisle sends you to the wrong end of the shop — and Övrigt sorts last, so
+   * an item that stays there is one you walk back for every single time.
+   *
+   * This sheet used to show the aisle and refuse to change it, on the grounds
+   * that categories were seed-owned. That was wrong: the category is one of the
+   * four facts the registry exists to make editable, which is why it has a
+   * per-field clock of its own, and why the seed's guard skips any row a human
+   * has touched.
+   */
+  onRecategorize: (categoryId: Id) => void;
+  /** Staples: excluded by default when a recipe is added. Nothing else set this. */
+  onSetHasAtHome: (hasAtHome: boolean) => void;
   onSplit: () => void;
   onMerge: () => void;
   onDelete: () => void;
@@ -46,8 +67,11 @@ export interface VarorItemSheetProps {
 export function VarorItemSheet({
   vara,
   categoryName,
+  categories,
   listName,
   onRename,
+  onRecategorize,
+  onSetHasAtHome,
   onSplit,
   onMerge,
   onDelete,
@@ -57,6 +81,7 @@ export function VarorItemSheet({
   onClose,
 }: VarorItemSheetProps) {
   const [renaming, setRenaming] = useState(false);
+  const [refiling, setRefiling] = useState(false);
   const [draft, setDraft] = useState("");
 
   const blockers = deletionBlockers(vara);
@@ -119,6 +144,55 @@ export function VarorItemSheet({
               Spara
             </button>
           </div>
+        </div>
+      </Sheet>
+    );
+  }
+
+  if (refiling) {
+    return (
+      <Sheet title={`Var står ${vara.item.name}?`} onClose={onClose}>
+        <div className="px-4 pb-1">
+          <p className="text-body text-ink-soft">
+            Aisle-ordningen är per lista, så varan hamnar där ni går förbi den i
+            varje butik.
+          </p>
+        </div>
+        <ul className="mx-2 mt-2">
+          {categories.map((category) => {
+            const current = category.id === vara.item.categoryId;
+            return (
+              <li key={category.id}>
+                <button
+                  type="button"
+                  aria-current={current}
+                  onClick={() => {
+                    setRefiling(false);
+                    if (!current) onRecategorize(category.id);
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-control px-2 py-3 text-left",
+                    current && "bg-brand-tint",
+                  )}
+                >
+                  <ItemIcon iconRef={category.icon} className="text-xl" />
+                  <span className="flex-1 text-body text-ink">{category.name}</span>
+                  {current && (
+                    <UiIcon name="check" size={18} className="text-brand-ink" />
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="mt-1 border-t border-line p-3">
+          <button
+            type="button"
+            onClick={() => setRefiling(false)}
+            className="w-full rounded-control bg-surface px-3 py-3 text-body font-semibold text-ink"
+          >
+            Avbryt
+          </button>
         </div>
       </Sheet>
     );
@@ -243,6 +317,44 @@ export function VarorItemSheet({
         <SheetButton onClick={startRename} icon={<UiIcon name="edit" size={16} />}>
           Byt namn
         </SheetButton>
+
+        <SheetButton
+          onClick={() => setRefiling(true)}
+          icon={<UiIcon name="allAisles" size={16} />}
+        >
+          Byt kategori — nu {categoryName.toLowerCase()}
+        </SheetButton>
+
+        {/* A state with two values, so a switch rather than a button: "Har
+            alltid hemma" as a command would read as an instruction to go and
+            buy some. Nothing else in the app could set this, which meant the
+            recipe sheet's staple exclusion had no way to ever be true. */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={vara.item.hasAtHome}
+          onClick={() => onSetHasAtHome(!vara.item.hasAtHome)}
+          className="flex w-full items-center justify-between gap-2 rounded-control bg-surface px-3 py-3 text-body font-semibold text-ink"
+        >
+          <span className="flex items-center gap-2">
+            <UiIcon name="check" size={16} />
+            Har alltid hemma
+          </span>
+          <span
+            aria-hidden
+            className={cn(
+              "h-6 w-10 flex-none rounded-full p-0.5 transition-colors duration-150",
+              vara.item.hasAtHome ? "bg-brand" : "bg-line-strong",
+            )}
+          >
+            <span
+              className={cn(
+                "block h-5 w-5 rounded-full bg-surface transition-transform duration-150",
+                vara.item.hasAtHome && "translate-x-4",
+              )}
+            />
+          </span>
+        </button>
 
         <SheetButton onClick={onSplit} icon={<UiIcon name="plus" size={16} />}>
           Dela upp

@@ -44,6 +44,7 @@ interface CachedShell {
   actor: string;
   list: List;
   categories: Category[];
+  openVaraId?: Id | null;
 }
 
 function readShell(): Partial<CachedShell> {
@@ -73,6 +74,11 @@ export interface VarorClientProps {
   listId: Id | null;
   actor: string | null;
   list: List | null;
+  /**
+   * A vara to open on arrival, from `?vara=` — how the list screen hands you
+   * straight to the thing you long-pressed rather than to a screen of everything.
+   */
+  openVaraId?: Id | null;
   categories: Category[];
 }
 
@@ -81,6 +87,7 @@ export function VarorClient({
   actor: serverActor,
   list: serverList,
   categories: serverCategories,
+  openVaraId = null,
 }: VarorClientProps) {
   // Read once, on first render, so the offline path has a list id before
   // anything async resolves.
@@ -198,6 +205,29 @@ export function VarorClient({
      * everywhere except in the one place that decides whether a recipe line
      * finds it.
      */
+    /**
+     * Each of these patches ONE fact, and that is not stylistic.
+     *
+     * `update_catalog_item` resolves every field against its own clock, so a
+     * patch naming only the category leaves the name's clock untouched — two
+     * people tidying the catalog on a Sunday can re-file and rename the same
+     * vara without either edit outranking the other. Bundling unrelated fields
+     * into one patch would throw that away for no gain.
+     */
+    recategorizeVara: (varaId: Id, categoryId: Id) =>
+      dispatch({
+        kind: "update_catalog_item",
+        itemId: varaId,
+        patch: { categoryId },
+      }),
+
+    setHasAtHome: (varaId: Id, hasAtHome: boolean) =>
+      dispatch({
+        kind: "update_catalog_item",
+        itemId: varaId,
+        patch: { hasAtHome },
+      }),
+
     renameVara: (varaId, name) =>
       dispatch({
         kind: "update_catalog_item",
@@ -301,6 +331,7 @@ export function VarorClient({
       categoryOrder={list.categoryOrder}
       listName={listName}
       sync={{ online: status.online, pendingCount: status.pendingCount }}
+      openVaraId={openVaraId}
       actions={actions}
     />
   );

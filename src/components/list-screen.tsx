@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Amount,
@@ -140,6 +141,7 @@ export function ListScreen({
   onModeChange,
   actions,
 }: ListScreenProps) {
+  const router = useRouter();
   const [openEntry, setOpenEntry] = useState<Id | null>(null);
   const [undoable, setUndoable] = useState<{
     id: Id;
@@ -730,6 +732,12 @@ export function ListScreen({
             }
             setRemovingRecipe({ additionId: id, title, candidates: orphans });
           }}
+          // A navigation, so the sheet does not need closing — the page goes.
+          onOpenVara={() =>
+            router.push(
+              `/varor?list=${encodeURIComponent(list.id)}&vara=${encodeURIComponent(openItem.id)}`,
+            )
+          }
           onMove={
             // Offered only when there is somewhere to move TO. With one list the
             // picker would open empty, which reads as a broken button.
