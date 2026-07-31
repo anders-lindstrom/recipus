@@ -782,6 +782,10 @@ export function ListScreen({
 
       {openItem && openView && (
         <EntrySheet
+          // Same reason as the add sheet below: the amount and sort fields seed
+          // their drafts on mount, so a reused instance would open on the last
+          // vara's numbers.
+          key={openItem.id}
           itemName={openItem.name}
           view={openView}
           mode={mode}
@@ -839,6 +843,12 @@ export function ListScreen({
 
       {addingItem && (
         <AddDetailsSheet
+          // Keyed, so a different vara can never inherit the last one's draft.
+          // The fields seed their state from props on mount only — which is what
+          // lets you type freely without a partner's edit yanking the caret —
+          // and that is exactly the property that makes a reused instance show
+          // the wrong amount.
+          key={addingItem.id}
           item={addingItem}
           alreadyOnList={onListIds.has(addingItem.id)}
           onClose={() => setAddingDetails(null)}
