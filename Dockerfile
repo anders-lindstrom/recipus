@@ -42,6 +42,15 @@ ENV NODE_ENV=production
 # shift every interval by a few hours.
 ENV TZ=Europe/Stockholm
 
+# Build stamp for the in-app "Om" version display (src/lib/version.ts). The
+# image does not ship .git (see .dockerignore), so CI passes the commit SHA and
+# build time as build-args and they are baked into runtime env here. Unset ->
+# the dev fallback reads the working tree instead. Same wiring as longhaul.
+ARG GIT_SHA
+ARG BUILD_TIME
+ENV RECIPUS_GIT_SHA=$GIT_SHA
+ENV RECIPUS_BUILD_TIME=$BUILD_TIME
+
 # pg_dump for the entrypoint's pre-migration snapshot. It refuses to dump a
 # server newer than itself, so this major must be >= the shared postgres on the
 # beelink (17.x). Bump it before upgrading that, or every deploy fails its

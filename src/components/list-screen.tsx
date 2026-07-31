@@ -425,16 +425,29 @@ export function ListScreen({
             {mode === "buy" ? "Handlar" : "Planerar"}
           </button>
 
-          {members.map((m) => (
-            <span
-              key={m.id}
-              title={m.id}
-              className="-ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-surface text-badge text-white"
-              style={{ background: m.color }}
-            >
-              {m.initials}
-            </span>
-          ))}
+          {/* The household's faces, and the way into settings.
+
+              They were decoration — the only thing on this header you could not
+              press — while the one screen that answers "which build is this
+              phone actually running" had no entry point at all. Your own initials
+              are where anyone looks for "me", so that is where it goes, and it
+              costs no new furniture on a header that is already full. */}
+          <Link
+            href="/installningar"
+            aria-label="Inställningar"
+            className="ml-1 flex flex-none items-center"
+          >
+            {members.map((m) => (
+              <span
+                key={m.id}
+                title={m.id}
+                className="-ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-surface text-badge text-white"
+                style={{ background: m.color }}
+              >
+                {m.initials}
+              </span>
+            ))}
+          </Link>
 
           {/* The two screens that are not this one. Everything else up here is
               about the list you are standing in front of, so they get quiet

@@ -1,3 +1,52 @@
+# Settings and "what is actually running", 2026-07-31 — read this first
+
+The household's initials sat in the header as the one thing you could not press,
+and the screen that answers "which build is this phone running" did not exist.
+Both fixed, following longhaul rather than inventing a second way to do it.
+
+## The version chain is longhaul's, deliberately
+
+`src/lib/version.ts` is the same shape as longhaul's, down to the dev fallback,
+because the two projects share a stack and a deploy pipeline and answering this
+question differently would mean learning it twice. The chain:
+
+- **`.github/workflows/deploy.yml`** computes a UTC timestamp and passes it with
+  `github.sha` as docker build-args.
+- **`Dockerfile`** takes them as `ARG` in the runner stage and bakes them to
+  `RECIPUS_GIT_SHA` / `RECIPUS_BUILD_TIME`.
+- **`getBuildInfo()`** reads the env; unset means dev, so it shells out to
+  `git rev-parse HEAD` and flags `isDev`.
+
+The env round trip is not ceremony: `.dockerignore` keeps `.git` out of the
+image, so the container has no repo to ask. That distinction is the whole point
+of the file — "which commit is the shop running" is a question you ask when
+something looks wrong on a phone in a supermarket, and an answer that quietly
+meant "whatever is checked out on my laptop" would be worse than none.
+
+Watchtower makes it sharper still: the answer changes without anyone doing
+anything. So the page is `force-dynamic` — a version banner served from the
+service worker's cache would lie exactly when it matters.
+
+## Swedish route, against longhaul
+
+Longhaul uses `/settings`. This app's routes are `/varor` and `/recept`, so it
+gets `/installningar`. Consistency inside the app someone is looking at beats
+consistency with a sibling repo; the UI text is Swedish in both.
+
+## What the screen actually holds
+
+No invented settings. Who you are signed in as, the version block, and one real
+preference: putting the long-press tip back. `useOnce` gained `restore` for it,
+because "once ever" with no way back means a phone that dismissed the tip by
+accident has permanently lost the only thing advertising a gesture nothing else
+mentions.
+
+Verified in the UI: the dev fallback showed `96b9ceab85e2` flagged as
+utvecklingsläge, linked to the right commit on GitHub, "Byggd: okänd" as it
+should be with no CI stamp, and the tip toggle round-tripped localStorage.
+
+---
+
 # Fewer taps, 2026-07-31 (later) — read this first
 
 Anders used the previous session's work and came back with four complaints, all

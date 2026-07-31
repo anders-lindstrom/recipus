@@ -157,12 +157,21 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
+      - name: Compute build timestamp
+        id: build_meta
+        run: echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
           push: true
+          # Baked into the image for the in-app "Om" version display; .git is
+          # not shipped, so the SHA/date come in as build-args (see Dockerfile).
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ steps.build_meta.outputs.build_time }}
           # :latest is what the compose file and Watchtower track.
           # The :sha tag lets you roll back to an exact commit.
           tags: |

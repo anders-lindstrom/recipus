@@ -45,6 +45,14 @@ export interface UseOnceResult {
   /** True until this key has been dismissed. Always false on the server. */
   pending: boolean;
   dismiss: () => void;
+  /**
+   * Undo the dismissal, so the thing is said once more.
+   *
+   * "Once ever" with no way back means a phone that dismissed a tip by accident
+   * has permanently lost the only thing advertising a gesture nothing else
+   * mentions. Reached from the settings screen, never automatically.
+   */
+  restore: () => void;
 }
 
 export function useOnce(key: string): UseOnceResult {
@@ -70,5 +78,14 @@ export function useOnce(key: string): UseOnceResult {
     for (const listener of listeners) listener();
   }, [key]);
 
-  return { pending, dismiss };
+  const restore = useCallback(() => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Same: without storage there is nothing recorded to undo.
+    }
+    for (const listener of listeners) listener();
+  }, [key]);
+
+  return { pending, dismiss, restore };
 }
