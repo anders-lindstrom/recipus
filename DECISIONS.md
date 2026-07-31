@@ -1579,3 +1579,30 @@ unused entry in an icon map is not an unused variable, and invisible to the
 tests. Screenshots caught it. This is the third time in this log that the
 intended end state got written down as the shipped state; if there is one habit
 worth taking from tonight, it is `grep` for the thing you claim to have wired.
+
+# One phantom-purchase path left open, deliberately, 2026-07-31
+
+The stand-in guard sits in `list-screen`'s `remove`, which every removal on that
+screen goes through. **The scanner does not go through it.** `handleScan` in
+`list-client.tsx` calls `actions.removeItem(catalogItemId, true)` directly, and it
+does not care whether `state.catalog[catalogItemId]` exists — it falls back to the
+name "Varan" and carries on. So scanning a barcode whose product still points at a
+tombstoned vara records a purchase against that tombstone, exactly as tapping one
+used to.
+
+**It is hard to reach and it is not impossible.** A merge re-points every product
+on the losing vara (`mergeVaraOps` is handed `openVara.products`), and a delete is
+refused outright while any product still hangs off the word — so both ordinary
+routes close it. What is left is a product mapped to that vara from another device
+during the merge, or one that arrived after the sheet read its list. Narrow, and
+the same shape as the bug that reached production, which is why it is written down
+rather than left to be rediscovered.
+
+**Not fixed here, and the reason is the reason to be careful about it.** The
+scanner is the one flow this repo cannot test: there is no camera in headless
+Chromium, so `pnpm test:e2e` never exercises the happy path at all. Changing the
+buy branch means shipping an unverifiable change to the flow where a mistake costs
+a real purchase in a real shop. The honest fix is probably to refuse the scan when
+the vara is unknown rather than to silently downgrade it to a removal — a scan
+that cannot say what it bought should say so — but that is a decision about what
+happens in front of a till, and it wants a person who can hold a phone.
