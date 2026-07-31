@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { groupingFor } from "@/lib/client/use-list-layout";
 import {
   entryId,
   manualContributionId,
@@ -13,8 +14,11 @@ import {
   buildEntryView,
   itemsOnlyWantedByRecipe,
   groupByCategory,
+  moveCategory,
+  orderedCategories,
   shouldGroupByAisle,
   tileVaror,
+  walkingRank,
 } from "./entries";
 
 const LIST = "hemkop";
@@ -448,5 +452,102 @@ describe("tileVaror", () => {
     });
     const map = tileVaror([], activeEntries([removed]));
     expect(map.has("gone")).toBe(false);
+  });
+});
+
+/**
+ * The walk round the shop.
+ *
+ * `lists.category_order` has been per-list since the first migration — Hemköp
+ * and Bauhaus share the household's vocabulary and nothing about their layout —
+ * but nothing in the app could ever edit it, so every list walked in seed order.
+ * That falls hardest on exactly the varor a household invents: the add bar files
+ * anything new under Övrigt, and Övrigt sorts last.
+ */
+describe("walkingRank", () => {
+  it("ranks by the list's own order and sends the unnamed to the back", () => {
+    const rank = walkingRank(["frukt-gront", "brod", "mejeri-agg"]);
+    expect(rank("frukt-gront")).toBe(0);
+    expect(rank("mejeri-agg")).toBe(2);
+    // Not zero, not an error: a newly seeded category turns up somewhere sane
+    // rather than at the front of a shop it has never been in. Same rule
+    // `groupByCategory` already applied, stated once so the two cannot drift.
+    expect(rank("ovrigt")).toBe(Number.MAX_SAFE_INTEGER);
+  });
+});
+
+describe("orderedCategories", () => {
+  const cats = [
+    { id: "brod", name: "Bröd" },
+    { id: "ovrigt", name: "Övrigt" },
+    { id: "frukt-gront", name: "Frukt & grönt" },
+  ];
+
+  it("puts the ordered ones first and the rest after", () => {
+    expect(
+      orderedCategories(cats, ["frukt-gront", "brod"]).map((c) => c.id),
+    ).toEqual(["frukt-gront", "brod", "ovrigt"]);
+  });
+
+  it("returns every category, including ones the order has never heard of", () => {
+    // The editor needs the whole set: a category missing from `category_order`
+    // is precisely the one you opened the editor to place, and leaving it out
+    // would make it unreachable.
+    expect(orderedCategories(cats, []).map((c) => c.id)).toHaveLength(3);
+  });
+
+  it("does not mutate what it is given", () => {
+    const order = ["brod"];
+    const input = cats.slice();
+    orderedCategories(input, order);
+    expect(input.map((c) => c.id)).toEqual(["brod", "ovrigt", "frukt-gront"]);
+  });
+});
+
+describe("moveCategory", () => {
+  const order = ["frukt-gront", "brod", "mejeri-agg"];
+
+  it("swaps with the neighbour in the named direction", () => {
+    expect(moveCategory(order, "brod", -1)).toEqual([
+      "brod",
+      "frukt-gront",
+      "mejeri-agg",
+    ]);
+    expect(moveCategory(order, "brod", 1)).toEqual([
+      "frukt-gront",
+      "mejeri-agg",
+      "brod",
+    ]);
+  });
+
+  it("stops at either end rather than wrapping", () => {
+    // Wrapping would send the first aisle to the back of the shop on a mis-tap,
+    // and the mis-tap is likely: these are two 44px buttons side by side.
+    expect(moveCategory(order, "frukt-gront", -1)).toBe(order);
+    expect(moveCategory(order, "mejeri-agg", 1)).toBe(order);
+  });
+
+  it("says nothing about a category the order does not contain", () => {
+    expect(moveCategory(order, "ovrigt", -1)).toBe(order);
+  });
+
+  it("leaves the input alone", () => {
+    const input = order.slice();
+    moveCategory(input, "brod", -1);
+    expect(input).toEqual(order);
+  });
+});
+
+describe("groupingFor", () => {
+  it("keeps the old rule when nobody has chosen", () => {
+    // A household that never opens the setting must see exactly what it saw
+    // before the setting existed.
+    expect(groupingFor("auto", true)).toBe(true);
+    expect(groupingFor("auto", false)).toBe(false);
+  });
+
+  it("lets a choice override the count either way", () => {
+    expect(groupingFor("grouped", false)).toBe(true);
+    expect(groupingFor("flat", true)).toBe(false);
   });
 });

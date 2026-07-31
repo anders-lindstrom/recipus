@@ -6,3 +6,4 @@
 
 export { CATEGORIES, type SeedCategory } from "./categories";
 export { CATALOG_ITEMS, type SeedItem } from "./catalog";
+export { STARTER_ITEMS } from "./starter-list";

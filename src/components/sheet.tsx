@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
+import { useFocusTrap } from "@/lib/client/use-focus-trap";
 import { cn } from "@/lib/utils";
 
 /**
@@ -35,15 +36,15 @@ export function Sheet({
   children,
   className,
 }: SheetProps) {
-  // A sheet you cannot dismiss from the keyboard is a trap on the desktop side
-  // of a PWA, where there is no back gesture to fall back on.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  /**
+   * Focus in, Tab held inside, Escape out, focus back to the trigger.
+   *
+   * Escape used to live here on its own — a sheet you cannot dismiss from the
+   * keyboard is a trap on the desktop side of a PWA, where there is no back
+   * gesture to fall back on. It moved into the trap because trapping Tab is
+   * what turns it from a courtesy into the only way out; see useFocusTrap.
+   */
+  const dialogRef = useFocusTrap<HTMLDivElement>(onClose);
 
   /**
    * Has a gesture actually STARTED inside this sheet yet?
@@ -71,12 +72,39 @@ export function Sheet({
 
   return (
     <div
-      className="animate-fade-in fixed inset-0 z-50 flex items-end bg-ink/40 backdrop-blur-[2px]"
+      ref={dialogRef}
+      className="animate-fade-in fixed inset-0 z-50 flex items-end bg-ink/40 backdrop-blur-[2px] outline-none"
       role="dialog"
       aria-modal="true"
       aria-label={title}
+      // So the dialog can hold focus itself when the sheet has no field to
+      // offer — never a tab stop of its own, only a place to start.
+      tabIndex={-1}
       onPointerDownCapture={() => {
         ownGesture.current = true;
+      }}
+      /**
+       * The stray click's third effect, and the last one to be noticed.
+       *
+       * A touch's synthesized sequence is mousemove, mousedown, mouseup, click —
+       * no `pointerdown`, which is exactly why the latch above catches it. The
+       * click was the loud half; the mousedown is the quiet one, and it moves
+       * focus to whatever is focusable under the finger. Measured: long-pressing
+       * a catalog tile opens the details sheet with its amount field autofocused
+       * and the keyboard already rising, and then the gesture's own mousedown
+       * takes the focus straight back off it — so the field this sheet exists
+       * for arrives empty, unfocused, and one tap away. Before the dialog was
+       * focusable at all it was worse: focus landed on `<body>`, outside the
+       * modal that had just claimed the screen.
+       *
+       * `preventDefault` on mousedown suppresses only the focus change; the
+       * click still comes, and is still stopped below. Safe to do
+       * unconditionally within the latch, because a real press of any kind —
+       * mouse or finger — puts a `pointerdown` in front of its mousedown, and
+       * that is the one thing this synthesized sequence cannot.
+       */
+      onMouseDownCapture={(e) => {
+        if (!ownGesture.current) e.preventDefault();
       }}
       onClickCapture={(e) => {
         if (ownGesture.current) return;

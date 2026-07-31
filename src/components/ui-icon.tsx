@@ -17,6 +17,7 @@ import {
   RefreshCw,
   ScanLine,
   Search,
+  ShoppingBag,
   Trash2,
   Undo2,
   X,
@@ -55,6 +56,18 @@ const GLYPHS = {
   offline: CloudOff,
   plus: Plus,
   recipes: BookOpen,
+  /**
+   * The household's goods — the registry, `/varor`.
+   *
+   * The one glyph here that exists because another was doing too much.
+   * `allAisles` is a grid, and a grid says *layout*: it already means "every
+   * aisle at once" in the rail and "which aisle is this filed under" in the
+   * sheets. Pointed at the registry as well, one drawing carried three
+   * meanings, and the meaning it carried worst was the screen nobody could
+   * find. A bag reads as goods rather than as a layout, so `allAisles` is back
+   * to meaning only aisles.
+   */
+  registry: ShoppingBag,
   remove: Trash2,
   retry: RefreshCw,
   scan: ScanLine,

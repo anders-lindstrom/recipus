@@ -55,7 +55,10 @@ export default async function ListPage({
         actor={actor}
         members={
           actor
-            ? [{ id: actor, initials: initials(actor), color: "#c8622e" }]
+            // Same darkened terracotta as `--color-mode-buy-line`: the initials
+            // are white at 10px/700, which is nowhere near "large text", and the
+            // old #c8622e carried them at 4.01:1 against a 4.5:1 requirement.
+            ? [{ id: actor, initials: initials(actor), color: "#b4551f" }]
             : []
         }
       />

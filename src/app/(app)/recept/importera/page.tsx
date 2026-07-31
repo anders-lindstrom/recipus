@@ -1,5 +1,11 @@
 import { RecipeImport } from "@/components/recipe-import";
 
+// The layout sets a single constant "Recipus" for every route, so navigating
+// between screens announced nothing at all. A per-route title is the cheapest
+// thing that fixes it, and it is also what the tab and the PWA task switcher
+// show.
+export const metadata = { title: "Importera recept · Recipus" };
+
 /**
  * Recipe import page — also the PWA share target.
  *

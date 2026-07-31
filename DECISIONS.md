@@ -1,3 +1,58 @@
+# Varor says what it is, 2026-07-31 — read this first
+
+Three hundred and forty-six things, drawn with the same art and carrying the
+same names, appear on two screens and do opposite things. On the list they are
+tiles and a tap **buys** one. On `/varor` they are rows and a tap opens renaming,
+re-filing, splitting, merging and deleting. Neither screen said which was which.
+`/varor`'s only words about itself were "ALLA VAROR — 346".
+
+**The bag was decided and never shipped.** The note under "Two smaller ones"
+already reached the conclusion — *a bag reads as goods rather than as a layout* —
+and `list-screen.tsx` quotes that sentence in a comment while rendering
+`allAisles`, which is `LayoutGrid`. So one drawing was carrying three meanings:
+"every aisle at once" in the rail, "which aisle is this filed under" in the
+sheets, and "the household's goods" on the doors into the registry — and the
+meaning it carried worst was the screen nobody could find. The bag now exists as
+`UiIcon name="registry"` (lucide `ShoppingBag`), which puts `allAisles` back to
+meaning only aisles; both of its remaining uses are aisle uses and stay as they
+are.
+
+**A subhead, because the screen could not be worked out by trying it.** *"Era
+egna ord för allt ni brukar köpa — vad de heter, hur de ser ut och var de står.
+Inget läggs på listan härifrån."* The second sentence is the one that earns its
+place. Everything else here is discoverable by poking at it, and poking at it is
+precisely what nobody dares do while they suspect a tap might put ananas on
+tonight's shopping. It sits above the sync banner: it is what the screen IS,
+rather than how it is feeling today.
+
+**The row says its verb now, and it is still the whole row.** Shrinking the tap
+target to the glyph at the end was the obvious suggestion and it is the wrong
+trade. The question here is not "where do I tap" but "what happens when I do",
+and a 16px target answers the wrong one — while a mis-tap on this screen is
+cheap and reversible (a sheet opens; you close it), which is exactly what a
+mis-tap on the list is not. That asymmetry argues for keeping the row big and
+making the verb loud. So the mark at its end is a pencil rather than a chevron:
+the chevron is honest — this does open a detail — but it is the app's most
+neutral mark, and neutrality is what failed. A visually-hidden "Ändra" leads the
+row's accessible name, because the pencil is `aria-hidden` decoration and would
+otherwise state the promise only to people who can see it.
+
+## Verified
+
+`tsc` and `eslint` clean, 579 unit tests, and the nine `varor.spec.ts` e2e tests
+pass with the row untouched as a target — which is itself the evidence, since
+those specs click a row in its middle to reach the sheet. Two assertions added
+rather than changed: that the screen says what it is on arrival, and that a row's
+accessible name begins with the verb.
+
+## Left undone
+
+There is a third door into the registry, in `entry-sheet.tsx` — "Om ananas —
+kategori, produkter" — and it is still drawn with `allAisles`. It belongs to
+another file in flight and wants the bag for the same reason the other two do.
+
+---
+
 # Settings and "what is actually running", 2026-07-31 — read this first
 
 The household's initials sat in the header as the one thing you could not press,

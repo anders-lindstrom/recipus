@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import {
   catalogTile,
   entriesInIndexedDb,
@@ -117,7 +118,7 @@ test("plan mode records no purchase; buy mode records exactly one", async ({
   // The difference between the two modes is invisible on screen — the tile
   // leaves the zone either way — so this asserts against the purchases table,
   // which is the only place the difference exists.
-  const modePill = page.getByRole("button", { name: /Byt till/ });
+  const modePill = page.getByRole("button", { name: /byt till/i });
   await expect(modePill).toHaveText(/Planerar/);
 
   await catalogTile(page, "banan").click();
@@ -138,7 +139,7 @@ test("plan mode records no purchase; buy mode records exactly one", async ({
   // The mode survives a reload within the session — walking out of the recipe
   // screen and back mid-shop must not silently drop you into plan mode.
   await page.reload();
-  await expect(page.getByRole("button", { name: /Byt till/ })).toHaveText(
+  await expect(page.getByRole("button", { name: /byt till/i })).toHaveText(
     /Handlar/,
   );
 });
@@ -149,7 +150,7 @@ test("buy mode's long-press escape hatch records no purchase", async ({
 }) => {
   // Asserted, not assumed: if mode state ever leaked between tests this would
   // fail here rather than quietly exercising the wrong branch below.
-  const modePill = page.getByRole("button", { name: /Byt till/ });
+  const modePill = page.getByRole("button", { name: /byt till/i });
   await expect(modePill).toHaveText(/Planerar/);
   await modePill.click();
   await expect(modePill).toHaveText(/Handlar/);
@@ -227,7 +228,7 @@ test("the panel opens on what you buy most, and never drops the keyboard", async
   // So give it one real shop. `use_count` is incremented by a purchase and by
   // nothing else — not by adding, not by tapping around — which is exactly what
   // lets the panel mean "what you buy" rather than "what you last touched".
-  const modePill = page.getByRole("button", { name: /Byt till/ });
+  const modePill = page.getByRole("button", { name: /byt till/i });
   await modePill.click();
   await expect(modePill).toHaveText(/Handlar/);
 
@@ -321,4 +322,174 @@ test("a click with no press behind it does nothing, however destructive the butt
   await expect(onListTile(page, "banan")).toHaveCount(0);
   // "Ta bort" is the change-of-mind path, so it records no purchase.
   expect(await purchaseCount(listId)).toBe(0);
+});
+
+/** Is the thing with focus the dialog, or something inside it? */
+async function focusInsideDialog(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    return !!dialog && !!document.activeElement && dialog.contains(document.activeElement);
+  });
+}
+
+/**
+ * `aria-modal="true"` has to be true.
+ *
+ * The sheets declared themselves modal and then behaved like an ordinary div:
+ * opening one left focus on the trigger, so a few Tabs later a screen-reader
+ * user was reading the header behind the backdrop — a page the same markup had
+ * just told them was unreachable. None of it is visible to anyone who does not
+ * press Tab, which is why it survived twelve sheets and a design review.
+ *
+ * Driven from the keyboard throughout, because that is the only input this
+ * behaviour exists for. The "Hoppa till" sheet is the one worth using here: it
+ * opens on a plain click rather than a long-press, so the trigger keeps focus
+ * and there is something real to hand it back to.
+ */
+test("a sheet takes focus, keeps it, and gives it back", async ({
+  freshPage: page,
+}) => {
+  const trigger = page.getByRole("button", { name: "Alla avdelningar" });
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => focusInsideDialog(page)).toBe(true);
+
+  // Enough presses to walk off the end and round again — asked of the sheet
+  // rather than hardcoded, since the aisle grid grows with the household's
+  // categories and a fixed count would quietly stop testing the wrap.
+  const stops = await dialog
+    .locator('button, a[href], input, [tabindex]:not([tabindex="-1"])')
+    .count();
+  expect(stops).toBeGreaterThan(0);
+
+  for (let i = 0; i < stops + 2; i++) {
+    await page.keyboard.press("Tab");
+    expect(await focusInsideDialog(page)).toBe(true);
+  }
+  // Backwards off the first stop is the other way out, and needs its own wrap.
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press("Shift+Tab");
+    expect(await focusInsideDialog(page)).toBe(true);
+  }
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+
+  // Focus used to land on <body>, so the next Tab restarted from the top of the
+  // document — several screens from what you were doing.
+  await expect(trigger).toBeFocused();
+});
+
+/**
+ * A sheet that opens onto a field has to still have it a moment later.
+ *
+ * Two different things could take it away, and on a real phone both did. React
+ * honours `autoFocus` during the commit, so a trap that then claimed the dialog
+ * unconditionally would shut the keyboard in the frame it opened. And the
+ * long-press that opened the sheet synthesizes one last mousedown into it — the
+ * quiet sibling of the stray click above — which moved focus to whatever sat
+ * under the finger.
+ *
+ * So this is measured with a REAL touch. `page.mouse` passes it either way,
+ * which is the same reason the stray-click bug went unnoticed for so long.
+ */
+test("a sheet that opens on a field keeps that field's focus", async ({
+  freshPage: page,
+}) => {
+  // Long-pressing in the catalog is the one gesture that opens straight onto an
+  // amount, and the sheet exists to be typed into: "två mogna bananer" is one
+  // errand, not a sheet followed by a tap followed by a keyboard.
+  await longPressTile(page, catalogTile(page, "banan"));
+  await expect(page.getByRole("dialog")).toBeVisible();
+
+  await expect(page.getByLabel("Mängd")).toBeFocused();
+});
+
+/**
+ * How this shop is laid out, and how you want to read it.
+ *
+ * `lists.category_order` has been per-list since the first migration — Hemköp
+ * and Bauhaus share the household's vocabulary and nothing about their layout —
+ * but nothing in the app could edit it, so every list walked in seed order. That
+ * falls hardest on exactly the varor a household invents, because the add bar
+ * files anything new under Övrigt and Övrigt sorts last.
+ *
+ * The view is the other half and deliberately NOT the same kind of thing: the
+ * order is a fact about a shop and syncs to everyone, the choice of headings is
+ * a fact about a person and stays on the device.
+ */
+test("the walking order is editable per list, and survives a reload", async ({
+  freshPage: page,
+}) => {
+  await page.getByRole("button", { name: "Vy och ordning" }).click();
+  const sheet = page.getByRole("dialog");
+  await expect(sheet).toContainText("Ordning i E2E");
+
+  // The order is stated as positions, so "first" is a claim the test can read
+  // rather than infer from pixel geometry.
+  const rows = sheet.locator("ul li");
+  const firstAisle = (await rows.first().textContent())!.replace(/^\d+/, "").trim();
+  const secondAisle = (await rows.nth(1).textContent())!.replace(/^\d+/, "").trim();
+  expect(firstAisle).not.toBe(secondAisle);
+
+  await sheet
+    .getByRole("button", { name: `Flytta ${secondAisle} tidigare` })
+    .click();
+
+  await expect(rows.first()).toContainText(secondAisle);
+  await expect(rows.nth(1)).toContainText(firstAisle);
+
+  // It is an ordinary `update_list` op, so it reaches the server and comes back.
+  await expect.poll(() => outboxSize(page), { timeout: 8000 }).toBe(0);
+  await page.reload();
+  await expect(page.getByText("Att handla")).toBeVisible();
+  await page.getByRole("button", { name: "Vy och ordning" }).click();
+  await expect(page.getByRole("dialog").locator("ul li").first()).toContainText(
+    secondAisle,
+  );
+});
+
+test("the view choice turns aisle headings off without unsorting the list", async ({
+  freshPage: page,
+}) => {
+  // Enough varo across enough aisles that "auto" would group them: the point of
+  // the flat choice is that it overrides the count, and the point of the flat
+  // VIEW is that it keeps the walk.
+  const names = ["banan", "citron", "gurka", "tomat", "morot", "potatis", "lök", "vitlök", "äpple", "mjölk", "smör", "ost", "ägg"];
+  for (const n of names) await catalogTile(page, n).click();
+  for (const n of names) await expect(onListTile(page, n)).toHaveCount(1);
+
+  // Thirteen items is past AISLE_GROUPING_THRESHOLD, so the zone grows headings.
+  // The catalog well below is ALWAYS grouped, so the same aisle name legitimately
+  // appears twice while the zone is grouped and once when it is not — which makes
+  // the count the honest assertion here, not visibility.
+  const dairy = page.getByRole("heading", { name: "Mejeri & ägg" });
+  await expect(dairy).toHaveCount(2);
+
+  await page.getByRole("button", { name: "Vy och ordning" }).click();
+  const sheet = page.getByRole("dialog");
+  await sheet.getByRole("button", { name: "En lång lista" }).click();
+  await sheet.getByRole("button", { name: "Stäng" }).or(page.locator("body")).first().press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  // The zone's heading is gone; the well keeps its own.
+  await expect(dairy).toHaveCount(1);
+  // …and every item still there, in one grid.
+  for (const n of names) await expect(onListTile(page, n)).toHaveCount(1);
+
+  // The order is not "whatever the entry map produced": items from one aisle
+  // stay adjacent. Milk, butter, cheese and eggs are all Mejeri & ägg, so their
+  // positions in the flat grid must be consecutive.
+  const positions = await page.evaluate(() => {
+    const tiles = [...document.querySelectorAll('button[aria-pressed="true"]')];
+    return tiles.map((t) => (t.textContent || "").trim());
+  });
+  const dairyIdx = ["mjölk", "smör", "ost", "ägg"]
+    .map((n) => positions.findIndex((p) => p.startsWith(n)))
+    .sort((a, b) => a - b);
+  expect(dairyIdx[0]).toBeGreaterThanOrEqual(0);
+  expect(dairyIdx[3] - dairyIdx[0]).toBe(3);
 });

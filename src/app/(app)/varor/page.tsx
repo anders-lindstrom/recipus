@@ -3,6 +3,12 @@ import { VarorClient } from "@/components/varor-client";
 import { authenticate, AuthError } from "@/lib/auth";
 import { loadListSnapshot, loadLists } from "@/lib/services/list-data";
 
+// The layout sets a single constant "Recipus" for every route, so navigating
+// between screens announced nothing at all. A per-route title is the cheapest
+// thing that fixes it, and it is also what the tab and the PWA task switcher
+// show.
+export const metadata = { title: "Varor · Recipus" };
+
 /**
  * The registry page.
  *

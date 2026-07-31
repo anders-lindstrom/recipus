@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   Amount,
   CatalogItem,
@@ -21,10 +21,12 @@ import {
   itemsOnlyWantedByRecipe,
   shouldGroupByAisle,
   tileVaror,
+  walkingRank,
   type EntryView,
   type RecipeAdditionInfo,
 } from "@/lib/services/entries";
 import type { ShopMode } from "@/lib/client/use-mode";
+import { groupingFor, useListLayout } from "@/lib/client/use-list-layout";
 import { cn } from "@/lib/utils";
 import { useOnce } from "@/lib/client/use-once";
 import { useSustained } from "@/lib/client/use-sustained";
@@ -32,6 +34,7 @@ import { AddBar } from "./add-bar";
 import { AddDetailsSheet } from "./add-details-sheet";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
+import { ListLayoutSheet } from "./list-layout-sheet";
 import { MoveSheet } from "./move-sheet";
 import { ItemTile, SectionHeading, TileGrid } from "./item-tile";
 import {
@@ -61,12 +64,28 @@ import { UiIcon } from "./ui-icon";
  */
 
 /**
- * How long "Ångra" stays offered after a purchase.
+ * "Ångra" does not expire, and that is the whole point.
  *
- * Longer than the toast it replaces, because it costs nothing to leave up: it
- * sits in the heading's own row rather than floating over the controls.
+ * It used to sit in the "Att handla" heading and vanish after eight seconds, and
+ * an audit of a real shopping trip found what that costs. Ticking an item from a
+ * later aisle — which is what mid-shop looks like — rendered the only undo 702px
+ * above the viewport, most of a screen out of sight, and it was gone before
+ * anyone scrolled up to look. So the shopper does the obvious thing instead:
+ * finds the item in the catalog and taps it back on. That restores the item but
+ * NOT the truth — `add_item` only retracts a purchase when handed the
+ * `undoesClientOpId` that `undoLastBuy` alone passes — so the row stands and the
+ * cadence engine learns from a purchase that never happened.
+ *
+ * That is the one thing `use-mode.ts` promises cannot happen: "you under-record
+ * purchases, you never invent one". In the single most likely accident in a
+ * moving shopper's hand, the app invented one.
+ *
+ * A timer is the wrong instrument for an undo whose entire job is to catch a
+ * mistake you have not noticed yet — it expires exactly when it is needed. So
+ * there is none. The offer stands until it is used, replaced by the next removal,
+ * or dismissed, and it says which item it will undo so a stale one is ignorable
+ * rather than confusing.
  */
-const UNDO_WINDOW_MS = 8000;
 
 export interface ListScreenActions {
   /**
@@ -115,6 +134,12 @@ export interface ListScreenActions {
   restoreSuggestion: (catalogItemId: Id) => void;
   openScanner: () => void;
   switchList: () => void;
+  /**
+   * The list's walking order, sent WHOLE. It is one value under one clock, so a
+   * partial order would let last-write-wins settle on a sequence neither person
+   * arranged. See `moveCategory`.
+   */
+  setCategoryOrder: (categoryOrder: Id[]) => void;
 }
 
 export interface ListScreenProps {
@@ -179,6 +204,7 @@ export function ListScreen({
   const [moving, setMoving] = useState<Id | null>(null);
   /** A catalog item being given details before it goes on the list. */
   const [addingDetails, setAddingDetails] = useState<Id | null>(null);
+  const [layoutOpen, setLayoutOpen] = useState(false);
   /**
    * Suggestions dismissed on THIS device since the last hydrate.
    *
@@ -194,15 +220,7 @@ export function ListScreen({
     id: Id;
     name: string;
   } | null>(null);
-  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressHint = useOnce("recipus:hint:longpress");
-
-  useEffect(
-    () => () => {
-      if (undoTimer.current) clearTimeout(undoTimer.current);
-    },
-    [],
-  );
 
   // Ops normally drain in tens of milliseconds. Only say anything once one has
   // been waiting long enough that the delay is the story.
@@ -262,9 +280,10 @@ export function ListScreen({
    */
   function remove(id: Id, name: string, bought: boolean) {
     const clientOpId = actions.removeItem(id, bought);
-    if (undoTimer.current) clearTimeout(undoTimer.current);
+    // Replaces whatever was on offer. One strip, always the most recent removal:
+    // a stack of them would be chrome in the thumb zone, and the mistake people
+    // actually make is on the tap they just made.
     setUndoable({ id, name, clientOpId, bought });
-    undoTimer.current = setTimeout(() => setUndoable(null), UNDO_WINDOW_MS);
   }
 
   function undoLastBuy() {
@@ -273,19 +292,33 @@ export function ListScreen({
     // retract the purchase the removal recorded. Re-adding alone left "bought"
     // permanently including things the user had just said they had not bought.
     actions.addItem(undoable.id, undefined, undoable.clientOpId);
-    if (undoTimer.current) clearTimeout(undoTimer.current);
     setUndoable(null);
   }
 
-  const grouped = shouldGroupByAisle(live.length);
+  // The household's own choice, falling back to the rule that shipped before
+  // there was one — so a list nobody has configured looks exactly as it did.
+  const { layout, setLayout } = useListLayout();
+  const grouped = groupingFor(layout, shouldGroupByAisle(live.length));
 
-  // Urgent first, convenient last — and crucially WITHIN whatever grouping is
-  // already in force, so aisle walking order survives. A stable sort keeps
-  // everything else exactly where it was, which is what makes the reordering
-  // read as emphasis rather than as the list rearranging itself.
+  // Walking order first, urgency second — and that order of tie-breaks is the
+  // whole argument. Sorting urgency across aisles would trade a useful signal
+  // for the far more useful one of not walking back across the shop, so urgent
+  // rises WITHIN an aisle and never out of it.
+  //
+  // The aisle sort used to be implicit: the grouped view got it from
+  // `groupByCategory` and the flat view did not get it at all, so turning
+  // headings off left the tiles in whatever order the entry map happened to
+  // produce. Sorting here gives both views the same sequence and makes "one long
+  // list" mean "the same walk, without the headings" rather than "unordered".
+  const aisleRank = walkingRank(list.categoryOrder);
   const toBuyTiles = live
     .slice()
     .sort((a, b) => {
+      const ai = byId.get(a.catalogItemId);
+      const bi = byId.get(b.catalogItemId);
+      const byAisle =
+        aisleRank(ai?.categoryId ?? "") - aisleRank(bi?.categoryId ?? "");
+      if (byAisle !== 0) return byAisle;
       const av = views.get(a.catalogItemId);
       const bv = views.get(b.catalogItemId);
       return av && bv ? byPriority(av, bv) : 0;
@@ -396,28 +429,52 @@ export function ListScreen({
         )}
       >
         <div className="flex h-12 items-center gap-1 px-3">
-          <button
-            type="button"
-            onClick={actions.switchList}
-            className="-ml-1 flex items-center gap-1 rounded-control px-1 py-1"
-          >
-            <span className="text-title text-ink">{list.name}</span>
-            <UiIcon name="chevronDown" size={16} className="text-ink-faint" />
-          </button>
+          {/* The list's name is this screen's heading as well as the way to
+              switch lists, and it had been neither — a styled span in a button,
+              with no <h1> anywhere on the page for a screen reader to orient by.
+              The heading wraps the control rather than replacing it, so the
+              switcher is untouched and the type scale does not move. */}
+          <h1 className="min-w-0">
+            <button
+              type="button"
+              onClick={actions.switchList}
+              className="-ml-1 flex min-h-11 items-center gap-1 rounded-control px-1 py-1"
+            >
+              <span className="truncate text-title text-ink">{list.name}</span>
+              <UiIcon
+                name="chevronDown"
+                size={16}
+                className="flex-none text-ink-faint"
+              />
+            </button>
+          </h1>
 
           <div className="flex-1" />
 
           <button
             type="button"
             onClick={() => onModeChange(mode === "buy" ? "plan" : "buy")}
+            // The accessible name STARTS with the visible word. It used to be only
+            // "Byt till planeringsläge", which does not contain the label the
+            // button actually shows — so a speech-input user saying "tryck
+            // Handlar" got nothing at all (WCAG 2.5.3 Label in Name, Level A),
+            // and everyone else got the classic toggle ambiguity of a control
+            // whose name describes the state it is NOT in.
             aria-label={
-              mode === "buy" ? "Byt till planeringsläge" : "Byt till handla-läge"
+              mode === "buy"
+                ? "Handlar — byt till planeringsläge"
+                : "Planerar — byt till handla-läge"
             }
             className={cn(
               "mr-1 flex h-8 flex-none items-center gap-1.5 rounded-full px-2.5",
               "text-caption font-semibold transition-colors duration-150",
               mode === "buy"
-                ? "bg-mode-buy-line text-white"
+                // `text-on-brand`, not a hardcoded white. White on the buy line
+                // measured 2.65:1 in dark mode against a 4.5:1 requirement — the
+                // colour system was already right and this was the one surface
+                // not using it. See `--color-mode-buy-line` in globals.css, which
+                // the light half of the same fix darkens.
+                ? "bg-mode-buy-line text-on-brand"
                 : "border border-line text-ink-soft",
             )}
           >
@@ -435,7 +492,12 @@ export function ListScreen({
           <Link
             href="/installningar"
             aria-label="Inställningar"
-            className="ml-1 flex flex-none items-center"
+            // The avatars stay 24px; the box around them does not. Measured at
+            // 18×24 — the smallest target in the app, on the only way into
+            // settings — against WCAG 2.2's 24×24 floor and the 44px this app
+            // uses everywhere a thumb is expected. Padding rather than a bigger
+            // glyph, so the header's density is unchanged.
+            className="-mr-1 ml-1 flex min-h-11 min-w-11 flex-none items-center justify-center px-1"
           >
             {members.map((m) => (
               <span
@@ -578,17 +640,21 @@ export function ListScreen({
         <SectionHeading
           id={aisleAnchorId("__top__")}
           count={live.length > 0 ? live.length : undefined}
+          // In the slot the undo vacated, and next to the thing it governs
+          // rather than up in a header that is already full. The order of the
+          // aisles is the single highest-value edit on this screen — everything
+          // the add bar invents starts in Övrigt, which sorts last — and until
+          // now there was no way to make it anywhere in the app.
           action={
-            undoable && (
-              <button
-                type="button"
-                onClick={undoLastBuy}
-                className="flex items-center gap-1 rounded-full bg-brand-tint px-2.5 py-1 text-caption font-semibold text-brand-ink normal-case"
-              >
-                <UiIcon name="undo" size={13} />
-                {undoable.bought ? "Ångra köp" : "Ångra"} {undoable.name}
-              </button>
-            )
+            <button
+              type="button"
+              onClick={() => setLayoutOpen(true)}
+              aria-label="Vy och ordning"
+              className="-mr-1 flex h-8 items-center gap-1 rounded-full px-2 text-caption font-semibold text-ink-soft normal-case"
+            >
+              <UiIcon name="allAisles" size={14} />
+              Ordning
+            </button>
           }
         >
           Att handla
@@ -750,6 +816,47 @@ export function ListScreen({
         ))}
       </section>
 
+      {/* Undo, in the thumb arc.
+
+          This is not the toast that was taken out. That one floated bottom-centre
+          ON TOP of the entry sheet's own buttons, so the confirmation for tap
+          three covered the control you wanted for tap four. This sits at z-30,
+          UNDER every sheet's z-50 backdrop, so it cannot cover a control in the
+          one situation that mattered — and it announces nothing, it only offers
+          the retraction. The scan button below is the app's proof that the bottom
+          of the screen is where a shopper's thumb already is; this is the same
+          reasoning applied to the one control that repairs a mistake.
+
+          Cleared to the left of the scan button rather than layered under it: a
+          44px target half-covered by a 56px circle is a 44px target you miss. */}
+      {undoable && (
+        <div className="safe-bottom fixed inset-x-0 bottom-0 z-30 px-3 pb-3">
+          <div className="mr-[4.75rem] flex items-center gap-1 rounded-card border border-line bg-surface-raised pl-3 shadow-lg shadow-black/20">
+            <button
+              type="button"
+              onClick={undoLastBuy}
+              className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-left text-body font-semibold text-brand-ink"
+            >
+              <UiIcon name="undo" size={16} className="flex-none" />
+              <span className="truncate">
+                {undoable.bought ? "Ångra köp" : "Ångra"} — {undoable.name}
+              </span>
+            </button>
+            {/* Dismissible, because without a timer the offer would otherwise
+                outstay its welcome — and dismissing is the user saying "yes, I
+                meant that", which no timeout can tell you. */}
+            <button
+              type="button"
+              onClick={() => setUndoable(null)}
+              aria-label="Stäng ångra"
+              className="flex h-11 w-11 flex-none items-center justify-center rounded-full text-ink-faint"
+            >
+              <UiIcon name="close" size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
       <button
         type="button"
         onClick={actions.openScanner}
@@ -851,6 +958,17 @@ export function ListScreen({
             remove(openItem.id, openItem.name, false);
             setOpenEntry(null);
           }}
+        />
+      )}
+
+      {layoutOpen && (
+        <ListLayoutSheet
+          list={list}
+          categories={categories}
+          layout={layout}
+          onLayoutChange={setLayout}
+          onOrderChange={actions.setCategoryOrder}
+          onClose={() => setLayoutOpen(false)}
         />
       )}
 

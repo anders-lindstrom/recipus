@@ -4,6 +4,12 @@ import { SettingsHintReset } from "@/components/settings-hint-reset";
 import { authenticate, AuthError } from "@/lib/auth";
 import { commitUrl, formatBuildTime, getBuildInfo } from "@/lib/version";
 
+// The layout sets a single constant "Recipus" for every route, so navigating
+// between screens announced nothing at all. A per-route title is the cheapest
+// thing that fixes it, and it is also what the tab and the PWA task switcher
+// show.
+export const metadata = { title: "Inställningar · Recipus" };
+
 /**
  * Settings, and the answer to "what is actually running".
  *

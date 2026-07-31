@@ -105,6 +105,11 @@ export function ItemTile({
     <button
       type="button"
       aria-pressed={onList}
+      // Announces that there is a second tier here at all. Its only other
+      // advertisement is a hint that waits for a third item, is dismissible, and
+      // is then said once ever per device — which is nothing for anyone who is
+      // not looking at the screen.
+      aria-haspopup={onLongPress ? "dialog" : undefined}
       className={cn(
         "group relative flex min-h-[92px] flex-col items-center justify-start",
         "rounded-tile border px-1.5 pt-3 pb-2.5 text-center",
@@ -133,7 +138,47 @@ export function ItemTile({
       onPointerUp={cancel}
       onPointerCancel={cancel}
       onPointerLeave={cancel}
-      onContextMenu={(e) => e.preventDefault()}
+      /*
+       * The second tier had NO keyboard route at all, and that is a Level A
+       * failure rather than a rough edge.
+       *
+       * Amount, sort, priority, moving a vara and — the one the README calls
+       * load-bearing — "ta bort, köpte inte" all live behind a 500ms hold bound
+       * to pointer events only. Enter and Space activate the button, which
+       * *removes the item and records a purchase*, so the keyboard could reach
+       * the destructive half of this tile and not the corrective half. Audited
+       * with Enter, Space, ContextMenu, Shift+F10 and Alt+Enter on a focused
+       * tile: zero dialogs opened. WCAG 2.1.1 Keyboard, Level A.
+       *
+       * Both platform conventions for "more about this", so it works on a
+       * keyboard that has the menu key and on one that does not. `aria-haspopup`
+       * below is what makes it discoverable rather than merely present — without
+       * it the tier is announced nowhere at all.
+       */
+      onKeyDown={(e) => {
+        if (!onLongPress) return;
+        if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
+        e.preventDefault();
+        cancel();
+        onLongPress();
+      }}
+      /*
+       * Right-click opens it too, and used to be swallowed outright.
+       *
+       * `preventDefault` is still needed — it is what stops a touch long-press
+       * raising the browser's own menu over the sheet the hold just opened — but
+       * suppressing the gesture and then offering nothing in its place left the
+       * most conventional "more options" affordance on a desktop pointing at
+       * nothing. The guard is for the touch case, where the 500ms timer has
+       * already fired by the time the platform synthesizes this.
+       */
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (!onLongPress || longPressed.current) return;
+        longPressed.current = true;
+        cancel();
+        onLongPress();
+      }}
     >
       {fromRecipe && (
         <span

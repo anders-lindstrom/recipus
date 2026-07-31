@@ -26,13 +26,19 @@ cp .env.example .env          # DATABASE_URL, PROXY_AUTH_SECRET, DEV_AUTH_USER
 
 pnpm install
 pnpm db:migrate               # drizzle-migrationer
-pnpm db:seed                  # 19 kategorier, 341 svenska varor, en startlista
+pnpm db:seed                  # 19 kategorier, 341 svenska varor, en startlista med 6 på
 pnpm icons:build              # valfritt: hämtar OpenMoji-sprite (annars systememoji)
 pnpm dev
 ```
 
 I produktion seedas katalogen om vid varje start (`src/instrumentation.ts`), så
 `pnpm db:seed` är bara till för utveckling.
+
+Startlistans varor läggs bara dit av den körning som skapar själva listan.
+Seedningen kör vid varje serverstart, och att fylla på en lista som råkar vara
+tom skulle lägga tillbaka det hushållet redan bockat av — så en tömd startlista
+förblir tom, även om du kör `pnpm db:seed` igen. Vill du ha dem tillbaka lokalt:
+ta bort raden i `lists` och seeda om.
 
 ```bash
 pnpm test                     # 361 tester — motorerna är testdrivna

@@ -51,6 +51,16 @@ export interface AisleRailProps {
   aisles: Aisle[];
 }
 
+/*
+ * Every control on this rail clears 44px, and that is a floor rather than a
+ * preference.
+ *
+ * An in-store audit measured the chips at 38px and the "alla avdelningar" button
+ * at 36px. This is the "where am I in this shop" control — it is used while
+ * moving, one-handed, with a basket in the other hand — which is exactly the
+ * condition under which a target below the minimum starts costing you taps. The
+ * text stays the same size; only the touchable box grows.
+ */
 export function AisleRail({ aisles }: AisleRailProps) {
   const [active, setActive] = useState<string>(TOP);
   /**
@@ -178,7 +188,7 @@ export function AisleRail({ aisles }: AisleRailProps) {
           onClick={() => jump(TOP)}
           aria-current={shown === TOP ? "true" : undefined}
           className={cn(
-            "flex flex-none items-center gap-1 rounded-full py-1.5 pr-3 pl-2 text-caption font-semibold transition-colors duration-150",
+            "flex min-h-11 flex-none items-center gap-1 rounded-full py-1.5 pr-3 pl-2 text-caption font-semibold transition-colors duration-150",
             shown === TOP
               ? "bg-brand text-on-brand"
               : "border border-line text-ink-soft",
@@ -209,7 +219,7 @@ export function AisleRail({ aisles }: AisleRailProps) {
                   aria-current={isActive ? "true" : undefined}
                   onClick={() => jump(aisle.id)}
                   className={cn(
-                    "flex-none rounded-full px-3 py-1.5 text-caption font-semibold whitespace-nowrap transition-colors duration-150",
+                    "flex min-h-11 flex-none items-center rounded-full px-3 py-1.5 text-caption font-semibold whitespace-nowrap transition-colors duration-150",
                     isActive
                       ? "bg-brand text-on-brand"
                       : "border border-line text-ink-soft",
@@ -242,7 +252,7 @@ export function AisleRail({ aisles }: AisleRailProps) {
           type="button"
           onClick={() => setPicking(true)}
           aria-label="Alla avdelningar"
-          className="flex h-9 w-9 flex-none items-center justify-center rounded-full border border-line text-ink-soft"
+          className="flex h-11 w-11 flex-none items-center justify-center rounded-full border border-line text-ink-soft"
         >
           <UiIcon name="allAisles" size={16} />
         </button>

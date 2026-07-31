@@ -266,6 +266,65 @@ export function groupByCategory<T>(
 }
 
 /**
+ * Where a category falls in this list's walk round the shop.
+ *
+ * Returns a rank, and anything the order does not name ranks last — the same
+ * rule `groupByCategory` already applies, stated once so the flat view and the
+ * grouped view cannot drift apart. A newly seeded category should turn up
+ * somewhere sane rather than at the front of a shop it has never been in.
+ */
+export function walkingRank(categoryOrder: Id[]): (categoryId: Id) => number {
+  const rank = new Map(categoryOrder.map((id, i) => [id, i]));
+  return (categoryId) => rank.get(categoryId) ?? Number.MAX_SAFE_INTEGER;
+}
+
+/**
+ * Every category, in this list's walking order, with the unnamed ones after.
+ *
+ * The order editor needs the whole set rather than just the ordered part: a
+ * category missing from `category_order` is precisely the one you have opened
+ * the editor to place, and leaving it out would make it unreachable.
+ */
+export function orderedCategories<T extends { id: Id }>(
+  categories: T[],
+  categoryOrder: Id[],
+): T[] {
+  const rank = walkingRank(categoryOrder);
+  return categories
+    .slice()
+    .sort((a, b) => rank(a.id) - rank(b.id) || a.id.localeCompare(b.id, "sv"));
+}
+
+/**
+ * Move one category up or down the walk, and return the WHOLE order.
+ *
+ * Whole, because `lists.category_order` is one value under one clock: sending a
+ * partial order would let last-write-wins settle on a sequence neither person
+ * arranged. And it is rebuilt from the full category set rather than from the
+ * stored array, so a list whose order predates a newly seeded category comes
+ * back complete instead of quietly dropping it to the end for ever.
+ *
+ * Buttons rather than drag-and-drop upstream of this: a drag inside a vertically
+ * scrolling sheet on a touchscreen is a fight, and it has no keyboard equivalent
+ * at all.
+ */
+export function moveCategory(
+  order: Id[],
+  categoryId: Id,
+  direction: -1 | 1,
+): Id[] {
+  const from = order.indexOf(categoryId);
+  if (from < 0) return order;
+  const to = from + direction;
+  // Off either end is a no-op, not a wrap. Wrapping would send the first aisle
+  // to the back of the shop on a mis-tap.
+  if (to < 0 || to >= order.length) return order;
+  const next = order.slice();
+  [next[from], next[to]] = [next[to], next[from]];
+  return next;
+}
+
+/**
  * Whether the "att handla" zone should switch from a flat grid to aisle groups.
  *
  * A five-item list does not need aisle headers — they cost more vertical space

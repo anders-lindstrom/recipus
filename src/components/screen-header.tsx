@@ -38,9 +38,14 @@ export function ScreenHeader({
         >
           <UiIcon name="back" size={22} />
         </Link>
-        <span className="min-w-0 flex-1 truncate text-title text-ink">
+        {/* An <h1>, not a styled span. No screen in the app had a top-level
+            heading, so a screen-reader user landing on one of these had nothing
+            to orient by and no way to jump to the content — and `document.title`
+            was the constant "Recipus" on every route, so navigating announced
+            nothing either. The type scale is unchanged; only the element is. */}
+        <h1 className="min-w-0 flex-1 truncate text-title text-ink">
           {title}
-        </span>
+        </h1>
         {action}
       </div>
     </header>

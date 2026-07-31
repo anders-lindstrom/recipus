@@ -204,6 +204,23 @@ export function VarorScreen({
         backLabel="Till handlingslistan"
       />
 
+      {/* What the screen is, said on the screen.
+          Nothing said it, and the silence was expensive. The same three hundred
+          things, with the same pictures and the same names, are tiles on the
+          list — where a tap BUYS one — and rows here, where a tap opens a sheet
+          that renames, re-files, splits, merges and deletes. Same object, same
+          art, opposite verb, and the only words this screen had about itself
+          were the heading "ALLA VAROR" and a count.
+          The second sentence is the one that earns its place. Everything else
+          here can be worked out by trying it, and trying it is exactly what
+          nobody dares do while they suspect a tap might put ananas on tonight's
+          shopping. It sits above the sync banner because it is what the screen
+          IS rather than how it is feeling today. */}
+      <p className="mx-3 mt-3 text-body-sm text-ink-soft">
+        Era egna ord för allt ni brukar köpa — vad de heter, hur de ser ut och
+        var de står. Inget läggs på listan härifrån.
+      </p>
+
       {/* Same shape and same wording as the list screen's banner, because being
           offline means the same thing here: the edit landed, and it is queued.
           A raised card with a warn accent rather than a warn-tinted strip — that
@@ -492,10 +509,27 @@ export function VarorScreen({
 /**
  * The vara rows themselves.
  *
- * A row says three things and stops: what it is called, how much hangs off it,
- * and whether it is on the list right now. The counts are what make the second
- * level discoverable at all — nothing else on the screen hints that "mjölk" has
- * three products under it.
+ * A row says four things and stops: what it is called, how much hangs off it,
+ * whether it is on the list right now, and what tapping it will do. The counts
+ * are what make the second level discoverable at all — nothing else on the
+ * screen hints that "mjölk" has three products under it.
+ *
+ * The whole row is the tap target, and shrinking it to the glyph at the end was
+ * considered and rejected. The confusion this screen suffers from is not "where
+ * do I tap" but "what happens when I do", and a 16px target answers the wrong
+ * question at the cost of the right-sized one — while a mis-tap here is cheap
+ * and reversible (a sheet opens, you close it), unlike a mis-tap on the list,
+ * where the same picture and the same name mean *buy this*. That asymmetry is
+ * the argument for keeping the row big and making the verb loud instead.
+ *
+ * So the glyph is a pencil rather than a chevron. A chevron is honest — this
+ * does open a detail — but it is the app's most neutral mark, and neutrality is
+ * precisely what failed: it says "there is more this way" on a screen whose
+ * whole problem was that people could not tell adding from editing. The pencil
+ * is the app's own mark for "this changes the thing", stated once per row at
+ * the moment of the tap. The visually-hidden verb is its other half: the pencil
+ * is aria-hidden decoration, so without it the promise exists only for people
+ * who can see it.
  */
 function VaraRows({
   varor,
@@ -528,6 +562,7 @@ function VaraRows({
               onClick={() => onOpen(vara.item.id)}
               className="flex w-full items-center gap-3 py-2.5 text-left transition-transform duration-100 active:scale-[0.99]"
             >
+              <span className="sr-only">Ändra</span>
               <ItemIcon iconRef={vara.item.iconRef} className="text-2xl" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-body font-semibold text-ink">
@@ -553,11 +588,7 @@ function VaraRows({
                 </span>
               )}
 
-              <UiIcon
-                name="chevronDown"
-                size={16}
-                className="-rotate-90 flex-none text-ink-faint"
-              />
+              <UiIcon name="edit" size={16} className="flex-none text-ink-faint" />
             </button>
           </li>
         );

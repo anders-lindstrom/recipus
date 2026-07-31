@@ -1,8 +1,9 @@
 import { pathToFileURL } from "node:url";
 import { eq, sql } from "drizzle-orm";
 import { db } from "./index";
-import { catalogItems, categories, lists, users } from "./schema";
-import { CATALOG_ITEMS, CATEGORIES } from "./seed-data";
+import { catalogItems, categories, listEntries, lists, users } from "./schema";
+import { CATALOG_ITEMS, CATEGORIES, STARTER_ITEMS } from "./seed-data";
+import { entryId } from "@/lib/domain";
 import { normalizeName, slugify } from "@/lib/utils";
 
 /**
@@ -14,6 +15,11 @@ import { normalizeName, slugify } from "@/lib/utils";
  * are deliberately NOT overwritten on conflict. Re-running this to pick up new
  * seed items must never reset the catalog's learned ordering or un-flag a
  * staple you told it about.
+ *
+ * The starter list's CONTENTS are the one thing here that is not an upsert, and
+ * the reason is written where they are inserted: what is on a list is the
+ * household's, so the seed may write it exactly once, on the run that creates
+ * the list, and never again.
  *
  * That idempotence is what lets this run on every server boot in production
  * (src/instrumentation.ts) rather than being a one-off someone has to remember
@@ -28,6 +34,9 @@ import { normalizeName, slugify } from "@/lib/utils";
  * Authelia user literally called `system` would defeat the guard below.
  */
 export const SEED_ACTOR = "system";
+
+/** The list the seed creates, and the only one it ever puts anything on. */
+const STARTER_LIST_ID = "hemkop";
 
 /**
  * Upsert one seeded catalog item, leaving anything a human has touched alone.
@@ -119,18 +128,71 @@ export async function seed() {
 
   // A first list, so a fresh install opens on something usable rather than an
   // empty-state screen asking you to name things before you can shop.
-  console.log("Seeding starter list…");
-  await db
+  const createdList = await db
     .insert(lists)
     .values({
-      id: "hemkop",
+      id: STARTER_LIST_ID,
       name: "Hemköp",
       icon: "1F6D2", // 🛒
       position: 0,
       categoryOrder: CATEGORIES.map((c) => c.slug),
       updatedBy: SEED_ACTOR,
     })
-    .onConflictDoNothing();
+    .onConflictDoNothing()
+    .returning({ id: lists.id });
+
+  /**
+   * Entries land only when THIS run is what created the list.
+   *
+   * The obvious guard — "seed entries when the list has none" — is wrong, and
+   * wrong in a way that only surfaces a month later. Ticking an item off is a
+   * soft delete (`list_entries.removed_at`), but `pruneRetention` hard-deletes
+   * tombstones once they are past the retention window, so a household that
+   * cleared the starter items in week one has genuinely zero rows by week five.
+   * That guard would put the whole starter list back on their list at the next
+   * deploy — a seed that runs on every boot (src/instrumentation.ts) must never
+   * resurrect something a person deliberately removed.
+   *
+   * Whether the insert above created the row is a fact that cannot drift: it is
+   * true exactly once in a database's life, and it needs no extra query. It also
+   * settles two containers booting at once for free, since only one of them can
+   * win the insert.
+   *
+   * Known gap, stated rather than papered over: if the household DELETES the
+   * starter list and the prune later removes its tombstone, the list itself
+   * already came back on the next boot before this change, and now it comes back
+   * with varor on it. The resurrected list is the pre-existing bug; the items are
+   * only riding along, and fixing it needs a tombstone the prune keeps.
+   */
+  if (createdList.length > 0) {
+    await db
+      .insert(listEntries)
+      .values(
+        STARTER_ITEMS.map((name) => {
+          const catalogItemId = slugify(name);
+          return {
+            id: entryId(STARTER_LIST_ID, catalogItemId),
+            listId: STARTER_LIST_ID,
+            catalogItemId,
+            createdBy: SEED_ACTOR,
+            updatedBy: SEED_ACTOR,
+          };
+        }),
+      )
+      // Somebody adding mjölk in the milliseconds between the two inserts would
+      // otherwise fail the whole seed on the unique (list, item) constraint.
+      // Adding, never overwriting, is the only thing this is allowed to do.
+      .onConflictDoNothing();
+  }
+
+  // Said after the fact rather than before it. The previous "Seeding starter
+  // list…" announced work that consisted of one empty list row, so a fresh
+  // database reported success and then opened on "Listan är tom".
+  console.log(
+    createdList.length > 0
+      ? `Seeded starter list with ${STARTER_ITEMS.length} varor.`
+      : "Starter list already exists — left untouched.",
+  );
 
   // The dev user, so a local run without Authelia in front has an identity to
   // attribute changes to.

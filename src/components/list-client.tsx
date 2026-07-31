@@ -112,7 +112,6 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
 
   const listId = snapshot?.list.id ?? cached?.listId ?? null;
   const effectiveActor = actor ?? cached?.actor ?? null;
-  const list = snapshot?.list ?? cached?.list ?? null;
   const categories = snapshot?.categories ?? cached?.categories ?? [];
   // Memoised, not a bare `?? {}`: that allocates a fresh object every render,
   // so the useMemo below would recompute on every render and never memoise
@@ -131,6 +130,28 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     effectiveActor ?? "__none__",
     snapshot ?? undefined,
   );
+
+  /**
+   * The list as the STORE has it, falling back to the render the server sent.
+   *
+   * It used to read `snapshot.list` and nothing else, which was fine while the
+   * only editable thing about a list was its name — and stopped being fine the
+   * moment the walking order became editable. `update_list` is applied
+   * optimistically into `state` like every other op, so reading the frozen
+   * snapshot here meant re-ordering the aisles did nothing visible until a
+   * reload: the op was in flight, the server had it, and the screen was still
+   * rendering the order it was born with. It also meant a partner's re-order
+   * arriving over SSE was applied to the store and never drawn.
+   *
+   * The fallbacks stay for the two states where the store has no row yet: the
+   * very first paint before hydrate, and an offline launch rendering from the
+   * cached shell.
+   */
+  const list =
+    (listId ? state.lists[listId] : undefined) ??
+    snapshot?.list ??
+    cached?.list ??
+    null;
 
   // Titles come from the snapshot; scale factors from live state, so a recipe
   // added since hydration still labels its tiles correctly.
@@ -314,6 +335,19 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
       setScanning(true);
     },
     switchList: () => setSwitching(true),
+    /**
+     * The walk round this shop, as an ordinary `update_list` patch.
+     *
+     * Whole rather than a move instruction, and that is forced by the clock:
+     * `category_order` is one jsonb value with one last-write-wins timestamp, so
+     * "put mejeri before bröd" would have to READ the order it rewrites, and a
+     * read-modify-write cannot be order-independent — two people tidying the
+     * same shop would settle on a sequence neither of them arranged. Naming the
+     * whole order makes the op a statement rather than an instruction, which is
+     * the same reason `move_item` carries its own payload.
+     */
+    setCategoryOrder: (categoryOrder: Id[]) =>
+      dispatch({ kind: "update_list", listId, patch: { categoryOrder } }),
   };
 
   async function handleScan(ean: string) {

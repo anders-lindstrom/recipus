@@ -164,6 +164,12 @@ test("a scanned product is placed on a vara from the review queue", async ({
 
   await page.goto(`/varor?list=${listId}`);
 
+  // What the screen is, before anything else on it. The same things, with the
+  // same pictures and the same names, are tiles on the list — where a tap BUYS
+  // one — and rows here, where a tap edits. The screen said nothing at all
+  // about which of the two it was, and this is the sentence that says it.
+  await expect(page.getByText(/Inget läggs på listan härifrån/)).toBeVisible();
+
   // The debt is advertised rather than tucked away — the entire argument for
   // the queue being prominent is that these purchases are already recorded and
   // are simply not counted yet.
@@ -189,9 +195,15 @@ test("a scanned product is placed on a vara from the review queue", async ({
   await expect(queueRow).toHaveCount(0);
   // …and the vara now says so, which is the only thing on the screen that makes
   // the second level discoverable at all.
-  await expect(
-    page.getByRole("button", { name: new RegExp(varaName) }),
-  ).toContainText("1 produkt");
+  const varaRow = page.getByRole("button", { name: new RegExp(varaName) });
+  await expect(varaRow).toContainText("1 produkt");
+
+  // And the row states its verb before it states the name. The whole row stays
+  // the tap target — the specs below click one in its middle and get the sheet —
+  // so the thing that had to change was what it promises, not its size. The
+  // pencil that carries the promise visually is aria-hidden decoration, which is
+  // why the word itself has to be in the accessible name.
+  await expect(varaRow).toHaveAccessibleName(/^Ändra\b/);
 
   // A mis-tap here sends a product under the wrong word and it vanishes from the
   // queue with no trace, so the safety valve has to actually work rather than

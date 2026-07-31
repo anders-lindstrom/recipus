@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { Amount, CatalogItem, Id, Recipe } from "@/lib/domain";
 import { probablyStillHave, type CadenceStats } from "@/lib/cadence";
+import { useFocusTrap } from "@/lib/client/use-focus-trap";
 import { useFridgeGuess } from "@/lib/client/use-fridge-guess";
 import { formatAmount, scaleAmount } from "@/lib/units";
 import { cn } from "@/lib/utils";
@@ -128,8 +129,27 @@ export function RecipeAddSheet({
     });
   }
 
+  /**
+   * This is a modal too, and it had been getting away with not saying so.
+   *
+   * It is full-bleed rather than a bottom sheet, so it looks like a screen and
+   * was written like one: no role, no `aria-modal`, and — the part you notice
+   * without a screen reader — no Escape. Every other surface in the app that
+   * covers the page closes on Escape, and this one, the only one that can put a
+   * dozen varor on a list, did not. Sharing the trap makes it behave like its
+   * siblings and announce itself as what it is.
+   */
+  const dialogRef = useFocusTrap<HTMLDivElement>(onCancel);
+
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-surface">
+    <div
+      ref={dialogRef}
+      className="fixed inset-0 z-50 flex flex-col bg-surface outline-none"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Lägg till ${recipe.title} i ${listName}`}
+      tabIndex={-1}
+    >
       <div className="safe-top flex-none border-b border-line bg-surface">
         <div className="flex h-12 items-center gap-2 px-2">
           <span className="flex-1 truncate pl-2 text-title text-ink">

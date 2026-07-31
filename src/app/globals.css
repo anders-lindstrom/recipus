@@ -67,7 +67,14 @@
    */
   --color-mode-buy-wash: #fae4d8;
   --color-mode-buy-ink: #9c4318;
-  --color-mode-buy-line: #c8622e;
+  /*
+   * Darkened from #c8622e, which was a hair too light to carry white text: 4.01:1
+   * against the 4.5:1 the mode pill needs at 16px/600. The colour system is
+   * otherwise solved — 24 of 26 measured text pairs pass AA in both schemes — and
+   * both failures were on this one surface. This is 4.93:1 with `on-brand`, and
+   * the dark half (#e08a4e with near-black ink) is 7.04:1.
+   */
+  --color-mode-buy-line: #b4551f;
 
   /* One radius system. Interactive pills are the only full-round shape. */
   --radius-control: 10px;

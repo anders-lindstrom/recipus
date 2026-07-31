@@ -217,28 +217,43 @@ export function RecipeImport({ initialUrl, initialText }: RecipeImportProps) {
           </button>
         </form>
 
-        {status === "error" && (
-          <div className="mt-5 rounded-card border border-line bg-danger-tint p-4">
-            <div className="flex items-start gap-2.5">
-              <UiIcon
-                name="warning"
-                size={18}
-                className="mt-0.5 flex-none text-danger"
-              />
-              <p className="flex-1 text-body font-semibold text-danger">
-                {error}
-              </p>
+        {/* A live region that is always mounted, holding a card that is not.
+            The failure is otherwise completely silent to a screen reader: focus
+            stays on the submit button, whose label simply flips back from
+            "Hämtar receptet…" to "Importera", which says nothing about whether
+            the import worked — and this screen is reached by sharing a link
+            from another app, so it is often the first thing the app ever says.
+
+            Empty and unstyled until there is something to say, so it takes no
+            space. The region has to exist BEFORE the text does: a live region
+            inserted together with its own content is a coin flip across screen
+            readers, and this one is a failure, which is the worst thing to
+            drop. `role="alert"` rather than a polite region because the person
+            is standing there waiting for this exact answer. */}
+        <div role="alert">
+          {status === "error" && (
+            <div className="mt-5 rounded-card border border-line bg-danger-tint p-4">
+              <div className="flex items-start gap-2.5">
+                <UiIcon
+                  name="warning"
+                  size={18}
+                  className="mt-0.5 flex-none text-danger"
+                />
+                <p className="flex-1 text-body font-semibold text-danger">
+                  {error}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void doImport(url)}
+                className="mt-3 inline-flex items-center gap-2 rounded-full border border-danger/30 px-4 py-2 text-body-sm font-semibold text-danger"
+              >
+                <UiIcon name="retry" size={15} />
+                Försök igen
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => void doImport(url)}
-              className="mt-3 inline-flex items-center gap-2 rounded-full border border-danger/30 px-4 py-2 text-body-sm font-semibold text-danger"
-            >
-              <UiIcon name="retry" size={15} />
-              Försök igen
-            </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
