@@ -4,6 +4,7 @@ import { normalizeName } from "@/lib/utils";
 import {
   boundedEditDistance,
   rankMatches,
+  resolvePair,
   resolveQuery,
   splitQuery,
 } from "./search";
@@ -334,5 +335,70 @@ describe("resolveQuery", () => {
       amountText: "",
       name: "",
     });
+  });
+
+  it("never reads a conjunction as a sort", () => {
+    // Without this "salt och peppar" resolves to peppar of the sort
+    // "salt och", which would print on the tile under the name.
+    expect(resolveQuery(PANTRY, "salt och peppar").matches).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Two varor in one breath
+// ---------------------------------------------------------------------------
+
+const PANTRY = [
+  item("salt", 18),
+  item("peppar", 15),
+  item("mjölk", 40),
+  item("gul lök", 12),
+];
+
+describe("resolvePair", () => {
+  it("reads two varor out of one query", () => {
+    expect(resolvePair(PANTRY, "salt och peppar")?.map((i) => i.name)).toEqual([
+      "salt",
+      "peppar",
+    ]);
+  });
+
+  it("tolerates a typo on either side", () => {
+    expect(resolvePair(PANTRY, "salt och peppr")?.map((i) => i.name)).toEqual([
+      "salt",
+      "peppar",
+    ]);
+  });
+
+  it("refuses when an amount would have to be divided", () => {
+    // "2 dl salt och peppar" has an obvious wrong answer and no obvious right
+    // one, so it stays a single-vara query.
+    expect(resolvePair(PANTRY, "2 dl salt och peppar")).toBeNull();
+  });
+
+  it("refuses when a sort would have to be divided", () => {
+    expect(resolvePair(PANTRY, "grovmalen salt och peppar")).toBeNull();
+  });
+
+  it("refuses when either half names nothing", () => {
+    expect(resolvePair(PANTRY, "salt och zzzzzz")).toBeNull();
+    expect(resolvePair(PANTRY, "zzzzzz och peppar")).toBeNull();
+  });
+
+  it("refuses the same vara said twice", () => {
+    expect(resolvePair(PANTRY, "salt och salt")).toBeNull();
+  });
+
+  it("leaves a vara whose own name contains och alone", () => {
+    // Nothing in the seeded catalog is named this way today, but the registry
+    // lets a household invent one, and splitting it would make it unreachable.
+    const catalog = [...PANTRY, item("salt och peppar", 3)];
+    expect(resolveQuery(catalog, "salt och peppar").matches[0].name).toBe(
+      "salt och peppar",
+    );
+  });
+
+  it("is null for a query with no conjunction at all", () => {
+    expect(resolvePair(PANTRY, "mjölk")).toBeNull();
   });
 });

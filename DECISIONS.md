@@ -3,6 +3,11 @@
 A UX pass on the core loop with Bring as the reference. Three of the findings
 turned out to be one finding.
 
+Everything the pass turned up is now built: the matcher, the qualifier, the
+panel that opens on what you buy most, two varor in one query, the registry's
+second way in, and the long-press hint. The sections are in the order they were
+found, not the order they shipped.
+
 ## The add bar had the weaker of the app's two matchers
 
 `rankMatches` asked one question — does this catalog name contain what was
@@ -93,18 +98,83 @@ tile. `smro` → smör, `havregyrn` → havregryn, `tomater` → tomat, `bananer
 banan. Focus sits in the input after a real tap. The duplicate-ask sheet still
 asks when nothing was typed.
 
-## Left undone, deliberately
+## The panel, and the bug it exposed
 
-The empty field still does nothing when focused — Bring's actual trick is a
-grid of your most-used varor the moment you tap, and the `useCount` ordering
-here is per-aisle, so a household's top ten never share a screen. That is the
-largest remaining win and the only one needing a new surface, so it was not
-smuggled in alongside a search change.
+Focusing the field used to do nothing at all: a whole screen of keyboard bought
+with nothing under it. It opens on the six varor the household buys most now,
+because the common errand is a staple you buy every week and the fastest way to
+type "mjölk" is not to.
 
-Also still open: `och` should split a query the way the ingredients engine
-already does, so `salt och peppar` offers two rows rather than none. And *gröt*
-is not in the seeded catalog at all — only *havregryn* — which is a gap in the
-catalog, not in the matching.
+Two details are the difference between a rapid-add surface and a menu.
+
+**The grid is frozen at open.** An item leaving it the instant it is added would
+slide the next one into the space a thumb is already travelling towards. So the
+set is captured when the panel opens and the ones you add turn green where they
+stand, inert — tapping a green tile does *nothing* rather than removing, because
+a removal from inside the panel whose entire job is adding would record a
+purchase in buy mode.
+
+**`useCount` is the right number and it was already there.** It is incremented
+by a purchase and by nothing else — not by adding, not by tapping around — so
+the panel means "what you buy" rather than "what you last touched". A household
+with no shops behind it therefore has no answer, and the panel stays shut rather
+than offering the catalog's first six alphabetically. That is the honest empty
+state, and it means this degrades to the old behaviour on day one.
+
+Then the bug, which is worth recording because it is the same bug the whole
+session is about. `keepFocus` was on each control, and the frequent grid is
+built from `ItemTile`, which takes no mouse-event props and has no reason to.
+So a press on a tile blurred the input, blur closed the panel, the tile
+unmounted mid-gesture, and the click landed on nothing: the tap simply did not
+happen. It now lives on the panel container, where one handler covers everything
+inside it — including whatever gets added next.
+
+## Two varor in one breath
+
+`salt och peppar` resolved to nothing, and the near miss was worse than the
+miss: without a guard it resolves to *peppar* of the sort "salt och". A
+conjunction is never a qualifier.
+
+`resolvePair` is deliberately narrow. It fires only for a bare pair, because an
+amount or a sort cannot be divided between two things without guessing which one
+it belonged to — "2 dl salt och peppar" has an obvious wrong answer and no
+obvious right one, so it stays a single-vara query and offers a create.
+
+## Two smaller ones
+
+The registry was reachable only from a button two thirds of the way down the
+catalog well. The old note said a second icon up top would read as a copy of the
+aisle rail's grid glyph, which was true of a *grid glyph* and not of the
+problem: three screens were being advertised in three unrelated places and the
+one nobody could find was filed furthest down. A bag reads as goods rather than
+as a layout. The button in the well stays; it just is not the only way in.
+
+And the long-press hint, said once ever, per person per device, in
+`localStorage` — `sessionStorage` would make "once" mean "every morning". It
+waits for a third item so it is not the first thing a new list says, and it sits
+in flow above the grid rather than over it. `useOnce` is built on
+`useSyncExternalStore` for the same reason `useMode` is: storage is an external
+store, the server has none, and reading one in an effect and calling `setState`
+is a cascading render the linter is right to refuse.
+
+## Verified
+
+563 unit tests across 25 files, 17 e2e, tsc and eslint clean. The new e2e test
+earns its keep — it buys something in buy mode to create the purchase history,
+reloads, and asserts the panel offers it, that the tap lands, that focus never
+left the field, and that the tile went green **in place**. It also pins the
+empty state: with no shops behind it, nothing opens.
+
+One trap for whoever writes the next one: while the panel is open the same vara
+is legitimately on screen twice, in the grid and in the zone, so `onListTile`
+matches two elements and trips strict mode. Dismiss the panel before asserting
+with it.
+
+## Left undone
+
+*gröt* is not in the seeded catalog at all — only *havregryn* — so it cannot be
+found however good the matching gets. That is a gap in the catalog and worth a
+pass over the seed list for other everyday Swedish staples missing the same way.
 
 ---
 

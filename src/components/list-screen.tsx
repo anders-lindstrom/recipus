@@ -25,6 +25,7 @@ import {
 } from "@/lib/services/entries";
 import type { ShopMode } from "@/lib/client/use-mode";
 import { cn } from "@/lib/utils";
+import { useOnce } from "@/lib/client/use-once";
 import { useSustained } from "@/lib/client/use-sustained";
 import { AddBar } from "./add-bar";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
@@ -182,6 +183,7 @@ export function ListScreen({
     name: string;
   } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressHint = useOnce("recipus:hint:longpress");
 
   useEffect(
     () => () => {
@@ -422,19 +424,30 @@ export function ListScreen({
             </span>
           ))}
 
-          {/* The only way into the recipe screens. Everything else up here is
-              about the list you are standing in front of, so recipes get one
-              quiet icon rather than a nav bar competing with the tiles.
+          {/* The two screens that are not this one. Everything else up here is
+              about the list you are standing in front of, so they get quiet
+              icons rather than a nav bar competing with the tiles.
 
-              The registry deliberately does NOT get a second one beside it. It
-              lives on the catalog well below, which is the same set of things
-              rendered as tiles — and a grid glyph up here sat one row above the
-              aisle rail's own grid glyph and read as the same control drawn
-              twice. */}
+              The registry used to be reachable only from a button two thirds of
+              the way down the catalog well, on the grounds that a grid glyph up
+              here would read as a second copy of the aisle rail's own grid
+              glyph. That was true of a grid glyph and not of the problem: three
+              screens were being advertised in three unrelated places, and the
+              one nobody could find was the one filed furthest down. A bag reads
+              as goods rather than as a layout, and the button in the well stays
+              — it is right where it is, it just is not the only way in. */}
+          <Link
+            href="/varor"
+            aria-label="Varor"
+            className="ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
+          >
+            <UiIcon name="allAisles" size={20} />
+          </Link>
+
           <Link
             href="/recept"
             aria-label="Recept"
-            className="ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
+            className="flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
           >
             <UiIcon name="recipes" size={20} />
           </Link>
@@ -523,6 +536,15 @@ export function ListScreen({
             }
             actions.addItem(itemId, amountText);
           }}
+          onPickMany={(itemIds) => {
+            for (const id of itemIds) actions.addItem(id);
+          }}
+          // `bought: false` throughout. Undoing an add is a change of plan and
+          // never a shop, and recording it as one would teach the cadence
+          // engine that this household buys salt every time it mistypes.
+          onUndoAdd={(itemIds) => {
+            for (const id of itemIds) actions.removeItem(id, false);
+          }}
           onCreate={actions.createItem}
         />
 
@@ -544,6 +566,40 @@ export function ListScreen({
         >
           Att handla
         </SectionHeading>
+
+        {/* Said once, ever.
+
+            Amounts, priority, the household's qualifier, moving a vara, and
+            taking something off WITHOUT recording a purchase are all behind a
+            500ms hold that nothing advertises. The press-in affordance on the
+            tile confirms the gesture to someone already trying it and does
+            nothing for the person who never does — which, for a gesture with no
+            visible entry point, is most people.
+
+            In flow rather than over the tiles, for the same reason the buy
+            toast was taken out: this sits above the grid it describes and
+            covers no control. It waits for a third item so it is not the first
+            thing a brand-new list says. */}
+        {longPressHint.pending && live.length >= 3 && (
+          <div className="mb-2 flex items-center gap-2 rounded-control border border-line bg-surface-raised px-3 py-2">
+            <UiIcon
+              name="edit"
+              size={14}
+              className="flex-none text-ink-faint"
+            />
+            <p className="flex-1 text-caption text-ink-soft">
+              Håll en bricka intryckt för mängd, prioritet och mer.
+            </p>
+            <button
+              type="button"
+              onClick={longPressHint.dismiss}
+              aria-label="Dölj tipset"
+              className="-mr-1 flex h-7 w-7 flex-none items-center justify-center rounded-full text-ink-faint"
+            >
+              <UiIcon name="clear" size={14} />
+            </button>
+          </div>
+        )}
 
         {live.length === 0 ? (
           <div className="rounded-card border border-dashed border-line-strong px-6 py-10 text-center">

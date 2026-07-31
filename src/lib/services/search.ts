@@ -324,10 +324,54 @@ export function resolveQuery(
     // Only the whole query may resolve on a typo. Past that, a qualifier is
     // being invented from the word in front, and it should be a create instead.
     if (i > 0 && !literallyMatches(words.slice(i).join(" "), matches[0])) continue;
-    return { matches, modifier: words.slice(0, i).join(" "), amountText, name };
+
+    const modifier = words.slice(0, i).join(" ");
+    // "salt och peppar" is two varor, not peppar of the sort "salt och". A
+    // conjunction is never a qualifier, and `resolvePair` handles what this is.
+    if (CONJUNCTION_RE.test(modifier)) continue;
+
+    return { matches, modifier, amountText, name };
   }
 
   return empty;
+}
+
+const CONJUNCTION_RE = /\boch\b/i;
+const CONJUNCTION_SPLIT_RE = /\s+och\s+/i;
+
+/**
+ * Two varor named in one breath — "salt och peppar".
+ *
+ * People type the pair they are picturing, and until now that resolved to
+ * nothing at all. The ingredients engine has met this before and answers it by
+ * keeping only the first half, which is right for a recipe line being reviewed
+ * by hand and wrong here: the second half is a thing the household said out
+ * loud and would simply lose.
+ *
+ * Deliberately narrow. It fires only for a bare pair, because an amount or a
+ * qualifier cannot be divided between two things without guessing which one it
+ * belonged to — "2 dl salt och peppar" has an obvious wrong answer and no
+ * obvious right one, so it stays a single-vara query and offers a create.
+ */
+export function resolvePair(
+  catalog: CatalogItem[],
+  raw: string,
+): [CatalogItem, CatalogItem] | null {
+  const { name, amountText } = splitQuery(raw);
+  if (amountText || !CONJUNCTION_SPLIT_RE.test(name)) return null;
+
+  const parts = name.split(CONJUNCTION_SPLIT_RE);
+  if (parts.length !== 2) return null;
+
+  const resolved = parts.map((part) => resolveQuery(catalog, part.trim(), 1));
+  if (resolved.some((r) => r.matches.length === 0 || r.modifier)) return null;
+
+  const [first, second] = resolved.map((r) => r.matches[0]);
+  // "mjölk och mjölk" is one vara said twice, and adding it twice would write
+  // two ops to reach the state one op already reaches.
+  if (first.id === second.id) return null;
+
+  return [first, second];
 }
 
 /** Did this item match without any spelling forgiveness? */

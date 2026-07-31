@@ -209,3 +209,55 @@ test("moving an item takes its amount with it and leaves this list", async ({
   await page.goto(`/?list=${otherListId}`);
   await expect(onListTile(page, "mjölk")).toContainText("2 l");
 });
+
+test("the panel opens on what you buy most, and never drops the keyboard", async ({
+  freshPage: page,
+  listId,
+}) => {
+  const field = page.getByLabel("Sök eller lägg till vara");
+  const panel = page.getByRole("group", { name: "Vanligast" });
+
+  // A household with no shops behind it has no answer to "what do you buy
+  // most", and offering the catalog's first six alphabetically would be a lie
+  // dressed as help. Nothing opens.
+  await field.click();
+  await expect(panel).toHaveCount(0);
+
+  // So give it one real shop. `use_count` is incremented by a purchase and by
+  // nothing else — not by adding, not by tapping around — which is exactly what
+  // lets the panel mean "what you buy" rather than "what you last touched".
+  const modePill = page.getByRole("button", { name: /Byt till/ });
+  await modePill.click();
+  await expect(modePill).toHaveText(/Handlar/);
+
+  await catalogTile(page, "citron").click();
+  await onListTile(page, "citron").click();
+  await expect.poll(() => purchaseCount(listId), { timeout: 5000 }).toBe(1);
+
+  await page.reload();
+  await expect(page.getByText("Att handla")).toBeVisible();
+
+  // Now focusing the field is worth the keyboard it costs.
+  await field.click();
+  const inPanel = panel.getByRole("button", { name: "citron" });
+  await expect(inPanel).toBeVisible();
+  await inPanel.click();
+
+  // The two halves that make this a rapid-add surface rather than a menu, and
+  // both are asserted before the panel is dismissed because both are about what
+  // the panel does while it is still open.
+  //
+  // Focus never leaves the field, so the phone keyboard never animates shut and
+  // open between varor — six things is one errand, not six. And the grid stays
+  // put: the vara you just added turns green where it stands instead of leaving
+  // and sliding the next one under a thumb already on its way to it.
+  await expect(field).toBeFocused();
+  await expect(panel).toBeVisible();
+  await expect(inPanel).toHaveAttribute("aria-pressed", "true");
+
+  // Only now is `onListTile` unambiguous: while the panel is open the same vara
+  // is legitimately on screen twice, once in the grid and once in the zone.
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  await expect(onListTile(page, "citron")).toBeVisible();
+});
