@@ -199,18 +199,47 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   // write purchases. See lib/client/use-mode.ts for the full argument.
   const { mode, setMode, touch } = useMode();
 
-  // Nothing cached and no server: the very first launch has to happen with a
-  // connection. Say so plainly instead of rendering an empty list that looks
-  // like everything was lost.
+  /*
+   * Nothing to render — and more than one reason arrives at this one screen.
+   *
+   * The copy used to name only the least likely of them ("öppna en gång med
+   * täckning"), so an online user with an empty database was told their problem
+   * was the network. What actually gets here is either that the server could not
+   * say who you are — a lapsed Authelia session, or a first launch with no signal
+   * and nothing cached yet — or that it could, and the household has no list at
+   * all. `page.tsx` sends a null snapshot for both, so the actor is what tells
+   * them apart; the snapshot cannot.
+   *
+   * Reloading is a genuine exit for the first: the request goes back through the
+   * proxy, which either re-authenticates you or hands you the login page. It is
+   * the honest one for the second too — nothing on this device can conjure a
+   * list, and in production `instrumentation.ts` seeds one on boot, so this state
+   * means the server is not ready rather than that you did something wrong.
+   * Either way it beats what was here before, which offered no control at all.
+   */
   if (!list || !listId) {
+    const unknownUser = !effectiveActor;
     return (
       <main className="grid min-h-dvh place-items-center p-6 text-center">
-        <div>
-          <p className="text-base font-bold text-ink">Ingen lista sparad än</p>
-          <p className="mt-2 text-sm text-ink-soft">
-            Öppna Recipus en gång med täckning, så finns listan kvar i telefonen
-            även utan nät.
+        <div className="max-w-xs">
+          {/* A heading, not a styled paragraph. This screen has no header and no
+              nav — it is the whole page — so the one thing on it that names the
+              problem should be the thing a screen reader can jump to. */}
+          <h1 className="text-title text-ink">
+            {unknownUser ? "Vi vet inte vem du är" : "Ingen lista än"}
+          </h1>
+          <p className="mt-2 text-body-sm text-ink-soft">
+            {unknownUser
+              ? "Sessionen kan ha gått ut, eller så saknades nätet första gången appen öppnades. Ladda om, så skickas du till inloggningen om det behövs."
+              : "Du är inloggad och servern svarar. Hushållet har bara ingen lista ännu — servern skapar en när katalogen seedas."}
           </p>
+          <button
+            type="button"
+            onClick={() => location.reload()}
+            className="mt-5 inline-flex min-h-11 items-center rounded-control bg-brand px-4 text-body font-semibold text-on-brand"
+          >
+            Försök igen
+          </button>
         </div>
       </main>
     );

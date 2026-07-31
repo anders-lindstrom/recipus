@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { recipeIngredients, recipes } from "@/db/schema";
 import { matchParsedIngredient, parseIngredientLine } from "@/lib/ingredients";
 import { loadMatchCandidates } from "@/lib/services/match-candidates";
-import { importRecipeFromUrl } from "@/lib/recipes";
+import { cleanPastedIngredients, importRecipeFromUrl } from "@/lib/recipes";
 import type { Unit } from "@/lib/domain";
 import type { ApiEnv } from "..";
 import {
@@ -24,6 +24,111 @@ const idParam = z.object({
 function toAmount(value: number | null, unit: string | null) {
   return value !== null && unit !== null ? { value, unit: unit as Unit } : null;
 }
+
+/**
+ * A recipe that has been read out of something, ready to be stored. `sourceUrl`
+ * is null for the paste path — there is no page to link back to, and inventing
+ * one would put a dead link on the recipe screen forever.
+ */
+interface RecipeToPersist {
+  title: string;
+  servings: number;
+  servingsUnit: string;
+  imageUrl: string | null;
+  ingredientLines: string[];
+  sourceUrl: string | null;
+}
+
+/**
+ * Parse, match, store — everything about an import that does not depend on
+ * where the text came from.
+ *
+ * Shared by the URL path and the paste path deliberately. The design spec's
+ * promise for recipe input is that all its paths "share one line parser"
+ * (§5.6), and the only way to keep that true as paths are added is to have one
+ * place where the parsing happens. A second copy would drift the first time
+ * either side was tuned, and the symptom — a pasted "2 dl grädde" matching a
+ * different vara than an imported one — is nearly impossible to notice.
+ */
+async function persistRecipe(recipe: RecipeToPersist, actor: string) {
+  // Live varor AND every word that reaches one, so an ingredient line
+  // written against a word the household has since merged away still
+  // resolves — which is the entire point of keeping the merged-away word as
+  // an alias. See loadMatchCandidates for why the tombstone filter lives
+  // there rather than in the matcher.
+  const candidates = await loadMatchCandidates();
+
+  const recipeId = randomUUID();
+  const ingredientRows = recipe.ingredientLines.map((line, position) => {
+    const parsed = parseIngredientLine(line);
+    const match = matchParsedIngredient(parsed, candidates);
+    return {
+      id: randomUUID(),
+      position,
+      rawText: line,
+      amountValue: parsed.amount?.value ?? null,
+      amountUnit: parsed.amount?.unit ?? null,
+      catalogItemId: match?.id ?? null,
+    };
+  });
+
+  await db.transaction(async (tx) => {
+    await tx.insert(recipes).values({
+      id: recipeId,
+      title: recipe.title,
+      sourceUrl: recipe.sourceUrl,
+      servings: recipe.servings,
+      servingsUnit: recipe.servingsUnit,
+      imageUrl: recipe.imageUrl,
+      createdBy: actor,
+      updatedBy: actor,
+    });
+    if (ingredientRows.length > 0) {
+      await tx.insert(recipeIngredients).values(
+        ingredientRows.map((r) => ({
+          id: r.id,
+          recipeId,
+          position: r.position,
+          rawText: r.rawText,
+          amountValue: r.amountValue,
+          amountUnit: r.amountUnit,
+          catalogItemId: r.catalogItemId,
+        })),
+      );
+    }
+  });
+
+  return {
+    id: recipeId,
+    title: recipe.title,
+    sourceUrl: recipe.sourceUrl,
+    servings: recipe.servings,
+    servingsUnit: recipe.servingsUnit,
+    imageUrl: recipe.imageUrl,
+    ingredients: ingredientRows.map((r) => ({
+      id: r.id,
+      recipeId,
+      position: r.position,
+      rawText: r.rawText,
+      amount: toAmount(r.amountValue, r.amountUnit),
+      catalogItemId: r.catalogItemId,
+    })),
+  };
+}
+
+/**
+ * Defined here rather than in ../schemas alongside the import request, because
+ * nothing outside this route needs it — and the bounds are the interesting
+ * part. `text` is a whole pasted ingredient list, so it has to be roomy, but
+ * unbounded it is a way to hand the parser an entire website.
+ */
+const recipePasteRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    servings: z.number().int().positive().max(999),
+    text: z.string().min(1).max(20_000),
+  })
+  .openapi("RecipePasteRequest");
 
 export function recipesRoutes() {
   const app = new OpenAPIHono<ApiEnv>();
@@ -55,70 +160,50 @@ export function recipesRoutes() {
         );
       }
 
-      // Live varor AND every word that reaches one, so an ingredient line
-      // written against a word the household has since merged away still
-      // resolves — which is the entire point of keeping the merged-away word as
-      // an alias. See loadMatchCandidates for why the tombstone filter lives
-      // there rather than in the matcher.
-      const candidates = await loadMatchCandidates();
+      return c.json(await persistRecipe(imported, actor), 200);
+    },
+  );
 
-      const recipeId = randomUUID();
-      const ingredientRows = imported.ingredientLines.map((line, position) => {
-        const parsed = parseIngredientLine(line);
-        const match = matchParsedIngredient(parsed, candidates);
-        return {
-          id: randomUUID(),
-          position,
-          rawText: line,
-          amountValue: parsed.amount?.value ?? null,
-          amountUnit: parsed.amount?.unit ?? null,
-          catalogItemId: match?.id ?? null,
-        };
-      });
+  app.openapi(
+    createRoute({
+      method: "post",
+      path: "/paste",
+      tags: ["recipes"],
+      description:
+        "Store a recipe from pasted ingredient text — the path for pages that publish no JSON-LD and that the LLM fallback cannot read either, where the only thing left is the recipe on the screen the person is looking at. The text is tidied line by line (src/lib/recipes/paste.ts) and then goes through exactly the same parse-and-match as an imported one; the recipe has no sourceUrl, because there is no page to link back to.",
+      request: { body: jsonBody(recipePasteRequestSchema) },
+      responses: {
+        200: jsonRes(recipeSchema, "Saved recipe"),
+        400: jsonRes(errorSchema, "Nothing usable in the pasted text"),
+      },
+    }),
+    async (c) => {
+      const { title, servings, text } = c.req.valid("json");
+      const actor = c.get("actor");
 
-      await db.transaction(async (tx) => {
-        await tx.insert(recipes).values({
-          id: recipeId,
-          title: imported.title,
-          sourceUrl: imported.sourceUrl,
-          servings: imported.servings,
-          servingsUnit: imported.servingsUnit,
-          imageUrl: imported.imageUrl,
-          createdBy: actor,
-          updatedBy: actor,
-        });
-        if (ingredientRows.length > 0) {
-          await tx.insert(recipeIngredients).values(
-            ingredientRows.map((r) => ({
-              id: r.id,
-              recipeId,
-              position: r.position,
-              rawText: r.rawText,
-              amountValue: r.amountValue,
-              amountUnit: r.amountUnit,
-              catalogItemId: r.catalogItemId,
-            })),
-          );
-        }
-      });
+      const ingredientLines = cleanPastedIngredients(text);
+      // Refused rather than stored empty. A recipe with no ingredients is
+      // silently useless — it adds nothing to a list — and the person who just
+      // pasted something has the text right there to correct.
+      if (ingredientLines.length === 0) {
+        return c.json({ error: "Hittade inga ingredienser i texten." }, 400);
+      }
 
       return c.json(
-        {
-          id: recipeId,
-          title: imported.title,
-          sourceUrl: imported.sourceUrl,
-          servings: imported.servings,
-          servingsUnit: imported.servingsUnit,
-          imageUrl: imported.imageUrl,
-          ingredients: ingredientRows.map((r) => ({
-            id: r.id,
-            recipeId,
-            position: r.position,
-            rawText: r.rawText,
-            amount: toAmount(r.amountValue, r.amountUnit),
-            catalogItemId: r.catalogItemId,
-          })),
-        },
+        await persistRecipe(
+          {
+            title: title.trim(),
+            servings,
+            // Not asked for. "portioner" covers almost every recipe, and an
+            // extra field between someone and the list they are trying to
+            // write is a worse trade than a word they can live with.
+            servingsUnit: "portioner",
+            imageUrl: null,
+            ingredientLines,
+            sourceUrl: null,
+          },
+          actor,
+        ),
         200,
       );
     },

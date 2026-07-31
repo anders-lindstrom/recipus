@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { nextOpTimestamp } from "@/lib/client/op-clock";
@@ -143,15 +144,46 @@ export function VarorClient({
     [state.lists],
   );
 
+  /*
+   * The registry's half of the same dead end — see the long note in
+   * `list-client.tsx`, which this deliberately mirrors rather than restates.
+   *
+   * One thing is this screen's own: it is a sub-screen, so being stranded here
+   * also means being stranded with no way back to the list. That is worth a link
+   * even when the list is in the same state, because it lands you on the screen
+   * that owns the problem rather than on the one that merely inherited it.
+   */
   if (!listId || !list) {
+    const unknownUser = !actor;
     return (
       <main className="grid min-h-dvh place-items-center p-6 text-center">
-        <div>
-          <p className="text-base font-bold text-ink">Inga varor sparade än</p>
-          <p className="mt-2 text-sm text-ink-soft">
-            Öppna Recipus en gång med täckning, så finns katalogen kvar i
-            telefonen även utan nät.
+        <div className="max-w-xs">
+          {/* A heading, for the same reason as on the list screen: this page has
+              no header of its own, so the sentence naming the problem is the
+              only thing a screen reader could navigate to. */}
+          <h1 className="text-title text-ink">
+            {unknownUser ? "Vi vet inte vem du är" : "Ingen lista än"}
+          </h1>
+          <p className="mt-2 text-body-sm text-ink-soft">
+            {unknownUser
+              ? "Sessionen kan ha gått ut, eller så saknades nätet första gången appen öppnades. Ladda om, så skickas du till inloggningen om det behövs."
+              : "Registret hämtas genom en lista, och hushållet har ingen ännu."}
           </p>
+          <div className="mt-5 flex flex-col items-stretch gap-2">
+            <button
+              type="button"
+              onClick={() => location.reload()}
+              className="inline-flex min-h-11 items-center justify-center rounded-control bg-brand px-4 text-body font-semibold text-on-brand"
+            >
+              Försök igen
+            </button>
+            <Link
+              href="/"
+              className="inline-flex min-h-11 items-center justify-center rounded-control border border-line px-4 text-body font-semibold text-ink-soft"
+            >
+              Till listan
+            </Link>
+          </div>
         </div>
       </main>
     );

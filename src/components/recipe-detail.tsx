@@ -413,8 +413,16 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
 
           {/* One hairline between lines, none around them. Twenty bordered
               cards made a shopping-list-shaped thing out of what is really
-              just a paragraph broken into lines. */}
-          <ul className="mx-4 divide-y divide-line">
+              just a paragraph broken into lines.
+
+              Named, because the heading above it is a styled div rather than a
+              heading element, so nothing tied the two together — the list was
+              announced as an unnamed list of twenty things. It also gives the
+              e2e suite something to scope to: `getByRole("listitem")` on this
+              page matches the ingredients AND any sonner toast still on screen,
+              which are `<li>` too, and that made a test pass or fail on how long
+              the run before it had taken. */}
+          <ul aria-label="Ingredienser" className="mx-4 divide-y divide-line">
             {recipe.ingredients.map((ing) => (
               <li
                 key={ing.id}

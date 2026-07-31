@@ -34,6 +34,23 @@ import { UiIcon } from "./ui-icon";
  *    travelling the length of the catalog.
  */
 
+/**
+ * Why this says "avdelning" where the schema says "category".
+ *
+ * They are one thing wearing two names. `categories.position` is documented as
+ * the default aisle order, `lists.category_order` overrides it per shop, and
+ * re-filing a vara in the registry is the same act as moving it in the shop —
+ * there is no taxonomy here that exists apart from the walk. So the UI settles
+ * on one word, and it is the one that says what the thing is FOR: you walk an
+ * avdelning. "Kategori" is the column name, and every place it had reached the
+ * screen was the trigger for a sheet that then talked about walking a shop.
+ *
+ * It matters most on this file, because these two labels are read aloud and
+ * never drawn. A screen reader is the only way to hear them, so a word chosen
+ * differently from the visible copy in `ListLayoutSheet` would be a term with
+ * nothing on screen to anchor it to — which is what an audit found here.
+ */
+
 export interface Aisle {
   id: string;
   name: string;
