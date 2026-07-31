@@ -1384,3 +1384,152 @@ column, because a dash looked like a parsed value. And the entry sheet's two
 foot buttons were equal-weight side by side, separated by a hairline, which is
 how "Ta bort" gets tapped by someone reaching for "Ändra mängd"; they are
 stacked now, with only the destructive one coloured.
+
+# A merge left the shopping behind, 2026-07-31
+
+Reported from a real shop: a recipe from ICA put *kycklingbröstfilé* on the list,
+it was merged into plain *kycklingbröst*, and the meat vanished. Adding the recipe
+again produced "a new line of the other one", and the two went double.
+
+**One fault, two symptoms.** `merge_catalog_items` refuses to rewrite entry rows,
+and that refusal is right — a merge that rewrote rows does not converge, which the
+reducer argues at length and a test pins down. But nothing else moved them either.
+The products were re-pointed by the sheet, and purchases, recipe ingredients and
+aliases by a server-side effect; the list entry was the one thing with no owner.
+So it stayed live on a vara the catalog no longer had, and the screen can only
+draw an entry it can look up. The row therefore neither stayed nor went: live,
+undrawable, unreachable by any gesture, and beyond pruning too, because pruning
+collects entries by `removed_at` and an orphan has none. Re-adding the recipe then
+resolved to the survivor — the server had re-pointed `recipe_ingredients` — and
+built a second entry beside the invisible one.
+
+**The design comment said "visible, manually fixable". It was neither**, and that
+gap between what was written and what shipped is the whole lesson here. It is the
+second time on this screen: the bag glyph above was decided and not shipped for
+months.
+
+**The fix re-points the shopping the same way the products were.** `mergeVaraOps`
+is pure and lives beside the rest of the registry model so the arguable cases can
+be asserted rather than clicked through. It uses only op kinds that already exist,
+which is what keeps convergence untouched and lets a phone on an older build
+understand every op it receives. Three calls in it are worth disagreeing with:
+
+*What travels is what the tile was showing* — the merged total, the sort, the
+urgency — and **not** the provenance. The amount arrives as a manual contribution,
+so "Behövs till: Vitlöksstekt kyckling" is lost. A contribution is keyed to a
+recipe addition and rehoming one would drag a recipe's own bookkeeping across;
+`move_item` already makes exactly this trade and says so.
+
+*If the survivor is already on the list, its own tile wins* and the loser's entry
+is simply removed. Summing them would be the intuitive answer and `set_amount`
+cannot express it — it names an amount, it cannot ask for one more — and
+overwriting a number somebody is looking at is worse than leaving it alone.
+
+*Two unit families carry nothing.* "2 dl" and "3 st" cannot be summed honestly, so
+rather than picking one and calling it the answer, the survivor gets no amount.
+
+**`tileVaror` is the net under all of it.** Orphans stay legitimate — the reducer
+deliberately allows a long-offline `add_item` to land after a merge — so a live
+entry whose vara is missing now renders a stand-in tile instead of a hole. Its
+name is the entry's own id with the hyphens opened out, because the row that knew
+the pretty spelling is precisely what is gone. It looks odd on purpose. One tap
+removes it, which is all it is for, and it is what finally makes the orphans
+already sitting in production reachable.
+
+# The press was acting on what it opened, 2026-07-31
+
+Also reported from production, and described as *"long pressing something,
+changing something, then pressing out of the dialog modifies the thing behind it
+— marking something bought while I just wanted to get out of the popover."*
+
+**A touchscreen hit-tests the click a touch synthesizes at the finger's position
+when it LIFTS**, not where it went down. Every sheet in this app is opened by a
+500ms hold, so by the time the finger comes up the sheet has mounted underneath
+it — and the press delivers one final click into a surface that did not exist when
+it began, aimed at whatever control now happens to sit under that thumb. Where it
+landed was pure geometry: near the top of the page it hit the backdrop, so the
+entry sheet opened and shut inside its own opening gesture; lower down it hit the
+action row, so the gesture meant to *open* the breakdown quietly took the item off
+the list.
+
+**This is only reproducible with real touch events**, which is why the suite never
+caught it. `page.mouse` dispatches its click to the nearest common ancestor of
+where the button went down and came up, which after a sheet opens is a container
+that does nothing. Every long-press test in the suite used the mouse. There is a
+`longPressTile` helper in the fixtures now and a note saying why.
+
+**A sheet ignores pointer input until it has seen a `pointerdown` of its own.** A
+latch rather than a time window: the stray click is by construction the only one
+that can reach a freshly-mounted sheet with no pointerdown in front of it, and a
+window would have been a guess about how long a thumb takes to lift. Dismissal
+also now requires the click to be on the backdrop *itself*, so dragging a finger
+while reading the breakdown and releasing outside no longer throws you out.
+
+# Undo stopped expiring, 2026-07-31
+
+An in-store audit found the app doing the one thing `use-mode.ts` promises it
+cannot: *"you under-record purchases, you never invent one."*
+
+**A mis-tap in buy mode wrote a purchase that never happened, permanently.** Tick
+something from a later aisle — which is what mid-shop looks like — and the only
+"Ångra" rendered **702px above the viewport**, most of a screen out of sight, and
+was gone after eight seconds. So the shopper does the obvious thing and finds the
+item in the catalog and taps it back on. That restores the item and not the truth:
+`add_item` only retracts a purchase when handed `undoesClientOpId`, which only
+`undoLastBuy` ever passes. The row stands and the cadence engine learns from it.
+
+**So there is no timer.** A timer on an undo whose entire job is to catch a
+mistake you have not noticed yet expires exactly when it is needed. The offer
+stands until it is used, replaced by the next removal, or dismissed — and it names
+the item, so a stale one is ignorable rather than confusing.
+
+**It is in the thumb arc, and it is not the toast that was removed.** That one sat
+bottom-centre *on top of* the entry sheet's own buttons, so the confirmation for
+tap three covered the control you wanted for tap four. This sits at z-30, under
+every sheet's z-50 backdrop, where it cannot cover a control in the one situation
+that mattered; and it clears the scan button rather than layering under it,
+because a 44px target half-covered by a 56px circle is a 44px target you miss.
+
+**Rejected: making a catalog re-add retract the purchase.** It is what people
+actually do, and the audit suggested it — but it cannot tell "I mis-tapped" from
+"I need another one", and inventing a retraction is the same class of error as
+inventing a purchase. **Known residual:** the strip holds only the most recent
+removal, so a mis-tap noticed five taps later is still unreachable.
+
+# The shop's layout became the household's to state, 2026-07-31
+
+`lists.category_order` has been per-list since the first migration — Hemköp and
+Bauhaus share the household's vocabulary and nothing about their layout — and
+nothing in the app could ever change it. Every list walked in seed order. That
+falls hardest on exactly the varor a household invents, because the add bar files
+anything new under Övrigt and Övrigt sorts last: taking the supported path put
+your own words at the wrong end of the shop, permanently.
+
+**Two settings that look alike and are not**, which is why they are labelled
+apart. The *order* is a fact about a shop, so it stays on the list, rides the
+`update_list` op that already existed, and reaches every phone — one person
+getting it right is worth having. The *view* — aisle headings or one long grid —
+is a fact about a person, so it is device-local like the shop mode, because
+syncing it would let one member of the household silently restyle the other's
+screen mid-shop.
+
+**No migration, no new op kind, no reducer change.** That was the point of
+splitting it that way: the sync core is where a regression is least visible and
+most expensive, and this feature did not need to touch it.
+
+**Flat is not unordered.** The grouped view got its sequence from
+`groupByCategory` and the flat view had no aisle sort at all, so turning headings
+off used to leave the tiles in whatever order the entry map produced. Both views
+now sort by walking order first and urgency second — urgency rises *within* an
+aisle and never out of it, which is the rule the priority sort already followed
+for the reason that not walking back across the shop beats every other signal.
+
+**Up and down buttons, not a drag handle.** Dragging inside a sheet that itself
+scrolls vertically is a fight on a touchscreen, and it has no keyboard equivalent
+at all — which is the same hole the long-press tier had until this week.
+
+**A bug fell out of it.** The list screen read `snapshot.list` and nothing else,
+which was fine while a list's only editable fact was its name. Re-ordering the
+aisles did nothing visible until a reload, and a partner's re-order arriving over
+SSE was applied to the store and never drawn. It reads the store now, and falls
+back to the snapshot only for the first paint and the offline shell.
