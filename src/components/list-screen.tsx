@@ -528,7 +528,7 @@ export function ListScreen({
             aria-label="Varor"
             className="ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
           >
-            <UiIcon name="allAisles" size={20} />
+            <UiIcon name="registry" size={20} />
           </Link>
 
           <Link
@@ -784,7 +784,7 @@ export function ListScreen({
             href="/varor"
             className="flex flex-none items-center gap-1.5 rounded-full border border-line-strong px-3 py-1.5 text-caption font-semibold text-ink-soft"
           >
-            <UiIcon name="allAisles" size={14} />
+            <UiIcon name="registry" size={14} />
             Varor
           </Link>
         </div>
@@ -828,10 +828,19 @@ export function ListScreen({
           reasoning applied to the one control that repairs a mistake.
 
           Cleared to the left of the scan button rather than layered under it: a
-          44px target half-covered by a 56px circle is a 44px target you miss. */}
+          44px target half-covered by a 56px circle is a 44px target you miss.
+
+          The gap above the screen edge is a MARGIN on the card, not padding on
+          the wrapper. `.safe-bottom` sets `padding-bottom:
+          env(safe-area-inset-bottom)`, so a `pb-3` beside it is the same
+          property twice and source order picks the winner — measured: on a phone
+          with no home indicator the inset resolves to 0 and the strip sat flush
+          against the bottom edge. A margin cannot collide with it, so the card
+          clears the edge by 12px on a Pixel and by 12px plus the indicator on an
+          iPhone. */}
       {undoable && (
-        <div className="safe-bottom fixed inset-x-0 bottom-0 z-30 px-3 pb-3">
-          <div className="mr-[4.75rem] flex items-center gap-1 rounded-card border border-line bg-surface-raised pl-3 shadow-lg shadow-black/20">
+        <div className="safe-bottom fixed inset-x-0 bottom-0 z-30 px-3">
+          <div className="mr-[4.75rem] mb-3 flex items-center gap-1 rounded-card border border-line bg-surface-raised pl-3 shadow-lg shadow-black/20">
             <button
               type="button"
               onClick={undoLastBuy}

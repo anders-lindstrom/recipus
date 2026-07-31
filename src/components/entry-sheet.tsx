@@ -191,7 +191,7 @@ export function EntrySheet({
         {onOpenVara && (
           <SheetButton
             onClick={onOpenVara}
-            icon={<UiIcon name="allAisles" size={16} />}
+            icon={<UiIcon name="registry" size={16} />}
           >
             Om {itemName.toLowerCase()} — kategori, produkter
           </SheetButton>
