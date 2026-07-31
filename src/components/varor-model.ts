@@ -1,11 +1,14 @@
-import type {
-  CatalogItem,
-  CatalogItemAlias,
-  Id,
-  ListEntry,
-  Product,
-  SyncState,
+import {
+  entryId,
+  type CatalogItem,
+  type CatalogItemAlias,
+  type Id,
+  type ListEntry,
+  type Product,
+  type SyncState,
 } from "@/lib/domain";
+import { buildEntryView } from "@/lib/services/entries";
+import type { Op } from "@/lib/sync";
 import { normalizeName } from "@/lib/utils";
 
 /**
@@ -192,6 +195,143 @@ export function productSubtitle(product: Product): string {
       ? `${product.defaultSize.value} ${product.defaultSize.unit}`
       : null);
   return [product.brand, size].filter(Boolean).join(" · ");
+}
+
+/**
+ * An op minus the envelope the dispatching component fills in.
+ *
+ * Distributed over the union deliberately: a plain `Omit<Op, ...>` collapses the
+ * variants into one intersection whose only shared keys are the envelope's, and
+ * `listId` and friends stop existing.
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
+export type OpDraft = DistributiveOmit<Op, "clientOpId" | "actor" | "at">;
+
+/**
+ * Everything a merge has to say, in order.
+ *
+ * `merge_catalog_items` itself does exactly two things — tombstone the losing
+ * word, record it as an alias of the survivor — and it must never do more. A
+ * merge implemented as row rewriting does not converge: `merge(B→A)` at T5
+ * followed by a long-offline `add_item(B)` at T7 ends with an entry for B in one
+ * arrival order and for A in the other, and neither device is wrong by its own
+ * reckoning. So everything that HANGS OFF the word is re-pointed around it
+ * instead — products here, and purchases / recipe ingredients / aliases by a
+ * server-side effect (`repointMergedCatalogItem`).
+ *
+ * Today's shopping is re-pointed here too, and that is the part that was missing.
+ * Its absence was the production bug, and a quiet one:
+ *
+ * The reducer left the loser's entry alone — correct — but the list screen could
+ * only draw an entry whose vara it could look up, and the merge had just removed
+ * that row from the catalog. The entry therefore neither stayed nor went: it
+ * became a live row nothing could render and no gesture could reach, still
+ * holding its contributions, and beyond pruning too (that collects by
+ * `removedAt`, and an orphan has none). Merging vitlöksklyfta into vitlök made
+ * the vitlöksklyfta you actually needed silently vanish off the list.
+ *
+ * Re-adding the recipe then compounded it. The server re-points
+ * `recipe_ingredients` to the survivor, so the second add resolved to vitlök and
+ * built a SECOND entry beside the invisible one — the "it adds a new line of the
+ * other one, and they go double" in the report.
+ *
+ * Only existing op kinds are used, so convergence is untouched and a phone on an
+ * older build understands every one of them. What travels is what the tile was
+ * SHOWING — its merged total, its sort, its urgency. What does not travel is
+ * provenance: the amount arrives as a manual one, so "Behövs till: Vitlöksstekt
+ * kyckling" is not preserved. That is the trade `move_item` already makes, and
+ * for the same reason — a contribution is keyed to a recipe addition, and
+ * rehoming one would take a recipe's own bookkeeping with it.
+ *
+ * Pure and ordered rather than dispatched inline so the whole plan can be
+ * asserted in a test, which is the only way the interesting cases here — the
+ * survivor already on the list, two unit families, a second list — get checked
+ * at all.
+ */
+export function mergeVaraOps(
+  state: SyncState,
+  fromId: Id,
+  toId: Id,
+  productIds: Id[],
+): OpDraft[] {
+  const from = state.catalog[fromId];
+  if (!from || fromId === toId) return [];
+
+  const ops: OpDraft[] = productIds.map((productId) => ({
+    kind: "update_product",
+    productId,
+    patch: { catalogItemId: toId },
+  }));
+
+  const contributions = Object.values(state.contributions);
+  for (const entry of Object.values(state.entries)) {
+    if (entry.catalogItemId !== fromId || entry.removedAt !== null) continue;
+
+    const standing = state.entries[entryId(entry.listId, toId)];
+    // The survivor already has a tile on this list, and that tile wins.
+    // Overwriting its amount with the loser's would silently change a number
+    // somebody is looking at, and adding the two is not something `set_amount`
+    // can say — it names an amount, it cannot ask for one more.
+    if (!standing || standing.removedAt !== null) {
+      ops.push({ kind: "add_item", listId: entry.listId, catalogItemId: toId });
+
+      const view = buildEntryView(entry, contributions);
+      // One total, or none at all. Two totals means two unit families — "2 dl"
+      // and "3 st" — which no single amount can carry, and choosing one of them
+      // would invent a quantity the household never wrote.
+      if (view.totals.length === 1) {
+        ops.push({
+          kind: "set_amount",
+          listId: entry.listId,
+          catalogItemId: toId,
+          amount: view.totals[0],
+        });
+      }
+      if (view.modifier) {
+        ops.push({
+          kind: "set_modifier",
+          listId: entry.listId,
+          catalogItemId: toId,
+          modifier: view.modifier,
+        });
+      }
+      // Only when it says something. "normal" is what an entry is born with, and
+      // stamping priority's clock anyway would let this merge outrank a genuine
+      // "bråttom" set on another phone a moment earlier.
+      if (entry.priority !== "normal") {
+        ops.push({
+          kind: "set_priority",
+          listId: entry.listId,
+          catalogItemId: toId,
+          priority: entry.priority,
+        });
+      }
+    }
+
+    // `bought: false`, always — the rule `takeOffList` follows. Tidying your own
+    // vocabulary is administration, not a shop, and recording it as a purchase
+    // would teach the cadence engine that you buy this every time you merge two
+    // words.
+    ops.push({
+      kind: "remove_item",
+      listId: entry.listId,
+      catalogItemId: fromId,
+      bought: false,
+    });
+  }
+
+  // Last: the word itself. The products and the shopping are moved off it before
+  // it is tombstoned, exactly as the split moves its products first.
+  ops.push({
+    kind: "merge_catalog_items",
+    fromItemId: fromId,
+    toItemId: toId,
+    aliasNorm: from.nameNorm,
+  });
+
+  return ops;
 }
 
 /**

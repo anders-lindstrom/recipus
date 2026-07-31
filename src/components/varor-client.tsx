@@ -8,7 +8,7 @@ import type { Category, Id, List } from "@/lib/domain";
 import type { Op } from "@/lib/sync";
 import { normalizeName, slugify } from "@/lib/utils";
 import { VarorScreen, type VarorScreenActions } from "./varor-screen";
-import { buildRegistry, unplacedProducts } from "./varor-model";
+import { buildRegistry, mergeVaraOps, unplacedProducts } from "./varor-model";
 
 /**
  * Wiring the registry screen to the sync layer.
@@ -305,35 +305,19 @@ export function VarorClient({
     },
 
     /**
-     * Merge: move the products across FIRST, then tombstone the word.
+     * Merge: hand the whole plan to `mergeVaraOps` and dispatch it in order.
      *
-     * The reducer's merge case only tombstones and records the alias — it must
-     * never rewrite rows, or the merge stops converging. So re-pointing the
-     * products is the caller's job, dispatched as ordinary `update_product` ops
-     * exactly as the split does. Leaving them behind would strand them on a
-     * tombstoned vara: not in the queue, not under any word, invisible on this
-     * screen entirely — a worse outcome than the duplicate the merge came to fix.
-     *
-     * `aliasNorm` is the merged-away vara's own `nameNorm`, which is the string
-     * `matchIngredient` compares against. It is what keeps every recipe line
-     * already written against the old word resolving afterwards.
+     * The plan is pure and lives in `varor-model.ts` — the products it re-points,
+     * the shopping it carries across to the survivor, and the tombstone last — so
+     * that the cases worth arguing about can be asserted in a test instead of in
+     * a browser. Ordering matters and `nextOpTimestamp` provides it: every op
+     * here gets a strictly later clock than the one before, so the tombstone
+     * cannot tie with the moves that have to precede it.
      */
     mergeVaror: (fromId, toId, productIds) => {
-      const from = state.catalog[fromId];
-      if (!from) return;
-      for (const productId of productIds) {
-        dispatch({
-          kind: "update_product",
-          productId,
-          patch: { catalogItemId: toId },
-        });
+      for (const op of mergeVaraOps(state, fromId, toId, productIds)) {
+        dispatch(op);
       }
-      dispatch({
-        kind: "merge_catalog_items",
-        fromItemId: fromId,
-        toItemId: toId,
-        aliasNorm: from.nameNorm,
-      });
     },
 
     deleteVara: (varaId) =>

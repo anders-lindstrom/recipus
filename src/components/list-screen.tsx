@@ -20,6 +20,7 @@ import {
   groupByCategory,
   itemsOnlyWantedByRecipe,
   shouldGroupByAisle,
+  tileVaror,
   type EntryView,
   type RecipeAdditionInfo,
 } from "@/lib/services/entries";
@@ -210,11 +211,10 @@ export function ListScreen({
     dwellMs: 900,
   });
 
-  const byId = useMemo(
-    () => new Map(catalog.map((c) => [c.id, c])),
-    [catalog],
-  );
   const live = useMemo(() => activeEntries(entries), [entries]);
+  // Stand-ins included, so an entry whose vara was merged or deleted away is a
+  // tile you can tap off rather than a row nothing can draw. See `tileVaror`.
+  const byId = useMemo(() => tileVaror(catalog, live), [catalog, live]);
   const onListIds = useMemo(
     () => new Set(live.map((e) => e.catalogItemId)),
     [live],

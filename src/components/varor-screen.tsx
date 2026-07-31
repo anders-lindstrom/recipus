@@ -412,23 +412,30 @@ export function VarorScreen({
           }
           categories={categories}
           listName={listName}
-          onRename={(name) => {
-            actions.renameVara(openVara.item.id, name);
-            setSheet(null);
-          }}
-          onRecategorize={(categoryId) => {
-            actions.recategorizeVara(openVara.item.id, categoryId);
-            setSheet(null);
-          }}
-          // Deliberately does NOT close: it is a toggle you may want to look at
-          // after flipping, and closing would make trying it feel like a commit.
+          /*
+           * None of the four edits closes this sheet, and that is one rule
+           * rather than four coincidences.
+           *
+           * Naming a vara, filing it, giving it a picture and saying you always
+           * have it are four facts about ONE thing, and they are wanted
+           * together: you re-file surdegsbröd into Bröd and immediately want to
+           * stop it being a cardboard box. Closing after each one dropped you on
+           * a screen of three hundred other varor with this one to find again —
+           * and when you had arrived from the shopping list via `?vara=`, it did
+           * not even drop you back where you came from.
+           *
+           * The `hasAtHome` toggle already worked this way, for the reason that
+           * covers all four: closing makes trying something feel like a commit.
+           * The sub-editors collapse themselves instead — see the sheet.
+           */
+          onRename={(name) => actions.renameVara(openVara.item.id, name)}
+          onRecategorize={(categoryId) =>
+            actions.recategorizeVara(openVara.item.id, categoryId)
+          }
           onSetHasAtHome={(hasAtHome) =>
             actions.setHasAtHome(openVara.item.id, hasAtHome)
           }
-          onSetIcon={(iconRef) => {
-            actions.setVaraIcon(openVara.item.id, iconRef);
-            setSheet(null);
-          }}
+          onSetIcon={(iconRef) => actions.setVaraIcon(openVara.item.id, iconRef)}
           onSplit={() => setSheet({ kind: "split", id: openVara.item.id })}
           onMerge={() => setSheet({ kind: "merge", id: openVara.item.id })}
           onDelete={() => {

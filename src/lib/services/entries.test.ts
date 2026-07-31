@@ -3,6 +3,7 @@ import {
   entryId,
   manualContributionId,
   recipeContributionId,
+  type CatalogItem,
   type Contribution,
   type ListEntry,
   type Unit,
@@ -13,6 +14,7 @@ import {
   itemsOnlyWantedByRecipe,
   groupByCategory,
   shouldGroupByAisle,
+  tileVaror,
 } from "./entries";
 
 const LIST = "hemkop";
@@ -373,5 +375,78 @@ describe("itemsOnlyWantedByRecipe", () => {
         ],
       ),
     ).toEqual(["mjolk", "gradde"]);
+  });
+});
+
+/**
+ * An entry can outlive its vara — the reducer means it to, because a merge that
+ * rewrote entry rows would not converge. What it must never do is outlive it
+ * INVISIBLY, which is what happened in production: the screen looked the vara up,
+ * missed, and dropped the tile, leaving a live row nothing could draw, no gesture
+ * could reach, and pruning could not collect.
+ */
+describe("tileVaror", () => {
+  function vara(id: string, name = id): CatalogItem {
+    return {
+      id,
+      name,
+      nameNorm: name,
+      categoryId: "mejeri-agg",
+      iconRef: "1F95B",
+      isCustom: false,
+      hasAtHome: false,
+      useCount: 0,
+      lastUsedAt: null,
+    };
+  }
+
+  it("passes real varor through untouched", () => {
+    const map = tileVaror([vara(CREAM, "grädde")], [makeEntry()]);
+    expect(map.get(CREAM)!.name).toBe("grädde");
+    expect(map.size).toBe(1);
+  });
+
+  it("stands in for an entry whose vara is gone, so the tile can be tapped off", () => {
+    const stranded = makeEntry({
+      id: entryId(LIST, "vitloksklyfta"),
+      catalogItemId: "vitloksklyfta",
+    });
+
+    const map = tileVaror([vara(CREAM, "grädde")], [makeEntry(), stranded]);
+
+    const standIn = map.get("vitloksklyfta");
+    expect(standIn).toBeDefined();
+    // Named from the entry's own id, because the row that knew the pretty
+    // spelling is precisely what is missing. Övrigt and a box say "something odd
+    // is here" rather than pretending this is an ordinary vara.
+    expect(standIn).toMatchObject({
+      id: "vitloksklyfta",
+      name: "vitloksklyfta",
+      categoryId: "ovrigt",
+      iconRef: "1F4E6",
+    });
+  });
+
+  it("opens a slug back out so a two-word vara does not read as one", () => {
+    const stranded = makeEntry({
+      id: entryId(LIST, "creme-fraiche"),
+      catalogItemId: "creme-fraiche",
+    });
+    expect(tileVaror([], [stranded]).get("creme-fraiche")!.name).toBe(
+      "creme fraiche",
+    );
+  });
+
+  it("stands in for nothing that is already tombstoned", () => {
+    // `live` is the caller's active set. A bought item whose vara was later
+    // deleted must not come back as a stand-in tile — it is off the list, and
+    // resurrecting it here would undo a removal nobody asked to undo.
+    const removed = makeEntry({
+      id: entryId(LIST, "gone"),
+      catalogItemId: "gone",
+      removedAt: "2026-03-12T11:00:00.000Z",
+    });
+    const map = tileVaror([], activeEntries([removed]));
+    expect(map.has("gone")).toBe(false);
   });
 });

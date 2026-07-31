@@ -100,6 +100,27 @@ export function VarorItemSheet({
     setRenaming(true);
   }
 
+  /*
+   * Each sub-editor closes ITSELF on save, back to the vara it belongs to.
+   *
+   * It used to be the parent that closed — the whole sheet, screen and all — so
+   * saving a name was indistinguishable from giving up on the vara entirely. The
+   * category picker was already doing it this way (`setRefiling(false)` before
+   * `onRecategorize`); these two were the odd ones out, and only because
+   * unmounting happened to hide them.
+   */
+  function commitRename() {
+    if (!nameOk) return;
+    setRenaming(false);
+    onRename(trimmed);
+  }
+
+  function commitIcon(iconRef: string) {
+    setPickingIcon(false);
+    setIconDraft("");
+    onSetIcon(iconRef);
+  }
+
   if (renaming) {
     return (
       <Sheet title={`Byt namn på ${vara.item.name}`} onClose={onClose}>
@@ -116,7 +137,7 @@ export function VarorItemSheet({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && nameOk) onRename(trimmed);
+              if (e.key === "Enter") commitRename();
             }}
             inputMode="text"
             autoComplete="off"
@@ -143,7 +164,7 @@ export function VarorItemSheet({
             <button
               type="button"
               disabled={!nameOk}
-              onClick={() => onRename(trimmed)}
+              onClick={commitRename}
               className="flex-1 rounded-control bg-brand px-3 py-3 text-body font-semibold text-on-brand transition-transform duration-100 active:scale-[0.98] disabled:opacity-40"
             >
               Spara
@@ -181,7 +202,7 @@ export function VarorItemSheet({
               value={iconDraft}
               onChange={(e) => setIconDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && picked) onSetIcon(picked);
+                if (e.key === "Enter" && picked) commitIcon(picked);
               }}
               placeholder="🍞"
               autoComplete="off"
@@ -201,7 +222,7 @@ export function VarorItemSheet({
           {category && (
             <button
               type="button"
-              onClick={() => onSetIcon(category.icon)}
+              onClick={() => commitIcon(category.icon)}
               className="mt-1 flex w-full items-center gap-2 rounded-control bg-surface px-3 py-3 text-body font-semibold text-ink"
             >
               <ItemIcon iconRef={category.icon} className="text-xl" />
@@ -220,7 +241,7 @@ export function VarorItemSheet({
             <button
               type="button"
               disabled={!picked}
-              onClick={() => picked && onSetIcon(picked)}
+              onClick={() => picked && commitIcon(picked)}
               className="flex-1 rounded-control bg-brand px-3 py-3 text-body font-semibold text-on-brand transition-transform duration-100 active:scale-[0.98] disabled:opacity-40"
             >
               Spara

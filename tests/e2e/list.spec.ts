@@ -2,6 +2,7 @@ import {
   catalogTile,
   entriesInIndexedDb,
   expect,
+  longPressTile,
   onListTile,
   outboxSize,
   purchaseCount,
@@ -260,4 +261,64 @@ test("the panel opens on what you buy most, and never drops the keyboard", async
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
   await expect(onListTile(page, "citron")).toBeVisible();
+});
+
+/**
+ * The gesture that opens a sheet must not also act on it.
+ *
+ * Reported from production as "long pressing something, changing something, then
+ * pressing out of the dialog modifies the thing behind it — marking something
+ * bought while I just wanted to get out of the popover".
+ *
+ * The cause is one stray click. A touchscreen hit-tests the click a touch
+ * synthesizes at the finger's position when it LIFTS, and by then the sheet the
+ * long-press opened is sitting under that finger — so the press delivers a final
+ * click into a surface that did not exist when it began. Where it lands is pure
+ * geometry: on the backdrop the sheet shuts inside its own opening gesture, and
+ * lower down the page it hits the action row and takes the item off the list.
+ *
+ * Only reproducible with real touch events. `page.mouse` sends its click to the
+ * common ancestor of down and up, which is a container that does nothing — which
+ * is exactly why the existing long-press tests never caught this.
+ */
+test("a long-press opens the breakdown, and its own click does not act on it", async ({
+  freshPage: page,
+}) => {
+  await catalogTile(page, "banan").click();
+  await expect(onListTile(page, "banan")).toBeVisible();
+
+  await longPressTile(page, onListTile(page, "banan"));
+
+  // Both halves. The sheet survived the gesture that opened it...
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByRole("dialog")).toContainText("banan");
+  // ...and the item is still on the list: no action row was pressed on the way.
+  await expect(onListTile(page, "banan")).toHaveCount(1);
+});
+
+test("a click with no press behind it does nothing, however destructive the button", async ({
+  freshPage: page,
+  listId,
+}) => {
+  // The invariant stated directly, without depending on the sheet's height or on
+  // where a tile happens to sit. A `click` that no `pointerdown` inside the sheet
+  // preceded is the stray one, and it must be inert even when it is aimed at the
+  // one control that empties the list.
+  await catalogTile(page, "banan").click();
+  await longPressTile(page, onListTile(page, "banan"));
+  await expect(page.getByRole("dialog")).toBeVisible();
+
+  const remove = page.getByRole("button", { name: "Ta bort" });
+  await expect(remove).toBeVisible();
+  await remove.dispatchEvent("click");
+
+  await expect(onListTile(page, "banan")).toHaveCount(1);
+  await expect(page.getByRole("dialog")).toBeVisible();
+
+  // And the button still works when a real press asks for it — the guard must
+  // not have made the sheet inert.
+  await remove.click();
+  await expect(onListTile(page, "banan")).toHaveCount(0);
+  // "Ta bort" is the change-of-mind path, so it records no purchase.
+  expect(await purchaseCount(listId)).toBe(0);
 });

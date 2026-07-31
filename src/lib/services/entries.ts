@@ -1,5 +1,6 @@
 import type {
   Amount,
+  CatalogItem,
   Contribution,
   Id,
   ListEntry,
@@ -179,6 +180,59 @@ export function buildEntryView(
 /** Entries currently on a list — i.e. not tombstoned. */
 export function activeEntries(entries: ListEntry[]): ListEntry[] {
   return entries.filter((e) => e.removedAt === null);
+}
+
+/**
+ * Every vara the tiles need, including stand-ins for varor that are gone.
+ *
+ * An entry can outlive its vara, and the reducer means it to: `delete_catalog_item`
+ * and `merge_catalog_items` deliberately never rewrite entry rows, because a
+ * merge that rewrote rows would not converge — `merge(B→A)` at T5 followed by a
+ * long-offline `add_item(B)` at T7 settles on B in one arrival order and on A in
+ * the other. Tombstoning alone leaves every device holding the same orphan.
+ *
+ * The design's word for that orphan is "visible, manually fixable". It was
+ * neither. The screen drew a tile by looking the entry's vara up in the catalog
+ * and dropping it when the lookup missed, so the row went on existing with
+ * nothing to render it and no gesture able to reach it — and pruning could not
+ * collect it either, since that goes by `removedAt` and an orphan has none. In
+ * production this is what made a merged-away vara silently vanish off the
+ * shopping list rather than move.
+ *
+ * So a miss becomes a stand-in rather than a hole. It renders like anything else,
+ * which means one tap takes it off — and that is the whole job: this is a repair
+ * affordance for a state that should be rare, not a feature. The name is the
+ * entry's own id with its hyphens opened out, because the vara that knew the
+ * pretty spelling is exactly what is missing; a box icon and an id-shaped word
+ * read as "something odd is here, deal with it", which is the truth.
+ */
+export function tileVaror(
+  catalog: CatalogItem[],
+  live: ListEntry[],
+): Map<Id, CatalogItem> {
+  const byId = new Map(catalog.map((c) => [c.id, c]));
+  for (const entry of live) {
+    if (byId.has(entry.catalogItemId)) continue;
+    byId.set(entry.catalogItemId, standIn(entry.catalogItemId));
+  }
+  return byId;
+}
+
+function standIn(catalogItemId: Id): CatalogItem {
+  const name = catalogItemId.replace(/-/g, " ");
+  return {
+    id: catalogItemId,
+    name,
+    nameNorm: name,
+    // Övrigt sorts last, which is where an item nobody can name belongs on the
+    // walk round the shop.
+    categoryId: "ovrigt",
+    iconRef: "1F4E6",
+    isCustom: true,
+    hasAtHome: false,
+    useCount: 0,
+    lastUsedAt: null,
+  };
 }
 
 /**

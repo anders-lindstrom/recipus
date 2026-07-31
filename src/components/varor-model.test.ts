@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   emptyState,
   entryId,
+  type Amount,
+  type Contribution,
   type CatalogItem,
   type ListEntry,
   type Product,
   type SyncState,
 } from "@/lib/domain";
+import { tileVaror } from "@/lib/services/entries";
+import { applyOps } from "@/lib/sync/reducer";
+import type { Op } from "@/lib/sync/ops";
 import { normalizeName } from "@/lib/utils";
 import {
   buildRegistry,
@@ -14,6 +19,7 @@ import {
   deletionBlockers,
   filterProducts,
   filterVaror,
+  mergeVaraOps,
   productSubtitle,
   unplacedProducts,
 } from "./varor-model";
@@ -302,5 +308,246 @@ describe("collidingVara", () => {
 
   it("passes a genuinely new name", () => {
     expect(collidingVara(catalog, "laktosfri-mjolk", "laktosfri mjölk")).toBeNull();
+  });
+});
+
+/**
+ * The half of a merge the reducer must not do.
+ *
+ * `merge_catalog_items` tombstones the losing word and records the alias, and
+ * nothing else — a merge that rewrote rows would not converge. Everything
+ * hanging off the word is therefore re-pointed AROUND it, and today's shopping
+ * is part of that. It did not used to be, and the consequence reached
+ * production: the loser's entry stayed live on a vara the catalog no longer had,
+ * so the list screen could not draw it and no gesture could reach it. The item
+ * you needed silently vanished, and re-adding the recipe built a second entry
+ * beside the invisible one.
+ */
+describe("mergeVaraOps", () => {
+  const KIND = (ops: ReturnType<typeof mergeVaraOps>) => ops.map((o) => o.kind);
+
+  function contribution(
+    catalogItemId: string,
+    amount: Amount | null,
+    sourceKind: "manual" | "recipe" = "recipe",
+    modifier: string | null = null,
+  ): Contribution {
+    return {
+      id: `c-${catalogItemId}-${sourceKind}`,
+      entryId: entryId(LIST, catalogItemId),
+      sourceKind,
+      recipeAdditionId: sourceKind === "recipe" ? "add-1" : null,
+      amount,
+      note: null,
+      modifier,
+    };
+  }
+
+  it("carries the shopping across to the survivor and takes the loser off", () => {
+    const state = stateWith({
+      catalog: {
+        kycklingbrostfile: item("kycklingbrostfile", "kycklingbröstfilé"),
+        kycklingbrost: item("kycklingbrost", "kycklingbröst"),
+      },
+      entries: { [entryId(LIST, "kycklingbrostfile")]: entry("kycklingbrostfile") },
+      contributions: {
+        "c-1": contribution("kycklingbrostfile", { value: 600, unit: "g" }),
+      },
+    });
+
+    const ops = mergeVaraOps(state, "kycklingbrostfile", "kycklingbrost", []);
+
+    expect(KIND(ops)).toEqual([
+      "add_item",
+      "set_amount",
+      "remove_item",
+      "merge_catalog_items",
+    ]);
+    // The number the tile was showing survives the merge. Losing it was the
+    // whole complaint: you merged two words and the meat left your list.
+    expect(ops[1]).toMatchObject({
+      catalogItemId: "kycklingbrost",
+      amount: { value: 600, unit: "g" },
+    });
+    // Administration, not a shop. A purchase here would teach the cadence engine
+    // that you buy this every time you tidy your vocabulary.
+    expect(ops[2]).toMatchObject({
+      catalogItemId: "kycklingbrostfile",
+      bought: false,
+    });
+    // The tombstone goes LAST, after everything has been moved off the word.
+    expect(ops[3]).toMatchObject({
+      fromItemId: "kycklingbrostfile",
+      toItemId: "kycklingbrost",
+      aliasNorm: "kycklingbrostfile",
+    });
+  });
+
+  it("leaves the survivor's own tile alone when it is already on the list", () => {
+    // Two tiles folding into one. The survivor is a tile somebody is looking at,
+    // so its amount stands: overwriting it would silently change a number on
+    // screen, and `set_amount` cannot ask for "one more" instead.
+    const state = stateWith({
+      catalog: {
+        vitloksklyfta: item("vitloksklyfta", "vitloksklyfta"),
+        vitlok: item("vitlok", "vitlok"),
+      },
+      entries: {
+        [entryId(LIST, "vitloksklyfta")]: entry("vitloksklyfta"),
+        [entryId(LIST, "vitlok")]: entry("vitlok"),
+      },
+      contributions: {
+        "c-1": contribution("vitloksklyfta", { value: 2, unit: "st" }),
+        "c-2": contribution("vitlok", { value: 1, unit: "st" }),
+      },
+    });
+
+    const ops = mergeVaraOps(state, "vitloksklyfta", "vitlok", []);
+
+    expect(KIND(ops)).toEqual(["remove_item", "merge_catalog_items"]);
+    expect(ops[0]).toMatchObject({ catalogItemId: "vitloksklyfta" });
+  });
+
+  it("carries sort and urgency, and stamps priority's clock only when it says something", () => {
+    const urgent: ListEntry = { ...entry("kottfars"), priority: "urgent" };
+    const state = stateWith({
+      catalog: { kottfars: item("kottfars"), notfars: item("notfars") },
+      entries: { [entryId(LIST, "kottfars")]: urgent },
+      contributions: {
+        "c-1": contribution("kottfars", null, "manual", "ekologisk"),
+      },
+    });
+
+    const ops = mergeVaraOps(state, "kottfars", "notfars", []);
+
+    expect(KIND(ops)).toEqual([
+      "add_item",
+      "set_modifier",
+      "set_priority",
+      "remove_item",
+      "merge_catalog_items",
+    ]);
+    expect(ops[1]).toMatchObject({ modifier: "ekologisk" });
+    expect(ops[2]).toMatchObject({ priority: "urgent" });
+  });
+
+  it("invents no quantity when the entry spans two unit families", () => {
+    // "2 dl" and "3 st" cannot be summed honestly, so `buildEntryView` reports
+    // two totals — and a single `set_amount` would have to pick one of them and
+    // call it the answer. It carries neither instead.
+    const state = stateWith({
+      catalog: { gradde: item("gradde"), matlagningsgradde: item("matlagningsgradde") },
+      entries: { [entryId(LIST, "gradde")]: entry("gradde") },
+      contributions: {
+        "c-1": contribution("gradde", { value: 2, unit: "dl" }, "recipe"),
+        "c-2": contribution("gradde", { value: 3, unit: "st" }, "manual"),
+      },
+    });
+
+    const ops = mergeVaraOps(state, "gradde", "matlagningsgradde", []);
+    expect(KIND(ops)).toEqual(["add_item", "remove_item", "merge_catalog_items"]);
+  });
+
+  it("ignores a tombstoned entry, and moves the products it was given", () => {
+    const state = stateWith({
+      catalog: { a: item("a"), b: item("b") },
+      entries: { [entryId(LIST, "a")]: entry("a", at(5)) },
+      products: { p1: product("p1", "Något", "a") },
+    });
+
+    const ops = mergeVaraOps(state, "a", "b", ["p1"]);
+    expect(KIND(ops)).toEqual(["update_product", "merge_catalog_items"]);
+    expect(ops[0]).toMatchObject({ productId: "p1", patch: { catalogItemId: "b" } });
+  });
+
+  it("says nothing at all about a vara it has never heard of, or a merge into itself", () => {
+    const state = stateWith({ catalog: { a: item("a") } });
+    expect(mergeVaraOps(state, "gone", "a", [])).toEqual([]);
+    // Merging a word into itself would tombstone the survivor and alias the word
+    // to a row that no longer exists — the one input that must produce nothing.
+    expect(mergeVaraOps(state, "a", "a", [])).toEqual([]);
+  });
+});
+
+/**
+ * The reported scenario, start to finish, through the real reducer.
+ *
+ * Add the ICA recipe, merge the vara it matched into the plainer word, add the
+ * recipe again. Before the fix this ended with two live entries — one of them
+ * unrenderable — and the meat you needed missing from the screen.
+ */
+describe("merging a vara that a recipe put on the list", () => {
+  const RECIPE_OPS = (additionId: string, minute: number): Op[] => [
+    {
+      clientOpId: `add-${additionId}`,
+      actor: "anders",
+      at: at(minute),
+      kind: "add_recipe",
+      listId: LIST,
+      recipeId: "ica-725395",
+      recipeAdditionId: additionId,
+      scaleFactor: 1,
+      items: [
+        {
+          catalogItemId: additionId === "first" ? "kycklingbrostfile" : "kycklingbrost",
+          amount: { value: 600, unit: "g" },
+        },
+      ],
+    },
+  ];
+
+  /** Exactly what `list-screen` draws: entries joined to catalog, plus stand-ins. */
+  function tiles(state: SyncState): string[] {
+    const live = Object.values(state.entries).filter(
+      (e) => e.listId === LIST && e.removedAt === null,
+    );
+    return [...tileVaror(Object.values(state.catalog), live).values()]
+      .filter((c) => live.some((e) => e.catalogItemId === c.id))
+      .map((c) => c.name)
+      .sort();
+  }
+
+  it("keeps one tile, with the amount, across a merge and a re-add", () => {
+    let state = applyOps(emptyState(), [
+      {
+        clientOpId: "c1",
+        actor: "anders",
+        at: at(1),
+        kind: "create_catalog_item",
+        item: item("kycklingbrostfile", "kycklingbröstfilé"),
+      },
+      {
+        clientOpId: "c2",
+        actor: "anders",
+        at: at(2),
+        kind: "create_catalog_item",
+        item: item("kycklingbrost", "kycklingbröst"),
+      },
+      ...RECIPE_OPS("first", 3),
+    ]);
+    expect(tiles(state)).toEqual(["kycklingbröstfilé"]);
+
+    // The merge, dispatched exactly as the screen dispatches it: one op per
+    // draft, each with a strictly later clock (see `nextOpTimestamp`).
+    const drafts = mergeVaraOps(state, "kycklingbrostfile", "kycklingbrost", []);
+    state = applyOps(
+      state,
+      drafts.map(
+        (d, i) =>
+          ({ ...d, clientOpId: `m${i}`, actor: "anders", at: at(10 + i) }) as Op,
+      ),
+    );
+
+    // It moved. It did not vanish, and it left nothing behind that cannot be
+    // drawn — the two halves of the production report.
+    expect(tiles(state)).toEqual(["kycklingbröst"]);
+    expect(
+      Object.values(state.entries).filter((e) => e.removedAt === null),
+    ).toHaveLength(1);
+
+    // The server re-points `recipe_ingredients`, so the second add resolves to
+    // the survivor. One tile, not two.
+    state = applyOps(state, RECIPE_OPS("second", 20));
+    expect(tiles(state)).toEqual(["kycklingbröst"]);
   });
 });

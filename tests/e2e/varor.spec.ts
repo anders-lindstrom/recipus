@@ -4,7 +4,9 @@ import {
   catalogTile,
   dropCatalogItems,
   dropProducts,
+  entriesInIndexedDb,
   expect,
+  longPressTile,
   onListTile,
   outboxSize,
   test,
@@ -418,4 +420,161 @@ test("a listed item links straight to its own vara", async ({ page, listId }) =>
   await expect(
     page.getByRole("dialog").getByRole("button", { name: /Byt kategori/ }),
   ).toBeVisible();
+});
+
+/**
+ * Editing a vara leaves you on the vara.
+ *
+ * Reported from production: "when editing an item and saving a category change,
+ * the app jumps out into the varor view — if I just changed the category, maybe I
+ * also want to change the icon. And I was in my shopping list, then ended up in
+ * the items view."
+ *
+ * Four facts hang off one word — its name, its aisle, its picture, and whether
+ * you always have it — and they are wanted together: you re-file surdegsbröd
+ * into Bröd and immediately want it to stop being a cardboard box. Each save used
+ * to close the whole sheet, which dropped you on a screen of three hundred other
+ * varor with this one to find again. Arriving from the list via `?vara=`, as this
+ * test does, it did not even drop you back where you came from.
+ *
+ * The `hasAtHome` toggle already behaved: closing makes trying something feel
+ * like a commit. This asserts the other three now behave the same.
+ */
+test("changing a vara's category keeps the sheet open, ready for the next change", async ({
+  page,
+  listId,
+}) => {
+  // Its own vara, never a seeded one. This suite shares a catalog, and re-filing
+  // banan into Bröd leaves it there for every later test and every later run —
+  // which is how a tile ends up below the fold in a spec that measures before it
+  // scrolls. Created here, dropped in teardown, visible to nobody else.
+  const varaName = `Surdegsbrod${unique().replace(/-/g, "")}`;
+  const varaId = await createVara(page, varaName);
+
+  await page.goto(`/?list=${listId}`);
+  const field = page.getByLabel("Sök eller lägg till vara");
+  await field.fill(varaName);
+  await field.press("Enter");
+  await expect(onListTile(page, varaName)).toBeVisible();
+
+  await longPressTile(page, onListTile(page, varaName));
+  await page.getByRole("button", { name: new RegExp(`Om ${varaName}`, "i") }).click();
+  await expect(page).toHaveURL(new RegExp(`/varor\\?.*vara=${varaId}`));
+
+  const sheet = page.getByRole("dialog");
+  await expect(sheet).toContainText(varaName);
+
+  await sheet.getByRole("button", { name: /Byt kategori/ }).click();
+  await sheet.getByRole("button", { name: "Bröd", exact: true }).click();
+
+  // Still here, on this vara, with the new aisle showing — not back on a list of
+  // everything with the edit to take on trust.
+  await expect(sheet).toBeVisible();
+  await expect(sheet).toContainText(varaName);
+  await expect(sheet.getByRole("button", { name: /Byt kategori/ })).toContainText(
+    /bröd/i,
+  );
+
+  // And the second edit is reachable without navigating back, which is the whole
+  // point of not closing.
+  await sheet.getByRole("button", { name: /Byt ikon/ }).click();
+  await expect(sheet.getByRole("textbox", { name: "Emoji" })).toBeVisible();
+
+  await settle(page);
+  await dropCatalogItems([varaId]);
+});
+
+test("renaming a vara returns to the vara, not to the whole registry", async ({
+  page,
+  listId,
+}) => {
+  const varaName = `Kesella${unique().replace(/-/g, "")}`;
+  const varaId = await createVara(page, varaName);
+
+  await page.goto(`/varor?list=${listId}&vara=${varaId}`);
+  const sheet = page.getByRole("dialog");
+  await expect(sheet).toContainText(varaName);
+
+  await sheet.getByRole("button", { name: /Byt namn/ }).click();
+  await sheet.getByRole("textbox", { name: "Namn" }).fill(`${varaName}er`);
+  await sheet.getByRole("button", { name: "Spara" }).click();
+
+  // The rename sub-editor collapses back to the vara it belongs to. It used to
+  // rely on the parent unmounting the entire sheet to hide itself, so saving a
+  // name was indistinguishable from abandoning the vara.
+  await expect(sheet.getByRole("textbox", { name: "Namn" })).toHaveCount(0);
+  await expect(sheet).toContainText(`${varaName}er`);
+  await expect(sheet.getByRole("button", { name: /Byt kategori/ })).toBeVisible();
+
+  await settle(page);
+  await dropCatalogItems([varaId]);
+});
+
+/**
+ * A merge takes today's shopping with it.
+ *
+ * The production report, in the reporter's words: "I added a recipe from ICA and
+ * it put kycklingbröstfilé on my list. Later I merged that into just
+ * kycklingbröst — and then if I add the recipe again it adds a new line of the
+ * other one, and they potentially go double."
+ *
+ * Both halves came from one omission. `merge_catalog_items` correctly refuses to
+ * rewrite entry rows — a merge that rewrote rows would not converge — but nothing
+ * else moved them either, so the loser's entry stayed live on a vara the catalog
+ * no longer had. The screen could not draw it and no gesture could reach it, so
+ * the thing you needed silently vanished; and re-adding the recipe, which the
+ * server had re-pointed at the survivor, then built a second entry beside the
+ * invisible one.
+ *
+ * Asserted through the UI rather than against the tables, because "is it on my
+ * list" is a question about what the screen shows — and a row nothing renders was
+ * exactly the failure.
+ */
+test("merging a vara that is on the list moves the shopping to the survivor", async ({
+  page,
+  listId,
+}) => {
+  const suffix = unique();
+  const goneName = `Kycklingfile ${suffix}`;
+  const keptName = `Kycklingbrost ${suffix}`;
+  const goneId = await createVara(page, goneName);
+  const keptId = await createVara(page, keptName);
+
+  // Put the doomed vara on the list, with a quantity — the number is the thing
+  // that must survive the merge.
+  await page.goto(`/?list=${listId}`);
+  const field = page.getByLabel("Sök eller lägg till vara");
+  await field.fill(`${goneName} 600 g`);
+  await field.press("Enter");
+  await expect(onListTile(page, goneName)).toContainText("600 g");
+
+  await page.goto(`/varor?list=${listId}`);
+  await page.getByRole("button", { name: new RegExp(goneName) }).click();
+  const sheet = page.getByRole("dialog");
+
+  // The consequence is stated before the choice, as every consequence on this
+  // screen is. It used to promise the item would disappear off the list, which
+  // was true of the tile and not of the row underneath it.
+  await sheet.getByRole("button", { name: "Slå samman med annan vara" }).click();
+  await expect(sheet.getByText(/Mängden följer med/)).toBeVisible();
+
+  await sheet.getByLabel("Sök vara att slå samman med").fill(keptName);
+  await sheet.getByRole("button", { name: new RegExp(keptName) }).click();
+
+  await page.goto(`/?list=${listId}`);
+  // The survivor took its place, carrying the amount…
+  await expect(onListTile(page, keptName)).toContainText("600 g");
+  // …and the merged-away word left nothing behind. Before the fix this assertion
+  // passed for the wrong reason: the tile was gone because nothing could draw it,
+  // while the entry sat there live and unreachable.
+  await expect(onListTile(page, goneName)).toHaveCount(0);
+
+  // Exactly one thing on the list — the count is what "they go double" was about.
+  const live = await entriesInIndexedDb(page);
+  expect(live.filter((id) => id.startsWith(`${listId}:`))).toEqual([
+    `${listId}:${keptId}`,
+  ]);
+
+  await settle(page);
+  await dropCatalogItems([goneId, keptId]);
 });

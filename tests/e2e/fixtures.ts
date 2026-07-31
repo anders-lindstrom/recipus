@@ -218,6 +218,51 @@ async function settle(page: Page, timeoutMs = 8000): Promise<void> {
 export { expect };
 
 /**
+ * A long-press made of REAL touch events, not `page.mouse`.
+ *
+ * The difference is not pedantry — it is the only way the sheet bug reproduces.
+ * A mouse dispatches its click to the nearest common ancestor of where the
+ * button went down and where it came up, so once a sheet has opened under the
+ * cursor the click lands on some harmless container and evaporates. A touch does
+ * not: it hit-tests the click at the finger's position when it LIFTS, which by
+ * then is a sheet that was not on screen when the press began. So the press that
+ * opens a sheet delivers one extra click straight into it, aimed at whichever
+ * control now sits under that thumb — the backdrop, or "Ta bort".
+ *
+ * Every phone this app runs on is a touchscreen, so this is the honest input.
+ * Dispatched over CDP because Playwright's `touchscreen.tap` cannot hold.
+ */
+export async function touchLongPress(
+  page: Page,
+  x: number,
+  y: number,
+  holdMs = 700,
+): Promise<void> {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x, y, radiusX: 12, radiusY: 12, force: 1, id: 1 }],
+  });
+  await page.waitForTimeout(holdMs);
+  await cdp.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await cdp.detach();
+}
+
+/** Long-press a locator by its centre, with a real touch. */
+export async function longPressTile(
+  page: Page,
+  tile: ReturnType<Page["locator"]>,
+): Promise<void> {
+  await tile.scrollIntoViewIfNeeded();
+  const box = await tile.boundingBox();
+  if (!box) throw new Error("tile has no box to press");
+  await touchLongPress(page, box.x + box.width / 2, box.y + box.height / 2);
+}
+
+/**
  * How many purchases this list has recorded.
  *
  * The mode's entire justification is that a plan-time tap records nothing and a

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -45,13 +45,53 @@ export function Sheet({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  /**
+   * Has a gesture actually STARTED inside this sheet yet?
+   *
+   * Every sheet in this app is opened by a long-press, and on a touchscreen the
+   * click that a touch synthesizes is hit-tested at the finger's position when it
+   * LIFTS — not where it went down. The sheet has mounted under the finger by
+   * then, so the press that opened it delivers one final click straight into the
+   * sheet, aimed at whatever control now happens to sit under that thumb.
+   *
+   * Measured on a Pixel 7 (tests/e2e/list.spec.ts reproduces it): long-pressing a
+   * tile in "att handla" put that click on the backdrop, so the entry sheet opened
+   * and shut inside one gesture. Long-press a tile lower down the page and the
+   * same click lands on the sheet's own action row instead — "Köpte inte", "Ta
+   * bort" — so the gesture that was meant to OPEN the breakdown silently took the
+   * item off the list. That is the bug reported from production, and both halves
+   * of it are this one stray click.
+   *
+   * So the sheet ignores pointer input until it has seen a `pointerdown` of its
+   * own. A latch rather than a timer: the stray click is by construction the only
+   * one that can reach a freshly-mounted sheet without a pointerdown in front of
+   * it, and a time window would be a guess about how long a thumb takes to lift.
+   */
+  const ownGesture = useRef(false);
+
   return (
     <div
       className="animate-fade-in fixed inset-0 z-50 flex items-end bg-ink/40 backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      onClick={onClose}
+      onPointerDownCapture={() => {
+        ownGesture.current = true;
+      }}
+      onClickCapture={(e) => {
+        if (ownGesture.current) return;
+        // Capture, so this runs before the click reaches any button inside —
+        // stopping it here is the difference between "the sheet opened" and "the
+        // sheet opened and removed the item".
+        e.stopPropagation();
+      }}
+      // Only a click on the backdrop ITSELF dismisses. Without the target check a
+      // press that began on the sheet's own content — dragging a finger while
+      // reading the breakdown — closes the sheet when it happens to end up out
+      // here, which reads as the app throwing you out mid-thought.
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div
         className={cn(

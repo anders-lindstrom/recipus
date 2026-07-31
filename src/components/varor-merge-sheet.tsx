@@ -95,11 +95,19 @@ export function VarorMergeSheet({
           // shopping, so it is said in the shop's own name. Not blocked: a merge
           // is a decision about your words, and refusing it because of one tile
           // would be the taxonomy screen taking orders from the list.
-          <p className="mt-1.5 flex items-start gap-1.5 text-body text-warn">
+          //
+          // It used to say the item "försvinner därifrån", and it was telling the
+          // truth about the intent and not about the code: the tile stopped being
+          // drawn, but the row stayed on the list where nothing could reach it.
+          // The shopping now genuinely moves across — see `mergeVaror` — so this
+          // says that instead. Neutral about WHICH vara, because the target is
+          // chosen from the list below this line.
+          <p className="mt-1.5 flex items-start gap-1.5 text-body text-ink-soft">
             <UiIcon name="warning" size={14} className="mt-1 flex-none" />
             <span>
-              {vara.item.name} står på {lists.join(" och ")} just nu och
-              försvinner därifrån.
+              {vara.item.name} står på {lists.join(" och ")} just nu. Mängden
+              följer med till varan du väljer — men vilket recept den kom från
+              gör det inte.
             </span>
           </p>
         )}
