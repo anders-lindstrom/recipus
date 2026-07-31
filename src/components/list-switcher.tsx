@@ -80,7 +80,12 @@ export function ListSwitcher({
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") submit();
-                if (e.key === "Escape") setCreating(false);
+                // Abandoning the new-list field is not the same act as
+                // dismissing the switcher, and one Escape used to do both.
+                if (e.key === "Escape") {
+                  e.nativeEvent.stopPropagation();
+                  setCreating(false);
+                }
               }}
               placeholder="Namn på listan"
               aria-label="Namn på listan"

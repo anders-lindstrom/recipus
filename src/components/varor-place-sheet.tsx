@@ -110,7 +110,13 @@ export function VarorPlaceSheet({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") setQuery("");
+              // One Escape was clearing the field AND closing the sheet, so
+              // the clear could never be observed on its own. See the identical
+              // note in `varor-merge-sheet.tsx`.
+              if (e.key === "Escape" && query !== "") {
+                e.nativeEvent.stopPropagation();
+                setQuery("");
+              }
               if (e.key !== "Enter") return;
               if (matches.length > 0) onPlace(matches[0].id);
               else if (canCreate) onCreateAndPlace(name);

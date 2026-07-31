@@ -121,7 +121,17 @@ export function VarorMergeSheet({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") setQuery("");
+              // Clearing the field and closing the sheet were BOTH happening on
+              // one Escape, so the clear was unreachable: the sheet's own
+              // handler sits on `window`, and this one let the event through to
+              // it. Stopping the native event keeps it off window, and only
+              // while there is something to clear — an Escape on an empty field
+              // still means "get me out of here", which is the whole reason a
+              // sheet answers Escape at all.
+              if (e.key === "Escape" && query !== "") {
+                e.nativeEvent.stopPropagation();
+                setQuery("");
+              }
             }}
             placeholder="Slå samman med…"
             aria-label="Sök vara att slå samman med"
