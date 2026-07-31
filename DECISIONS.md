@@ -1,3 +1,92 @@
+# Fewer taps, 2026-07-31 (later) — read this first
+
+Anders used the previous session's work and came back with four complaints, all
+of them about the same thing: the app knew what he wanted and made him say it
+three times anyway.
+
+## "How do I add both a banan and a mogen banan?"
+
+The invariant is right and stays: **one vara appears at most once per list**, so
+you pass the fruit shelf once. Two kinds sharing a tile would mean one of them
+has no amount of its own.
+
+So the answer was always a second vara, and the schema says as much — "when ripe
+mango genuinely deserves its own cadence, that is the registry's split". The
+problem was never the model. It was that taking the supported path **punished
+you**: everything the add bar creates went to Övrigt with a box icon, and Övrigt
+sorts LAST. Keeping a kind of your own put it at the wrong end of the shop,
+permanently, and the penalty landed hardest on exactly the person who knew what
+they wanted.
+
+A created vara now inherits the aisle and icon of the vara its query resolved
+to. "mogen banan" lands in Frukt & grönt with a banana icon, beside banan. The
+create row says where it will go before you commit, and shows the icon it will
+inherit rather than a generic plus.
+
+The guess is narrow on purpose: only when a qualifier was actually split off, so
+"bananbröd" — which merely looks a bit like banan — inherits nothing. With
+nothing to inherit from it still falls back to Övrigt, which is the honest
+answer for a word the app has never seen.
+
+## "mogen banan" and "banan mogen" are the same instruction
+
+Only one of them is grammatical, and an app that understood one word order would
+be teaching a syntax rather than taking an instruction. The qualifier is now
+looked for behind the vara as well as in front. Front wins when a query reads
+both ways, because Swedish puts the head noun last.
+
+While testing the pair: `splitQuery` found a quantity at either end but not in
+the middle, so "banan 3 st mogen" silently made "3 st mogen" the qualifier and
+printed it on the tile. The interior pass runs LAST, so it can only add an
+answer where there was none — neither of the orders that already worked can be
+reinterpreted by it.
+
+## "Why is amount hidden behind a hold, a menu and a Spara?"
+
+Because it was, and there was no defence. Putting "2 kg" on a vara was:
+long-press, read a menu, tap "Ändra mängd", type, tap Spara. Five deliberate
+acts and two screens for one number, on a phone, in a shop.
+
+Nothing was learned at any of those steps. Opening the sheet already said you
+wanted to change something, and a field is the only control that says "type
+here" without being asked. Amount and sort are fields now, side by side, always
+visible, committing on blur and on Enter. There is no Spara to find and the
+sheet no longer closes underneath you — it used to, which made setting a sort
+*as well* a second long-press.
+
+Side by side because vertical space is the scarce thing: with a keyboard up on a
+small phone the sheet has about three rows before the fold, and priority has to
+be one of them.
+
+## "Long-pressing in the catalog does nothing"
+
+It did nothing, and the workaround was worse than obnoxious, it was three
+navigations: tap mango in the well, watch it leave the well, scroll up to the
+buy zone, find it among everything already there, and hold THAT.
+
+Catalog tiles take the same 500ms hold now and open the same fields, so there is
+one gesture to learn rather than two. The difference is that nothing has
+happened yet: this sheet holds a draft and commits on "Lägg till", where the
+entry sheet edits something already listed and commits as you type. Dismissing
+it leaves the list untouched, which is what makes it safe to open out of
+curiosity. The frequent panel's tiles got the same gesture, because a grid of
+varor should behave like a grid of varor wherever it is drawn.
+
+Each field is still its own op. They resolve against separate clocks, and
+bundling them would let a stale phone's amount drag the sort back with it.
+
+## Verified
+
+568 unit tests across 25 files, 17 e2e, tsc and eslint clean. In the real UI:
+one hold on mango in the catalog produced a listed tile carrying "mogna", "5 st"
+and urgent — three facts, one gesture, where the old path was eleven. "mogen
+banan", "banan mogen", "banan mogen 3 st", "3 st mogen banan", "banan 3 st
+mogen" and "3 mogna bananer" all resolve identically. Creating "mogen banan"
+wrote `frukt-gront` and icon `1F34C` to the database, not `ovrigt` and a box,
+and both bananas sit on the list as separate tiles.
+
+---
+
 # Search session, 2026-07-31 — the add bar reads a query now
 
 A UX pass on the core loop with Bring as the reference. Three of the findings

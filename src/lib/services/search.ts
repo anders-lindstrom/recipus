@@ -258,6 +258,22 @@ export function splitQuery(raw: string): { name: string; amountText: string } {
     }
   }
 
+  // Quantity in the middle: "banan 3 st mogen". Last, so neither of the two
+  // orders above can be reinterpreted — this only ever adds an answer where
+  // there was none. Without it the amount silently becomes part of the
+  // qualifier and "3 st mogen" prints on the tile under the name.
+  for (let start = 1; start < words.length - 1; start++) {
+    for (let end = words.length - 1; end > start; end--) {
+      const middle = words.slice(start, end).join(" ");
+      const parsed = parseQuantityPrefix(middle);
+      if (!parsed.amount || parsed.rest) continue;
+      return {
+        name: [...words.slice(0, start), ...words.slice(end)].join(" "),
+        amountText: middle,
+      };
+    }
+  }
+
   return { name: trimmed, amountText: "" };
 }
 
@@ -295,6 +311,12 @@ export interface ResolvedQuery {
  * whole — it is a vara in its own right, not *lök* qualified with "gul" — and
  * the same test protects "kokt skinka" and "krossade tomater".
  *
+ * The qualifier is then looked for behind the vara as well, because "banan
+ * mogen" and "mogen banan" are the same instruction and only one of them is
+ * grammatical. An app that understood one word order would be teaching a syntax
+ * rather than taking an instruction. Front first: Swedish puts the head noun
+ * last, so when a query reads both ways the leading words are the qualifier.
+ *
  * This mirrors the recipe importer's parse with one deliberate inversion.
  * `parseIngredientLine` *discards* the leftover words, because "färsk" and
  * "riven" describe what you do at the stove. A shopping list keeps them,
@@ -316,24 +338,56 @@ export function resolveQuery(
   if (!name) return empty;
 
   const words = name.split(" ");
-  const lastSplit = Math.min(words.length - 1, MAX_MODIFIER_WORDS);
+  const cap = Math.min(words.length - 1, MAX_MODIFIER_WORDS);
 
-  for (let i = 0; i <= lastSplit; i++) {
-    const matches = rankMatches(catalog, words.slice(i).join(" "), limit);
-    if (matches.length === 0) continue;
-    // Only the whole query may resolve on a typo. Past that, a qualifier is
-    // being invented from the word in front, and it should be a create instead.
-    if (i > 0 && !literallyMatches(words.slice(i).join(" "), matches[0])) continue;
+  // Qualifier in front — "mogen banan". Longest tail first, so a multi-word
+  // vara stays whole.
+  for (let i = 0; i <= cap; i++) {
+    const attempt = trySplit(catalog, words.slice(i), words.slice(0, i), limit);
+    if (attempt) return { ...attempt, amountText, name };
+  }
 
-    const modifier = words.slice(0, i).join(" ");
-    // "salt och peppar" is two varor, not peppar of the sort "salt och". A
-    // conjunction is never a qualifier, and `resolvePair` handles what this is.
-    if (CONJUNCTION_RE.test(modifier)) continue;
-
-    return { matches, modifier, amountText, name };
+  // Qualifier behind — "banan mogen". People say it both ways, and an app that
+  // understood only one of them would be teaching a word order rather than
+  // taking an instruction. Second because Swedish puts the head noun last, so
+  // when both readings are available the front one is the qualifier.
+  for (let j = 1; j <= cap; j++) {
+    const attempt = trySplit(catalog, words.slice(0, -j), words.slice(-j), limit);
+    if (attempt) return { ...attempt, amountText, name };
   }
 
   return empty;
+}
+
+/**
+ * One candidate reading of a query: these words are the vara, those are the
+ * qualifier. Null when the reading does not stand up.
+ */
+function trySplit(
+  catalog: CatalogItem[],
+  varaWords: string[],
+  modifierWords: string[],
+  limit: number,
+): { matches: CatalogItem[]; modifier: string } | null {
+  if (varaWords.length === 0) return null;
+
+  const vara = varaWords.join(" ");
+  const matches = rankMatches(catalog, vara, limit);
+  if (matches.length === 0) return null;
+
+  const modifier = modifierWords.join(" ");
+  if (modifier === "") return { matches, modifier };
+
+  // Only the WHOLE query may resolve on a typo. Once a qualifier is being split
+  // off, letting a fuzzy hit decide where the name begins would turn one
+  // slipped letter into a qualifier nobody typed.
+  if (!literallyMatches(vara, matches[0])) return null;
+
+  // "salt och peppar" is two varor, not peppar of the sort "salt och". A
+  // conjunction is never a qualifier, and `resolvePair` handles what this is.
+  if (CONJUNCTION_RE.test(modifier)) return null;
+
+  return { matches, modifier };
 }
 
 const CONJUNCTION_RE = /\boch\b/i;

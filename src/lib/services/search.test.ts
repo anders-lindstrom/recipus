@@ -127,6 +127,25 @@ describe("splitQuery", () => {
     expect(splitQuery("   ")).toEqual({ name: "", amountText: "" });
   });
 
+  it("finds a quantity between the words", () => {
+    // "banan 3 st mogen" is not how anyone speaks, but it is how a thumb
+    // produces a query when the sort is an afterthought. Without this the
+    // amount silently becomes part of the qualifier.
+    expect(splitQuery("banan 3 st mogen")).toEqual({
+      name: "banan mogen",
+      amountText: "3 st",
+    });
+  });
+
+  it("still prefers a leading or trailing quantity to an interior one", () => {
+    // The interior pass runs last precisely so it cannot reinterpret a query
+    // the other two already read correctly.
+    expect(splitQuery("2 l mjölk 3")).toEqual({
+      name: "mjölk 3",
+      amountText: "2 l",
+    });
+  });
+
   it("handles Swedish decimal commas", () => {
     expect(splitQuery("grädde 2,5 dl")).toEqual({
       name: "grädde",
@@ -297,6 +316,33 @@ describe("resolveQuery", () => {
 
   it("leaves the sort empty when the whole query is a vara", () => {
     expect(resolveQuery(SHOP, "mjölk").modifier).toBe("");
+  });
+
+  it("reads the sort behind the vara too, and lands in the same place", () => {
+    // "mogen banan" and "banan mogen" are the same instruction, and only one of
+    // them is grammatical. Understanding one word order would be teaching a
+    // syntax rather than taking an instruction.
+    const front = resolveQuery(SHOP, "mogen mango");
+    const back = resolveQuery(SHOP, "mango mogen");
+    expect(back.matches[0].name).toBe(front.matches[0].name);
+    expect(back.modifier).toBe(front.modifier);
+  });
+
+  it("reads a trailing sort alongside an amount, in any order", () => {
+    for (const raw of ["mjölk laktosfri 2 l", "2 l mjölk laktosfri"]) {
+      const r = resolveQuery(SHOP, raw);
+      expect(r.matches[0].name).toBe("mjölk");
+      expect(r.modifier).toBe("laktosfri");
+      expect(r.amountText).toBe("2 l");
+    }
+  });
+
+  it("still prefers the leading reading when a query works both ways", () => {
+    // Swedish puts the head noun last, so of the two available readings of
+    // "gul lök mogen" the vara is lök and not gul.
+    const r = resolveQuery(SHOP, "gul lök mogen");
+    expect(r.matches[0].name).toBe("gul lök");
+    expect(r.modifier).toBe("mogen");
   });
 
   it("refuses to read a sentence as a sort", () => {

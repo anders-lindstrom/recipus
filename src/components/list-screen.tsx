@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import { useOnce } from "@/lib/client/use-once";
 import { useSustained } from "@/lib/client/use-sustained";
 import { AddBar } from "./add-bar";
+import { AddDetailsSheet } from "./add-details-sheet";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
 import { MoveSheet } from "./move-sheet";
@@ -88,7 +89,15 @@ export interface ListScreenActions {
   setAmount: (catalogItemId: Id, amount: Amount | null) => void;
   setModifier: (catalogItemId: Id, modifier: string | null) => void;
   setPriority: (catalogItemId: Id, priority: Priority) => void;
-  createItem: (name: string, amountText: string) => void;
+  /**
+   * `likeItem` is the vara a new one should be filed beside — banan, for
+   * "mogen banan". Without it a created vara lands in Övrigt, which sorts last.
+   */
+  createItem: (
+    name: string,
+    amountText: string,
+    likeItem?: CatalogItem,
+  ) => void;
   removeRecipe: (recipeAdditionId: Id) => void;
   /**
    * Relocates an item to another list, carrying its priority and manual
@@ -167,6 +176,8 @@ export function ListScreen({
   } | null>(null);
   /** The item whose "which list?" picker is open. */
   const [moving, setMoving] = useState<Id | null>(null);
+  /** A catalog item being given details before it goes on the list. */
+  const [addingDetails, setAddingDetails] = useState<Id | null>(null);
   /**
    * Suggestions dismissed on THIS device since the last hydrate.
    *
@@ -356,6 +367,7 @@ export function ListScreen({
   const openView = openEntry ? views.get(openEntry) : undefined;
   const movingItem = moving ? byId.get(moving) : undefined;
   const movingView = moving ? views.get(moving) : undefined;
+  const addingItem = addingDetails ? byId.get(addingDetails) : undefined;
 
   return (
     <div className="min-h-dvh pb-28">
@@ -546,6 +558,8 @@ export function ListScreen({
             for (const id of itemIds) actions.removeItem(id, false);
           }}
           onCreate={actions.createItem}
+          onLongPressItem={setAddingDetails}
+          categoryNames={categoryName}
         />
 
         <SectionHeading
@@ -708,6 +722,14 @@ export function ListScreen({
                   name={item.name}
                   iconRef={item.iconRef}
                   onTap={() => actions.addItem(item.id)}
+                  // Same 500ms hold as the buy zone, so there is one gesture to
+                  // learn rather than two. Adding a bare item was the ONLY thing
+                  // a catalog tile could do, so "two mogna mango" meant tapping
+                  // mango here, watching it leave the catalog, scrolling up to
+                  // find it among everything already on the list, and holding
+                  // THAT. Three navigations to say something you knew before you
+                  // started.
+                  onLongPress={() => setAddingDetails(item.id)}
                 />
               ))}
             </TileGrid>
@@ -772,18 +794,12 @@ export function ListScreen({
             setOpenEntry(null);
           }}
           onClose={() => setOpenEntry(null)}
-          onSetModifier={(modifier) => {
-            actions.setModifier(openItem.id, modifier);
-            setOpenEntry(null);
-          }}
-          // Deliberately does NOT close the sheet. Priority is the one control
-          // here you might tap twice — set it, look at it, change your mind —
-          // and closing would make trying the middle option feel like a mistake.
+          // None of the three close the sheet any more. They are fields now,
+          // and a sheet that vanished the moment you finished typing an amount
+          // would make setting a sort as well a second long-press.
+          onSetModifier={(modifier) => actions.setModifier(openItem.id, modifier)}
           onSetPriority={(priority) => actions.setPriority(openItem.id, priority)}
-          onSetAmount={(amount) => {
-            actions.setAmount(openItem.id, amount);
-            setOpenEntry(null);
-          }}
+          onSetAmount={(amount) => actions.setAmount(openItem.id, amount)}
           onRemoveRecipe={(id, title) => {
             setOpenEntry(null);
             const orphans = itemsOnlyWantedByRecipe(id, entries, contributions)
@@ -817,6 +833,26 @@ export function ListScreen({
           onRemoveWithoutBuying={() => {
             remove(openItem.id, openItem.name, false);
             setOpenEntry(null);
+          }}
+        />
+      )}
+
+      {addingItem && (
+        <AddDetailsSheet
+          item={addingItem}
+          alreadyOnList={onListIds.has(addingItem.id)}
+          onClose={() => setAddingDetails(null)}
+          onAdd={({ amount, modifier, priority }) => {
+            // One act, in the order the reducer expects: the entry has to exist
+            // before anything can be written against it. Each field is its own
+            // op because each resolves against its own clock — bundling them
+            // would make a stale phone's amount drag the sort back with it.
+            actions.addItem(addingItem.id);
+            if (amount) actions.setAmount(addingItem.id, amount);
+            if (modifier) actions.setModifier(addingItem.id, modifier);
+            if (priority !== "normal")
+              actions.setPriority(addingItem.id, priority);
+            setAddingDetails(null);
           }}
         />
       )}

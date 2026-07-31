@@ -11,6 +11,7 @@ import {
   entryId,
   manualContributionId,
   type Amount,
+  type CatalogItem,
   type Id,
   type List,
   type Priority,
@@ -214,7 +215,25 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
       dispatch({ kind: "set_modifier", listId, catalogItemId, modifier }),
     setPriority: (catalogItemId: Id, priority: Priority) =>
       dispatch({ kind: "set_priority", listId, catalogItemId, priority }),
-    createItem: (name: string, amountText: string) => {
+    /**
+     * `likeItem` is the vara the query already resolved to — banan, when what
+     * was typed is "mogen banan".
+     *
+     * Its aisle and icon are inherited, and that is what makes a household's own
+     * kinds worth having. Wanting ripe bananas AND ordinary ones tracked apart is
+     * legitimate and the answer has always been a second vara: one vara appears
+     * at most once per list, so two kinds sharing a tile would mean one of them
+     * has no amount of its own. But the only way to make one filed it under
+     * Övrigt with a box icon, and Övrigt sorts LAST — so taking the supported
+     * path put the thing at the wrong end of the shop, permanently, and the
+     * penalty fell hardest on exactly the person who knew what they wanted.
+     *
+     * Inheriting is a guess, but not a blind one: it is the aisle of a vara the
+     * matcher just resolved this same query to. "mogen banan" belongs wherever
+     * banan belongs. With nothing to inherit from it still falls back to Övrigt,
+     * which is the honest answer for a word the app has never seen.
+     */
+    createItem: (name: string, amountText: string, likeItem?: CatalogItem) => {
       const trimmed = name.trim();
       if (!trimmed) return;
       const id = slugify(trimmed);
@@ -224,10 +243,8 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
           id,
           name: trimmed,
           nameNorm: normalizeName(trimmed),
-          // Unsorted until you say otherwise — better than guessing an aisle
-          // and sending you to the wrong end of the shop.
-          categoryId: "ovrigt",
-          iconRef: "1F4E6",
+          categoryId: likeItem?.categoryId ?? "ovrigt",
+          iconRef: likeItem?.iconRef ?? "1F4E6",
           isCustom: true,
           hasAtHome: false,
           useCount: 0,

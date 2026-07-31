@@ -58,9 +58,22 @@ export interface AddBarProps {
   onPick: (itemId: Id, amountText: string, modifier: string) => void;
   /** Both halves of "salt och peppar", in the order they were typed. */
   onPickMany: (itemIds: Id[]) => void;
-  onCreate: (name: string, amountText: string) => void;
+  /**
+   * `likeItem` is the vara the query resolved to, when it resolved to one —
+   * banan, for "mogen banan". The new vara inherits its aisle and icon, so
+   * keeping a kind of your own does not cost you a trip to Övrigt.
+   */
+  onCreate: (name: string, amountText: string, likeItem?: CatalogItem) => void;
   /** Takes an item straight back off the list, recording no purchase. */
   onUndoAdd: (itemIds: Id[]) => void;
+  /**
+   * Hold a vara in the panel to give it details before it goes on. Same gesture
+   * and same sheet as the catalog well, because a grid of varor should behave
+   * like a grid of varor wherever it is drawn.
+   */
+  onLongPressItem: (itemId: Id) => void;
+  /** Aisle names by id, so the create row can say where the vara will land. */
+  categoryNames: Map<Id, string>;
 }
 
 /**
@@ -102,6 +115,8 @@ export function AddBar({
   onPickMany,
   onCreate,
   onUndoAdd,
+  onLongPressItem,
+  categoryNames,
 }: AddBarProps) {
   const [raw, setRaw] = useState("");
   const [open, setOpen] = useState(false);
@@ -194,8 +209,18 @@ export function AddBar({
     });
   }
 
+  /**
+   * The vara a created one should be filed beside.
+   *
+   * Only when a qualifier was split off, which is the case this exists for:
+   * "mogen banan" resolved to banan, so the new vara belongs in banan's aisle.
+   * A query that merely looks a bit like something — "bananbröd" against banan
+   * — has no such claim and inherits nothing.
+   */
+  const createLike = modifier ? matches[0] : undefined;
+
   function create() {
-    onCreate(name, amountText);
+    onCreate(name, amountText, createLike);
     reset({ label: `${name} — ny vara`, undo: null });
   }
 
@@ -332,6 +357,7 @@ export function AddBar({
                         if (already) return;
                         pick(item);
                       }}
+                      onLongPress={() => onLongPressItem(item.id)}
                     />
                   );
                 })}
@@ -410,14 +436,33 @@ export function AddBar({
                       onClick={create}
                     className="flex w-full items-center gap-3 border-t border-line px-3 py-2.5 text-left active:bg-brand-tint"
                   >
-                    <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full bg-brand text-on-brand">
-                      <UiIcon name="plus" size={13} />
-                    </span>
-                    <span className="flex-1 text-body text-ink-soft">
-                      Lägg till{" "}
-                      <span className="font-bold text-ink">
-                        &ldquo;{name}&rdquo;
+                    {/* Shows the icon it will inherit rather than a generic
+                        plus, so the row previews the vara you are about to
+                        get. */}
+                    {createLike ? (
+                      <ItemIcon iconRef={createLike.iconRef} className="text-xl" />
+                    ) : (
+                      <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full bg-brand text-on-brand">
+                        <UiIcon name="plus" size={13} />
                       </span>
+                    )}
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="text-body text-ink-soft">
+                        Lägg till{" "}
+                        <span className="font-bold text-ink">
+                          &ldquo;{name}&rdquo;
+                        </span>{" "}
+                        som egen vara
+                      </span>
+                      {/* Where it lands, said before you commit. Filing a kind
+                          of your own under Övrigt — which sorts LAST — is how
+                          the supported way to keep ripe bananas apart from
+                          ordinary ones became a punishment. */}
+                      {createLike && (
+                        <span className="text-caption text-ink-faint">
+                          i {categoryNames.get(createLike.categoryId) ?? "Övrigt"}
+                        </span>
+                      )}
                     </span>
                   </button>
                 </li>
