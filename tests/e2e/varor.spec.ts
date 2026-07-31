@@ -9,6 +9,7 @@ import {
   longPressTile,
   onListTile,
   outboxSize,
+  purchaseCount,
   test,
 } from "./fixtures";
 
@@ -589,4 +590,64 @@ test("merging a vara that is on the list moves the shopping to the survivor", as
 
   await settle(page);
   await dropCatalogItems([goneId, keptId]);
+});
+
+/**
+ * A stand-in tile is repair work, and repair never records a purchase.
+ *
+ * An entry can outlive its vara — the reducer allows it deliberately, because a
+ * merge that rewrote entry rows would not converge — and `tileVaror` draws that
+ * orphan as a stand-in so it can be cleared instead of sitting there invisibly.
+ * The trap is what happens when you clear it in a shop. Deletes here are SOFT,
+ * so the `catalog_items` row is still present and a purchase against it is
+ * accepted rather than rejected; and the merge's server-side re-pointing is
+ * gated on the merge op, so it has long since run and will never collect this
+ * one. The credit would sit on a word nobody uses, for ever, and the survivor
+ * would under-record — the exact "invented purchase" this app's mode system
+ * exists to rule out.
+ *
+ * The orphan is built the way the reducer really produces one: an op log that
+ * tombstones a vara while an entry for it is still live.
+ */
+test("clearing a stand-in tile in buy mode records no purchase", async ({
+  freshPage: page,
+  listId,
+}) => {
+  const varaName = `Spokvara${unique().replace(/-/g, "")}`;
+  const varaId = await createVara(page, varaName);
+
+  await page.goto(`/?list=${listId}`);
+  const field = page.getByLabel("Sök eller lägg till vara");
+  await field.fill(varaName);
+  await field.press("Enter");
+  await expect(onListTile(page, varaName)).toBeVisible();
+  await expect.poll(() => outboxSize(page), { timeout: 8000 }).toBe(0);
+
+  // Tombstone the vara out from under the live entry.
+  await postOps(page, [
+    { ...envelope(), kind: "delete_catalog_item", itemId: varaId },
+  ]);
+
+  await page.reload();
+  await expect(page.getByText("Att handla")).toBeVisible();
+
+  // The row is still on the list and still reachable — that is `tileVaror`'s
+  // whole job. It renders under the id, because the vara that knew the spelling
+  // is precisely what is gone.
+  const standIn = onListTile(page, varaId);
+  await expect(standIn).toBeVisible();
+
+  const modePill = page.getByRole("button", { name: /byt till/i });
+  await modePill.click();
+  await expect(modePill).toHaveText(/Handlar/);
+
+  await standIn.click();
+  await expect(onListTile(page, varaId)).toHaveCount(0);
+
+  // Gone from the list, and nothing written to history. A buy-mode tap on any
+  // ordinary tile would have recorded exactly one.
+  await expect.poll(() => outboxSize(page), { timeout: 8000 }).toBe(0);
+  expect(await purchaseCount(listId)).toBe(0);
+
+  await dropCatalogItems([varaId]);
 });

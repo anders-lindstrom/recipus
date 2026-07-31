@@ -35,8 +35,14 @@ export interface EntrySheetProps {
    * mode can trap you into recording the wrong thing.
    */
   mode: ShopMode;
-  /** Records a purchase without the tap having been a buy. Plan mode only. */
-  onMarkBought: () => void;
+  /**
+   * Records a purchase without the tap having been a buy. Plan mode only.
+   *
+   * Optional, and absent means "do not offer it at all" — the same contract
+   * `onMove` and `onOpenVara` use. The caller withholds it for a stand-in tile,
+   * whose vara is tombstoned and which must never record a purchase.
+   */
+  onMarkBought?: () => void;
   onClose: () => void;
   /** Sets the manual amount. Null clears it, leaving the item on the list. */
   onSetAmount: (amount: Amount | null) => void;
@@ -197,7 +203,7 @@ export function EntrySheet({
           </SheetButton>
         )}
 
-        {mode === "plan" && (
+        {mode === "plan" && onMarkBought && (
           <SheetButton
             onClick={onMarkBought}
             icon={<UiIcon name="check" size={16} />}

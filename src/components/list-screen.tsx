@@ -270,13 +270,7 @@ export function ListScreen({
     // whole reason the mode exists, and it is what makes the purchase history
     // trustworthy enough to build statistics and fridge inference on.
     //
-    // A stand-in is the exception, and it is not a mode question. Its vara is
-    // tombstoned, so a purchase would be credited to a word nobody uses — and
-    // accepted rather than rejected, because deletes here are soft. Worse, the
-    // merge's server-side re-pointing has already run, so nothing will ever move
-    // that credit to the survivor. Tapping a stand-in is repair work, and repair
-    // is not shopping.
-    remove(item.id, item.name, mode === "buy" && !standIns.has(item.id));
+    remove(item.id, item.name, mode === "buy");
   }
 
   /**
@@ -288,7 +282,22 @@ export function ListScreen({
    * through here is what keeps the undo bookkeeping identical for all of them.
    */
   function remove(id: Id, name: string, bought: boolean) {
-    const clientOpId = actions.removeItem(id, bought);
+    /*
+     * A stand-in never records a purchase, whatever the caller asked for.
+     *
+     * Its vara is tombstoned, so the purchase is credited to a word nobody uses
+     * — and ACCEPTED rather than rejected, because deletes here are soft and the
+     * row is still there. The merge's server-side re-pointing has already run by
+     * then and is gated on that op, so nothing will ever move the credit to the
+     * survivor: the tombstone keeps the count and the survivor under-records for
+     * good.
+     *
+     * The guard is here rather than at the call sites because there are three of
+     * them and the first fix only covered one — a tap. "Markera som köpt" in the
+     * entry sheet went straight past it, which is the same bug reached by a
+     * longer route. One choke point, so a fourth caller cannot reintroduce it.
+     */
+    const clientOpId = actions.removeItem(id, bought && !standIns.has(id));
     // Replaces whatever was on offer. One strip, always the most recent removal:
     // a stack of them would be chrome in the thumb zone, and the mistake people
     // actually make is on the tap they just made.
@@ -927,14 +936,22 @@ export function ListScreen({
           itemName={openItem.name}
           view={openView}
           mode={mode}
-          onMarkBought={() => {
+          // Withheld for a stand-in: `remove` would refuse to record the purchase
+          // anyway, so the button would say "Markera som köpt" and then not mark
+          // it bought. Absent beats dishonest — the same rule `onMove` follows
+          // when there is nowhere to move to.
+          onMarkBought={
+            standIns.has(openItem.id)
+              ? undefined
+              : () => {
             // Identical to what a buy-mode tap does — marking it bought means you
             // have it, so it leaves the list. Reusing that op rather than adding a
             // purchase-only one keeps this shippable before any new op kind is on
             // every device.
-            remove(openItem.id, openItem.name, true);
-            setOpenEntry(null);
-          }}
+                  remove(openItem.id, openItem.name, true);
+                  setOpenEntry(null);
+                }
+          }
           onClose={() => setOpenEntry(null)}
           // None of the three close the sheet any more. They are fields now,
           // and a sheet that vanished the moment you finished typing an amount
