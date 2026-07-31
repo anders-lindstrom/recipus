@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { Id } from "@/lib/domain";
+import { ScreenHeader } from "./screen-header";
+import { UiIcon } from "./ui-icon";
 
 /**
  * The recipe list.
@@ -63,7 +65,7 @@ function RecipeThumb({ title, imageUrl }: { title: string; imageUrl: string | nu
   const showImage = Boolean(imageUrl) && !failed;
 
   return (
-    <div className="flex h-14 w-14 flex-none items-center justify-center overflow-hidden rounded-[10px] bg-brand-tint">
+    <div className="flex h-16 w-16 flex-none items-center justify-center overflow-hidden rounded-tile bg-brand-tint">
       {showImage ? (
         // eslint-disable-next-line @next/next/no-img-element -- recipe photos come from arbitrary external sites; next/image would need every source domain allow-listed.
         <img
@@ -73,7 +75,7 @@ function RecipeThumb({ title, imageUrl }: { title: string; imageUrl: string | nu
           className="h-full w-full object-cover"
         />
       ) : (
-        <span aria-hidden className="text-lg font-extrabold text-brand">
+        <span aria-hidden className="text-display text-brand-ink">
           {(title.trim()[0] ?? "?").toUpperCase()}
         </span>
       )}
@@ -81,12 +83,12 @@ function RecipeThumb({ title, imageUrl }: { title: string; imageUrl: string | nu
   );
 }
 
-function SkeletonCard() {
+function SkeletonRow() {
   return (
-    <div className="mx-3 mb-2 flex items-center gap-3 rounded-card border border-line bg-paper-raised p-3">
-      <div className="h-14 w-14 flex-none animate-pulse rounded-[10px] bg-line" />
+    <div className="flex items-center gap-3 py-3">
+      <div className="h-16 w-16 flex-none animate-pulse rounded-tile bg-line" />
       <div className="flex-1 space-y-2">
-        <div className="h-3.5 w-3/4 animate-pulse rounded bg-line" />
+        <div className="h-4 w-3/4 animate-pulse rounded bg-line" />
         <div className="h-3 w-1/2 animate-pulse rounded bg-line" />
       </div>
     </div>
@@ -139,29 +141,43 @@ export function RecipeList() {
 
   return (
     <div className="min-h-dvh pb-10">
-      <header className="safe-top sticky top-0 z-30 flex items-center gap-2 bg-brand px-4 py-3 text-white">
-        <Link href="/" aria-label="Till handlingslistan" className="text-lg font-bold">
-          ‹
-        </Link>
-        <span className="flex-1 text-[16.5px] font-bold tracking-tight">Recept</span>
-      </header>
+      <ScreenHeader
+        title="Recept"
+        backHref="/"
+        backLabel="Till handlingslistan"
+        action={
+          status === "ready" && recipes.length > 0 ? (
+            <Link
+              href="/recept/importera"
+              className="mr-1 flex flex-none items-center gap-1.5 rounded-full bg-brand px-3.5 py-2 text-caption font-semibold text-on-brand"
+            >
+              <UiIcon name="plus" size={15} />
+              Importera
+            </Link>
+          ) : undefined
+        }
+      />
 
       {status === "loading" && (
-        <div className="pt-3">
-          <SkeletonCard />
-          <SkeletonCard />
-          <SkeletonCard />
+        <div className="divide-y divide-line px-3 pt-2">
+          <SkeletonRow />
+          <SkeletonRow />
+          <SkeletonRow />
         </div>
       )}
 
       {status === "error" && (
         <div className="px-6 py-16 text-center">
-          <p className="text-[13px] font-semibold text-danger">{error}</p>
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-danger-tint text-danger">
+            <UiIcon name="warning" size={26} />
+          </div>
+          <p className="mt-4 text-body font-semibold text-ink">{error}</p>
           <button
             type="button"
             onClick={retry}
-            className="mt-3 rounded-full border border-line px-4 py-2 text-[12.5px] font-bold text-ink"
+            className="mt-4 inline-flex items-center gap-2 rounded-full border border-line-strong px-4 py-2.5 text-body-sm font-semibold text-ink"
           >
+            <UiIcon name="retry" size={15} />
             Försök igen
           </button>
         </div>
@@ -169,70 +185,68 @@ export function RecipeList() {
 
       {status === "ready" && recipes.length === 0 && (
         <div className="px-6 py-16 text-center">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-brand-tint text-3xl">
-            📖
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-brand-tint text-brand-ink">
+            <UiIcon name="recipes" size={30} />
           </div>
-          <p className="mt-4 text-[15px] font-extrabold text-ink">Inga recept ännu</p>
-          <p className="mx-auto mt-2 max-w-xs text-[12.5px] text-ink-soft">
-            Klistra in en länk till ett recept, till exempel från ica.se, koket.se, arla.se
-            eller coop.se, så hämtar vi ingredienserna åt dig.
+          <p className="mt-4 text-display text-ink">Inga recept ännu</p>
+          <p className="mx-auto mt-2 max-w-[34ch] text-body text-ink-soft">
+            Klistra in en länk till ett recept, till exempel från ica.se,
+            koket.se, arla.se eller coop.se, så hämtar vi ingredienserna åt dig.
           </p>
           <Link
             href="/recept/importera"
-            className="mt-4 inline-block rounded-card bg-brand px-5 py-3 text-[13px] font-extrabold text-white"
+            className="mt-5 inline-flex items-center gap-2 rounded-full bg-brand px-5 py-3 text-body font-semibold text-on-brand"
           >
+            <UiIcon name="plus" size={17} />
             Importera recept
           </Link>
         </div>
       )}
 
       {status === "ready" && recipes.length > 0 && (
-        <>
-          <div className="px-3 pt-3">
-            <Link
-              href="/recept/importera"
-              className="flex items-center justify-center gap-1.5 rounded-card bg-brand px-4 py-3 text-[13.5px] font-extrabold text-white"
-            >
-              <span aria-hidden>+</span> Importera recept
-            </Link>
-          </div>
-
-          <div className="pt-2">
-            {recipes.map((r) => {
-              const hostname = hostnameOf(r.sourceUrl);
-              return (
+        // Rows separated by hairlines rather than boxed in cards. Every recipe
+        // is the same kind of thing at the same level, so there is no hierarchy
+        // for a card's elevation to communicate.
+        <ul className="divide-y divide-line px-3">
+          {recipes.map((r) => {
+            const hostname = hostnameOf(r.sourceUrl);
+            return (
+              <li key={r.id}>
                 <Link
-                  key={r.id}
                   href={`/recept/${r.id}`}
-                  className="mx-3 mb-2 flex items-center gap-3 rounded-card border border-line bg-paper-raised p-3"
+                  className="flex items-center gap-3 py-3 active:opacity-70"
                 >
                   <RecipeThumb title={r.title} imageUrl={r.imageUrl} />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-[14px] font-extrabold tracking-tight text-ink">
+                    <div className="truncate text-body font-bold text-ink">
                       {r.title}
                     </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11.5px] text-ink-soft">
+                    <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-caption text-ink-soft">
                       <span>
                         {r.servings} {r.servingsUnit}
                       </span>
-                      {hostname && (
-                        <>
-                          <span aria-hidden>·</span>
-                          <span className="truncate">{hostname}</span>
-                        </>
-                      )}
                       <span aria-hidden>·</span>
                       <span>
                         {r.ingredientCount}{" "}
                         {r.ingredientCount === 1 ? "ingrediens" : "ingredienser"}
                       </span>
                     </div>
+                    {hostname && (
+                      <div className="mt-0.5 truncate text-caption text-ink-faint">
+                        {hostname}
+                      </div>
+                    )}
                   </div>
+                  <UiIcon
+                    name="chevronDown"
+                    size={16}
+                    className="-rotate-90 flex-none text-ink-faint"
+                  />
                 </Link>
-              );
-            })}
-          </div>
-        </>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );

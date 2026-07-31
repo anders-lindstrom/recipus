@@ -1,16 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useList } from "@/lib/client/use-list";
+import { useMode } from "@/lib/client/use-mode";
+import { nextOpTimestamp } from "@/lib/client/op-clock";
+import { scanAction } from "@/lib/client/scan-action";
 import type { Op } from "@/lib/sync";
-import type { Amount, Id, List } from "@/lib/domain";
+import {
+  entryId,
+  manualContributionId,
+  type Amount,
+  type Id,
+  type List,
+  type Priority,
+} from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import { parseAmount } from "@/lib/units";
 import { normalizeName, slugify } from "@/lib/utils";
 import { ListScreen } from "./list-screen";
 import { ListSwitcher } from "./list-switcher";
-import { Scanner } from "./scanner";
+import { Scanner, type ScanOutcome } from "./scanner";
 
 /**
  * Wiring the list screen to the sync layer.
@@ -73,7 +83,7 @@ export interface ListClientProps {
 
 export function ListClient({ snapshot, lists, actor, members }: ListClientProps) {
   const [scanning, setScanning] = useState(false);
-  const [scanResult, setScanResult] = useState<string | null>(null);
+  const [scanResult, setScanResult] = useState<ScanOutcome | null>(null);
   const [switching, setSwitching] = useState(false);
 
   // Read once, on first render, so the offline path has a list name and
@@ -134,23 +144,38 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     return out;
   }, [state.recipeAdditions, recipeTitles]);
 
+  /**
+   * Strictly increasing per session — see `nextOpTimestamp`. Two ops sharing a
+   * timestamp cannot be ordered by last-write-wins, so the second silently loses.
+   */
+  const lastAt = useRef<string | null>(null);
+
+  /** Returns the op's `clientOpId`, which undo needs to name what it retracts. */
   const dispatch = useCallback(
-    (partial: OpDraft) => {
+    (partial: OpDraft): string => {
+      const clientOpId = crypto.randomUUID();
+      const at = nextOpTimestamp(lastAt.current, new Date());
+      lastAt.current = at;
       const op = {
         ...partial,
-        clientOpId: crypto.randomUUID(),
+        clientOpId,
         actor: effectiveActor ?? "okand",
-        at: new Date().toISOString(),
+        at,
       } as Op;
       void dispatchOp(op).catch(() =>
         // A lapsed session is reported through status.signedOut, not thrown —
         // anything reaching here is a genuine failure worth surfacing.
         toast.error("Kunde inte spara ändringen"),
       );
+      return clientOpId;
     },
     [effectiveActor, dispatchOp],
   );
 
+  // Device-local, never synced and never an op: one of you is in the shop while
+  // the other plans at home, so a shared mode would make the planner's taps
+  // write purchases. See lib/client/use-mode.ts for the full argument.
+  const { mode, setMode, touch } = useMode();
 
   // Nothing cached and no server: the very first launch has to happen with a
   // connection. Say so plainly instead of rendering an empty list that looks
@@ -170,17 +195,25 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   }
 
   const actions = {
-    addItem: (catalogItemId: Id, amountText?: string) => {
-      dispatch({ kind: "add_item", listId, catalogItemId });
+    addItem: (catalogItemId: Id, amountText?: string, undoesClientOpId?: string) => {
+      dispatch({ kind: "add_item", listId, catalogItemId, undoesClientOpId });
       if (amountText) {
         const amount = parseAmount(amountText);
         if (amount) dispatch({ kind: "set_amount", listId, catalogItemId, amount });
       }
     },
-    removeItem: (catalogItemId: Id, bought: boolean) =>
-      dispatch({ kind: "remove_item", listId, catalogItemId, bought }),
+    removeItem: (catalogItemId: Id, bought: boolean) => {
+      // Buy mode's idle clock measures shopping, not staring at the screen, so
+      // it is a removal that counts as activity — not a render or a scroll.
+      if (bought) touch();
+      return dispatch({ kind: "remove_item", listId, catalogItemId, bought });
+    },
     setAmount: (catalogItemId: Id, amount: Amount | null) =>
       dispatch({ kind: "set_amount", listId, catalogItemId, amount }),
+    setModifier: (catalogItemId: Id, modifier: string | null) =>
+      dispatch({ kind: "set_modifier", listId, catalogItemId, modifier }),
+    setPriority: (catalogItemId: Id, priority: Priority) =>
+      dispatch({ kind: "set_priority", listId, catalogItemId, priority }),
     createItem: (name: string, amountText: string) => {
       const trimmed = name.trim();
       if (!trimmed) return;
@@ -205,6 +238,60 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     },
     removeRecipe: (recipeAdditionId: Id) =>
       dispatch({ kind: "remove_recipe", listId, recipeAdditionId }),
+    /**
+     * The payload is read out of the store HERE, not in the reducer.
+     *
+     * `move_item` carries what it moves — priority, and the manual
+     * amount/note/modifier — because a reducer that read the source instead
+     * could not be order-independent, and two phones would settle on different
+     * amounts at the destination. See the op's own comment. This is the one
+     * place that read happens, on the device that is actually looking at the
+     * item.
+     */
+    moveItem: (catalogItemId: Id, toListId: Id) => {
+      const eid = entryId(listId, catalogItemId);
+      const entry = state.entries[eid];
+      const manual = state.contributions[manualContributionId(eid)];
+      dispatch({
+        kind: "move_item",
+        fromListId: listId,
+        toListId,
+        catalogItemId,
+        priority: entry?.priority ?? "normal",
+        // Null when there is nothing of your own to take — which is different
+        // from "all three fields are empty", and the reducer treats it as such:
+        // it makes no claim about those fields at either end.
+        manual: manual
+          ? {
+              amount: manual.amount,
+              note: manual.note,
+              modifier: manual.modifier,
+            }
+          : null,
+      });
+    },
+    /**
+     * Fire-and-forget, and deliberately not through the outbox.
+     *
+     * A dismissal cannot conflict — the server key is (item, day) — so it needs
+     * neither an op nor last-write-wins. The screen has already hidden the tile
+     * by the time this runs, so a failure costs nothing visible now: the
+     * suggestion simply comes back after the next hydrate. Worth no toast, since
+     * the user's instruction was "not this time", not "record this forever".
+     */
+    dismissSuggestion: (catalogItemId: Id) => {
+      void fetch("/api/suggestions/dismissals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ catalogItemId }),
+      }).catch(() => {});
+    },
+    restoreSuggestion: (catalogItemId: Id) => {
+      void fetch(
+        `/api/suggestions/dismissals/${encodeURIComponent(catalogItemId)}`,
+        { method: "DELETE" },
+      ).catch(() => {});
+    },
     openScanner: () => {
       setScanResult(null);
       setScanning(true);
@@ -213,31 +300,85 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   };
 
   async function handleScan(ean: string) {
+    // `listId` is guaranteed by the guard above, but this function is hoisted
+    // out of that narrowing. The old code interpolated the id by hand, which
+    // accepted null and would have produced a "null:banan" key; deriving it with
+    // `entryId` closes the last place in the codebase that built an entry id
+    // itself, at the cost of this one honest guard.
+    if (!listId) return;
     try {
       const res = await fetch(`/api/barcode/${encodeURIComponent(ean)}`);
       if (!res.ok) {
-        setScanResult(`Okänd streckkod ${ean}`);
+        setScanResult({ text: `Okänd streckkod ${ean}` });
         return;
       }
       const { catalogItemId, productName } = await res.json();
       if (!catalogItemId) {
-        setScanResult(productName ? `${productName} — välj vara` : "Välj vara");
+        setScanResult({
+          text: productName ? `${productName} — välj vara` : "Välj vara",
+        });
         return;
       }
 
       const item = state.catalog[catalogItemId];
-      const entry = state.entries[`${listId}:${catalogItemId}`];
-      // Bidirectional, acting on the list you currently have open: already on
-      // it means you just picked it up, otherwise you just ran out.
-      if (entry && entry.removedAt === null) {
-        actions.removeItem(catalogItemId, true);
-        setScanResult(`${item?.name ?? "Varan"} avbockad`);
-      } else {
-        actions.addItem(catalogItemId);
-        setScanResult(`${item?.name ?? "Varan"} tillagd`);
+      const name = item?.name ?? "Varan";
+      const entry = state.entries[entryId(listId, catalogItemId)];
+      const onList = Boolean(entry && entry.removedAt === null);
+
+      // Which of the four things a scan means lives in `scanAction`, tested
+      // there. This only turns the decision into ops and Swedish.
+      switch (scanAction(mode, onList).kind) {
+        case "buy": {
+          const clientOpId = actions.removeItem(catalogItemId, true);
+          setScanResult({
+            text: `${name} köpt`,
+            undo: () => {
+              actions.addItem(catalogItemId, undefined, clientOpId);
+              setScanResult({ text: `${name} tillbaka på listan` });
+            },
+          });
+          return;
+        }
+
+        case "add_and_buy": {
+          actions.addItem(catalogItemId);
+          const clientOpId = actions.removeItem(catalogItemId, true);
+          setScanResult({
+            text: `${name} tillagd och köpt`,
+            undo: () => {
+              // Two halves: put it back so the purchase can be retracted against
+              // the op that wrote it, then take it off again WITHOUT recording a
+              // purchase — landing back where you were before the scan.
+              actions.addItem(catalogItemId, undefined, clientOpId);
+              actions.removeItem(catalogItemId, false);
+              setScanResult({ text: `${name} ångrad` });
+            },
+          });
+          return;
+        }
+
+        case "already_on_list": {
+          // No op, and so no undo: there is nothing to take back. Saying so is
+          // still worth a line — otherwise a scan that changed nothing looks
+          // identical to one the camera never read.
+          setScanResult({ text: `${name} finns redan på listan` });
+          return;
+        }
+
+        case "add": {
+          actions.addItem(catalogItemId);
+          setScanResult({
+            text: `${name} tillagd`,
+            undo: () => {
+              actions.removeItem(catalogItemId, false);
+              setScanResult({ text: `${name} borttagen igen` });
+            },
+          });
+          return;
+        }
       }
     } catch {
-      setScanResult("Kunde inte slå upp streckkoden");
+      setScanResult({ text: "Kunde inte slå upp streckkoden" });
     }
   }
 
@@ -245,13 +386,23 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     <>
       <ListScreen
         list={list}
+        // Offline the server sent no lists; the one you are on is still a valid
+        // (and the only sensible) choice, matching the switcher's own fallback.
+        lists={lists.length ? lists : [list]}
         categories={categories}
         catalog={Object.values(state.catalog)}
-        entries={Object.values(state.entries)}
+        // Filtered to this list, which matters only because of `move_item`: it
+        // is the one op that writes an entry belonging to a DIFFERENT list, and
+        // that entry is live. Unfiltered, moving an item left it sitting on the
+        // source list exactly as before — a move that looked like it had done
+        // nothing at all.
+        entries={Object.values(state.entries).filter((e) => e.listId === listId)}
         contributions={Object.values(state.contributions)}
         recipeAdditions={recipeAdditionInfo}
         suggestions={snapshot?.suggestions ?? []}
         members={members}
+        mode={mode}
+        onModeChange={setMode}
         sync={{
           online: status.online,
           pendingCount: status.pendingCount,

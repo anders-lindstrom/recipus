@@ -1,5 +1,5 @@
 import { pathToFileURL } from "node:url";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "./index";
 import { catalogItems, categories, lists, users } from "./schema";
 import { CATALOG_ITEMS, CATEGORIES } from "./seed-data";
@@ -21,7 +21,84 @@ import { normalizeName, slugify } from "@/lib/utils";
  * adds none changes nothing.
  */
 
-const SEED_ACTOR = "system";
+/**
+ * The actor the seed writes, and a reserved username because of it.
+ *
+ * `updated_by` is what tells a seed correction apart from a human edit, so an
+ * Authelia user literally called `system` would defeat the guard below.
+ */
+export const SEED_ACTOR = "system";
+
+/**
+ * Upsert one seeded catalog item, leaving anything a human has touched alone.
+ *
+ * Extracted and exported so the guard can actually be tested — it is the kind of
+ * rule that fails silently and only in production, which is the worst possible
+ * combination.
+ *
+ * The problem it solves: this runs on every server boot (src/instrumentation.ts),
+ * and it overwrites exactly `name`, `name_norm`, `category_id` and `icon_ref` —
+ * which are precisely the columns the item registry makes editable. Without the
+ * guard, every deploy and every container restart would silently revert every
+ * rename and re-filing the household had done. Latent only because nothing
+ * dispatches `update_catalog_item` from the UI yet.
+ *
+ * `setWhere` is the whole fix: seed corrections reach rows still stamped
+ * `SEED_ACTOR` and stop at rows a person has edited. `updated_by` is trustworthy
+ * for this because `applyOpToDatabase` replaces the client-supplied actor with
+ * the authenticated one, so a human edit cannot wear the seed's name.
+ *
+ * Two properties this quietly depends on, both worth preserving deliberately:
+ * buying something bumps `use_count`/`last_used_at` through a direct UPDATE that
+ * never touches `updated_by` (so an item you have bought still receives seed
+ * corrections), and deletions will need `deleted_at` rather than row removal or
+ * a deleted seeded item comes back on the next boot.
+ *
+ * Accepted consequence: once a household renames an item, that row never takes
+ * another seed correction. Correct precedence — they outrank us.
+ */
+export async function upsertSeedCatalogItem(item: {
+  name: string;
+  categorySlug: string;
+  iconRef: string;
+  hasAtHome?: boolean;
+}): Promise<void> {
+  const id = slugify(item.name);
+  await db
+    .insert(catalogItems)
+    .values({
+      id,
+      name: item.name,
+      nameNorm: normalizeName(item.name),
+      categoryId: item.categorySlug,
+      iconRef: item.iconRef,
+      isCustom: false,
+      hasAtHome: item.hasAtHome ?? false,
+      useCount: 0,
+      lastUsedAt: null,
+      updatedBy: SEED_ACTOR,
+      // The per-field clocks are stamped with the seed actor too, so a later
+      // `update_catalog_item` from a phone always wins on timestamp — a seeded
+      // row has never been edited by anyone, and the clocks should say so
+      // rather than defaulting to whenever the container happened to boot.
+      nameUpdatedBy: SEED_ACTOR,
+      categoryUpdatedBy: SEED_ACTOR,
+      iconUpdatedBy: SEED_ACTOR,
+      homeUpdatedBy: SEED_ACTOR,
+    })
+    .onConflictDoUpdate({
+      target: catalogItems.id,
+      // Name, category and icon are ours to correct in a later seed. Usage
+      // counts and the has_at_home flag belong to the household.
+      set: {
+        name: item.name,
+        nameNorm: normalizeName(item.name),
+        categoryId: item.categorySlug,
+        iconRef: item.iconRef,
+      },
+      setWhere: eq(catalogItems.updatedBy, SEED_ACTOR),
+    });
+}
 
 export async function seed() {
   console.log("Seeding categories…");
@@ -37,32 +114,7 @@ export async function seed() {
 
   console.log(`Seeding ${CATALOG_ITEMS.length} catalog items…`);
   for (const item of CATALOG_ITEMS) {
-    const id = slugify(item.name);
-    await db
-      .insert(catalogItems)
-      .values({
-        id,
-        name: item.name,
-        nameNorm: normalizeName(item.name),
-        categoryId: item.categorySlug,
-        iconRef: item.iconRef,
-        isCustom: false,
-        hasAtHome: item.hasAtHome ?? false,
-        useCount: 0,
-        lastUsedAt: null,
-        updatedBy: SEED_ACTOR,
-      })
-      .onConflictDoUpdate({
-        target: catalogItems.id,
-        // Name, category and icon are ours to correct in a later seed. Usage
-        // counts and the has_at_home flag belong to the household.
-        set: {
-          name: item.name,
-          nameNorm: normalizeName(item.name),
-          categoryId: item.categorySlug,
-          iconRef: item.iconRef,
-        },
-      });
+    await upsertSeedCatalogItem(item);
   }
 
   // A first list, so a fresh install opens on something usable rather than an

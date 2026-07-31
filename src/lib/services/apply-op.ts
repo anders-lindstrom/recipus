@@ -1,22 +1,29 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
+  barcodes,
+  catalogItemAliases,
   catalogItems,
   contributions,
   listEntries,
   lists,
   ops as opsTable,
+  products,
   purchases,
   recipeAdditions,
+  recipeIngredients,
 } from "@/db/schema";
 import {
   emptyState,
   entryId as makeEntryId,
+  isClearedManualContribution,
   manualContributionId,
   recipeContributionId,
   type Amount,
+  type BarcodeSource,
+  type Contribution,
   type Id,
   type RecordMeta,
   type SyncState,
@@ -24,15 +31,38 @@ import {
 } from "@/lib/domain";
 import {
   additionKey,
+  aliasKey,
   applyOp,
+  barcodeKey,
+  catalogFieldKey,
   catalogKey,
   contributionFieldKey,
   contributionKey,
   entryKey,
+  entryPriorityKey,
   listKey,
   opListId,
+  productFieldKey,
+  productKey,
+  CATALOG_FIELDS,
+  MANUAL_FIELDS,
+  PRODUCT_FIELDS,
+  type CatalogField,
+  type ManualField,
   type Op,
+  type ProductField,
 } from "@/lib/sync";
+import {
+  catalogClockColumns,
+  catalogFieldClocks,
+  latestClock,
+  productClockColumns,
+  productFieldClocks,
+} from "./clocks";
+import {
+  effectiveCatalogItemId,
+  purchaseProductJoin,
+} from "./purchase-attribution";
 
 /**
  * Applying one client op to Postgres.
@@ -66,13 +96,21 @@ interface Scope {
   catalogIds: Set<Id>;
   entryIds: Set<Id>;
   /**
-   * set_amount/set_note touch exactly one manual contribution's ONE field —
-   * never both, and never more than one entry — so this is a single optional
-   * slot rather than a set.
+   * Which manual contribution fields this op can write, as (entry, field) pairs.
+   *
+   * set_amount/set_note/set_modifier each contribute exactly one pair. move_item
+   * contributes six — two entries, three fields each — because the manual
+   * contribution travels with the item and both ends have to be written: the
+   * destination gains the values, and the source is emptied while keeping the
+   * row, since the row is where its clocks live.
    */
-  manualContributionField: { entryId: Id; field: "amount" | "note" } | null;
+  manualContributionFields: Array<{ entryId: Id; field: ManualField }>;
   contributionIds: Set<Id>;
   additionIds: Set<Id>;
+  productIds: Set<Id>;
+  /** Keyed by the normalized word, which is the alias's whole identity. */
+  aliasNorms: Set<string>;
+  eans: Set<string>;
 }
 
 function emptyScope(): Scope {
@@ -80,9 +118,12 @@ function emptyScope(): Scope {
     listIds: new Set(),
     catalogIds: new Set(),
     entryIds: new Set(),
-    manualContributionField: null,
+    manualContributionFields: [],
     contributionIds: new Set(),
     additionIds: new Set(),
+    productIds: new Set(),
+    aliasNorms: new Set(),
+    eans: new Set(),
   };
 }
 
@@ -115,16 +156,24 @@ async function loadStateSlice(
       break;
     case "add_item":
     case "remove_item":
+    // Priority lives on the entry row, so it needs no contribution loaded.
+    case "set_priority":
       scope.entryIds.add(makeEntryId(op.listId, op.catalogItemId));
       break;
     case "set_amount":
-    case "set_note": {
+    case "set_note":
+    case "set_modifier": {
       const eid = makeEntryId(op.listId, op.catalogItemId);
       scope.entryIds.add(eid);
-      scope.manualContributionField = {
+      scope.manualContributionFields.push({
         entryId: eid,
-        field: op.kind === "set_amount" ? "amount" : "note",
-      };
+        field:
+          op.kind === "set_amount"
+            ? "amount"
+            : op.kind === "set_note"
+              ? "note"
+              : "modifier",
+      });
       break;
     }
     case "add_recipe": {
@@ -140,13 +189,63 @@ async function loadStateSlice(
     case "remove_recipe":
       scope.additionIds.add(op.recipeAdditionId);
       break;
-    case "move_item":
-      scope.entryIds.add(makeEntryId(op.fromListId, op.catalogItemId));
-      scope.entryIds.add(makeEntryId(op.toListId, op.catalogItemId));
+    case "move_item": {
+      const from = makeEntryId(op.fromListId, op.catalogItemId);
+      const to = makeEntryId(op.toListId, op.catalogItemId);
+      scope.entryIds.add(from);
+      scope.entryIds.add(to);
+      // Both rows and all three fields of each, whether or not this particular
+      // op carries a manual contribution. The scope's job is to cover everything
+      // the reducer COULD write; narrowing it on the op's payload would silently
+      // stop covering the reducer the day the reducer changes, and only on the
+      // server — the half nobody looks at, because the client would still be
+      // right and the two would just quietly disagree.
+      //
+      // Loading a row the reducer then leaves alone costs an UPSERT of unchanged
+      // values, which this file already accepts everywhere else.
+      for (const eid of [from, to]) {
+        for (const field of MANUAL_FIELDS) {
+          scope.manualContributionFields.push({ entryId: eid, field });
+        }
+      }
+      // Recipe contributions are deliberately NOT in scope: they stay on the
+      // list their addition belongs to. See the op's own comment in sync/ops.ts.
+      break;
+    }
+    case "create_product":
+      scope.productIds.add(op.product.id);
+      break;
+    case "update_product":
+      scope.productIds.add(op.productId);
+      break;
+    // Only the barcode row. The product it points at is neither read nor written
+    // by the reducer — that is what makes two phones linking two EANs to one
+    // product a non-conflict rather than a merge nobody can perform.
+    case "link_barcode":
+      scope.eans.add(op.ean);
+      break;
+    case "delete_catalog_item":
+      scope.catalogIds.add(op.itemId);
+      break;
+    case "merge_catalog_items":
+      // The merged-away vara and the alias, and deliberately nothing else. The
+      // surviving vara is never written, and entries and contributions are never
+      // touched at all — see the reducer's own comment on this op for why that
+      // restraint is what makes a merge converge.
+      scope.catalogIds.add(op.fromItemId);
+      scope.aliasNorms.add(op.aliasNorm);
       break;
   }
 
   const state = emptyState();
+
+  // Deduplicated: move_item names three fields per row, and they all live on the
+  // one row.
+  const manualIds = [
+    ...new Set(
+      scope.manualContributionFields.map((f) => manualContributionId(f.entryId)),
+    ),
+  ];
 
   const [
     listRows,
@@ -157,6 +256,9 @@ async function loadStateSlice(
     recipeContribRows,
     additionRows,
     removeRecipeContribRows,
+    productRows,
+    aliasRows,
+    barcodeRows,
   ] = await Promise.all([
     scope.listIds.size
       ? tx.select().from(lists).where(inArray(lists.id, [...scope.listIds]))
@@ -183,16 +285,8 @@ async function loadStateSlice(
             and(eq(listEntries.listId, op.listId), isNull(listEntries.removedAt)),
           )
       : Promise.resolve([]),
-    scope.manualContributionField
-      ? tx
-          .select()
-          .from(contributions)
-          .where(
-            eq(
-              contributions.id,
-              manualContributionId(scope.manualContributionField.entryId),
-            ),
-          )
+    manualIds.length
+      ? tx.select().from(contributions).where(inArray(contributions.id, manualIds))
       : Promise.resolve([]),
     scope.contributionIds.size
       ? tx
@@ -215,6 +309,20 @@ async function loadStateSlice(
           .from(contributions)
           .where(eq(contributions.recipeAdditionId, op.recipeAdditionId))
       : Promise.resolve([]),
+    scope.productIds.size
+      ? tx.select().from(products).where(inArray(products.id, [...scope.productIds]))
+      : Promise.resolve([]),
+    scope.aliasNorms.size
+      ? tx
+          .select()
+          .from(catalogItemAliases)
+          .where(
+            inArray(catalogItemAliases.aliasNorm, [...scope.aliasNorms]),
+          )
+      : Promise.resolve([]),
+    scope.eans.size
+      ? tx.select().from(barcodes).where(inArray(barcodes.ean, [...scope.eans]))
+      : Promise.resolve([]),
   ]);
 
   for (const row of listRows) {
@@ -236,10 +344,29 @@ async function loadStateSlice(
   }
 
   for (const row of catalogRows) {
+    // Tombstoned by `delete_catalog_item` or by the losing half of a merge. The
+    // CLOCK still travels — a missing clock is not "no opinion", it is "anything
+    // wins" — but the record does not, or the reducer would be handed a vara the
+    // client, running the same ops, does not have. `update_catalog_item` then
+    // no-ops on it here exactly as it does there.
+    const deleted = row.deletedAt !== null;
     state.meta[catalogKey(row.id)] = {
       at: row.updatedAt.toISOString(),
       by: row.updatedBy,
+      deleted: deleted ? true : undefined,
     };
+    // Four independent clocks, read straight from their own columns. No
+    // fallback to the row clock: that clock moves whenever ANY field is
+    // written, so a field that fell back to it would silently inherit an
+    // unrelated write's timestamp and start beating ops it should lose to.
+    //
+    // Emitted for a tombstoned row too: the field clocks outlive the record for
+    // the same reason the record clock does, and a resurrecting create must lose
+    // to a rename that genuinely came after it.
+    for (const [field, clock] of catalogFieldClocks(row)) {
+      state.meta[catalogFieldKey(row.id, field)] = clock;
+    }
+    if (deleted) continue;
     state.catalog[row.id] = {
       id: row.id,
       name: row.name,
@@ -260,6 +387,16 @@ async function loadStateSlice(
       by: row.updatedBy,
       deleted: row.removedAt !== null ? true : undefined,
     };
+    // Its own clock, and absent when never written — the same rule as the
+    // contribution fields, for the same reason: the row clock moves on every
+    // add and removal, so falling back to it would let a tap on the tile
+    // silently outrank a genuine priority edit.
+    if (row.priorityUpdatedAt && row.priorityUpdatedBy) {
+      state.meta[entryPriorityKey(row.id)] = {
+        at: row.priorityUpdatedAt.toISOString(),
+        by: row.priorityUpdatedBy,
+      };
+    }
     // Entries stay in the map even when tombstoned — removedAt is a normal
     // field on ListEntry, not an omission like lists/catalog/additions.
     state.entries[row.id] = {
@@ -269,6 +406,7 @@ async function loadStateSlice(
       createdAt: row.createdAt.toISOString(),
       createdBy: row.createdBy,
       removedAt: row.removedAt?.toISOString() ?? null,
+      priority: row.priority,
       updatedAt: row.updatedAt.toISOString(),
       updatedBy: row.updatedBy,
     };
@@ -278,29 +416,39 @@ async function loadStateSlice(
     // `amount` and `note` carry independent last-write-wins clocks — a single
     // shared clock lets an older amount write lose to a newer note write and
     // silently drop a quantity nobody touched (see reducer.ts's comment on
-    // setManualField). contributions.amount_updated_at/_by and
-    // note_updated_at/_by (migration drizzle/0001) hold those clocks for
-    // real. They are nullable and fall back to the row-level updated_at/by
-    // for rows written before the migration and for recipe/scan
-    // contributions, which are written whole by a single op and so never
-    // populate the per-field columns at all.
-    const rowClock: RecordMeta = { at: row.updatedAt.toISOString(), by: row.updatedBy };
-    state.meta[contributionFieldKey(row.id, "amount")] =
-      row.amountUpdatedAt && row.amountUpdatedBy
-        ? { at: row.amountUpdatedAt.toISOString(), by: row.amountUpdatedBy }
-        : rowClock;
-    state.meta[contributionFieldKey(row.id, "note")] =
-      row.noteUpdatedAt && row.noteUpdatedBy
-        ? { at: row.noteUpdatedAt.toISOString(), by: row.noteUpdatedBy }
-        : rowClock;
-    state.contributions[row.id] = {
+    // setManualField).
+    //
+    // Read straight from their own columns, and an UNSET column emits no meta at
+    // all rather than falling back to the row clock. That fallback was the bug:
+    // the row clock moves whenever either field is written, so it quietly told
+    // the note it had been written at the amount's timestamp. Emitting nothing
+    // reproduces what the reducer itself holds for a field no op has touched.
+    for (const [field, at, by] of [
+      ["amount", row.amountUpdatedAt, row.amountUpdatedBy],
+      ["note", row.noteUpdatedAt, row.noteUpdatedBy],
+      ["modifier", row.modifierUpdatedAt, row.modifierUpdatedBy],
+    ] as const) {
+      if (at && by) state.meta[contributionFieldKey(row.id, field)] = {
+        at: at.toISOString(),
+        by,
+      };
+    }
+    const contribution: Contribution = {
       id: row.id,
       entryId: row.entryId,
       sourceKind: "manual",
       recipeAdditionId: null,
       amount: toAmount(row.amountValue, row.amountUnit),
       note: row.note,
+      modifier: row.modifier,
     };
+    // The clocks above always travel; the record only when there is something
+    // left to record. An emptied row is how a clearing survives in the database
+    // (see writeManualContribution) — loading it as a record would hand the
+    // reducer a contribution the client, running the same ops, does not have.
+    if (!isClearedManualContribution(contribution)) {
+      state.contributions[row.id] = contribution;
+    }
   }
 
   for (const row of [...recipeContribRows, ...removeRecipeContribRows]) {
@@ -316,6 +464,68 @@ async function loadStateSlice(
       recipeAdditionId: row.recipeAdditionId,
       amount: toAmount(row.amountValue, row.amountUnit),
       note: row.note,
+      modifier: row.modifier,
+    };
+  }
+
+  for (const row of productRows) {
+    const deleted = row.deletedAt !== null;
+    state.meta[productKey(row.id)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    // Each from its OWN column, and a NULL column emits nothing at all. See
+    // productFieldClocks: NULL means "no op has ever written this field", which
+    // is the state a product born from Open Food Facts is genuinely in.
+    for (const [field, clock] of productFieldClocks(row)) {
+      state.meta[productFieldKey(row.id, field)] = clock;
+    }
+    if (deleted) continue;
+    state.products[row.id] = {
+      id: row.id,
+      name: row.name,
+      brand: row.brand,
+      catalogItemId: row.catalogItemId,
+      defaultSize: toAmount(row.defaultSizeValue, row.defaultSizeUnit),
+      sourceSizeText: row.sourceSizeText,
+      imageUrl: row.imageUrl,
+      createdAt: row.createdAt.toISOString(),
+      createdBy: row.createdBy,
+    };
+  }
+
+  for (const row of aliasRows) {
+    const deleted = row.deletedAt !== null;
+    state.meta[aliasKey(row.aliasNorm)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    if (deleted) continue;
+    state.aliases[row.aliasNorm] = {
+      aliasNorm: row.aliasNorm,
+      catalogItemId: row.catalogItemId,
+      createdAt: row.createdAt.toISOString(),
+      createdBy: row.createdBy,
+    };
+  }
+
+  for (const row of barcodeRows) {
+    const deleted = row.deletedAt !== null;
+    state.meta[barcodeKey(row.ean)] = {
+      at: row.updatedAt.toISOString(),
+      by: row.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    if (deleted) continue;
+    // One editable fact — which product this EAN points at — so the record-level
+    // clock IS that fact's clock and there is nothing for a field clock to
+    // disambiguate.
+    state.barcodes[row.ean] = {
+      ean: row.ean,
+      productId: row.productId,
+      source: row.source as BarcodeSource,
     };
   }
 
@@ -391,12 +601,40 @@ async function writeList(tx: Tx, id: Id, next: SyncState): Promise<void> {
 }
 
 async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> {
-  const meta = next.meta[catalogKey(id)];
+  const rowMeta = next.meta[catalogKey(id)];
+  if (!rowMeta) return;
   const item = next.catalog[id];
-  // Missing item with a meta entry means update_catalog_item targeted a row
-  // we don't have — the reducer no-ops that too (see reducer.ts), so there is
-  // nothing to write.
-  if (!meta || !item) return;
+  if (!item) {
+    /**
+     * Retired by `delete_catalog_item`, or the losing half of a merge.
+     *
+     * Only when the clock says so. A meta entry with no record and no tombstone
+     * means `update_catalog_item` targeted a row this server does not have — the
+     * reducer no-ops that too, so there is nothing to write.
+     *
+     * The four field clocks are deliberately NOT touched. Existence is not a
+     * field of the row, it is the record itself, and it already has the
+     * record-level clock; giving it a field clock as well would be the second
+     * clock for one fact that this codebase has paid for three times.
+     */
+    if (!rowMeta.deleted) return;
+    await tx
+      .update(catalogItems)
+      .set({
+        deletedAt: new Date(rowMeta.at),
+        updatedAt: new Date(rowMeta.at),
+        updatedBy: rowMeta.by,
+      })
+      .where(eq(catalogItems.id, id));
+    return;
+  }
+
+  const fieldMeta = (field: CatalogField): RecordMeta =>
+    next.meta[catalogFieldKey(id, field)] ?? rowMeta;
+  const clocks = catalogClockColumns(fieldMeta);
+  // Derived, never stamped with whichever op arrived last — see latestClock.
+  const touched = latestClock([rowMeta, ...CATALOG_FIELDS.map(fieldMeta)]);
+
   await tx
     .insert(catalogItems)
     .values({
@@ -409,8 +647,10 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
       hasAtHome: item.hasAtHome,
       useCount: item.useCount,
       lastUsedAt: item.lastUsedAt ? new Date(item.lastUsedAt) : null,
-      updatedAt: new Date(meta.at),
-      updatedBy: meta.by,
+      deletedAt: null,
+      updatedAt: new Date(touched.at),
+      updatedBy: touched.by,
+      ...clocks,
     })
     .onConflictDoUpdate({
       target: catalogItems.id,
@@ -421,10 +661,20 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
         iconRef: item.iconRef,
         isCustom: item.isCustom,
         hasAtHome: item.hasAtHome,
-        useCount: item.useCount,
-        lastUsedAt: item.lastUsedAt ? new Date(item.lastUsedAt) : null,
-        updatedAt: new Date(meta.at),
-        updatedBy: meta.by,
+        // Cleared, so a `create_catalog_item` newer than the retirement actually
+        // brings the vara back rather than writing its fields into a row that
+        // stays invisible. Soft deletes are only reversible if something reverses
+        // them.
+        deletedAt: null,
+        // `useCount` and `lastUsedAt` are deliberately NOT updated here. They
+        // are maintained by the purchase side effects with an atomic
+        // `use_count + 1`, and writing an absolute value loaded earlier in this
+        // transaction would clobber a concurrent increment — a lost update, not
+        // a conflict, so last-write-wins cannot save it. The reducer already
+        // refuses to take them from a patch; this is the other half.
+        updatedAt: new Date(touched.at),
+        updatedBy: touched.by,
+        ...clocks,
       },
     });
 }
@@ -432,6 +682,17 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
 async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
   const entry = next.entries[id];
   if (!entry) return;
+  // Written only when the reducer actually holds a priority clock. Stamping one
+  // unconditionally would turn every ordinary add and removal into a claim about
+  // when the priority was last set, which is the moving-clock bug this codebase
+  // has now paid for twice.
+  const priorityMeta = next.meta[entryPriorityKey(id)];
+  const priorityColumns = priorityMeta
+    ? {
+        priorityUpdatedAt: new Date(priorityMeta.at),
+        priorityUpdatedBy: priorityMeta.by,
+      }
+    : {};
   // NOTE: this insert can violate the catalog_item_id foreign key if the op
   // references a catalog item this server has never heard of (e.g. a
   // create_catalog_item op for it hasn't arrived yet). The reducer is
@@ -451,6 +712,8 @@ async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
       createdAt: new Date(entry.createdAt),
       createdBy: entry.createdBy,
       removedAt: entry.removedAt ? new Date(entry.removedAt) : null,
+      priority: entry.priority,
+      ...priorityColumns,
       updatedAt: new Date(entry.updatedAt),
       updatedBy: entry.updatedBy,
     })
@@ -460,6 +723,8 @@ async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
         createdAt: new Date(entry.createdAt),
         createdBy: entry.createdBy,
         removedAt: entry.removedAt ? new Date(entry.removedAt) : null,
+        priority: entry.priority,
+        ...priorityColumns,
         updatedAt: new Date(entry.updatedAt),
         updatedBy: entry.updatedBy,
       },
@@ -467,36 +732,77 @@ async function writeEntry(tx: Tx, id: Id, next: SyncState): Promise<void> {
 }
 
 /**
- * Write one field's worth of a manual contribution. `field` is exactly the
- * one field the current op (set_amount or set_note) targets — the OTHER
- * field's clock columns are never touched by this call, since a set_amount
- * op has nothing true to say about when the note was last written (and vice
- * versa). Only `updated_at`/`updated_by` (the informational "last touched,
- * either field" columns recipe/scan contributions rely on) get stamped with
- * this op's own at/actor unconditionally — that is unambiguous here, since
- * this call IS the most recent touch by construction.
+ * Write one field's worth of a manual contribution.
+ *
+ * `field` is the one field the current op (set_amount or set_note) targets, and
+ * an UPDATE only ever moves that field's clock — a set_amount has nothing true
+ * to say about when the note was last written. An INSERT supplies both, because
+ * a brand-new row genuinely establishes both facts at once ("and the note has
+ * been empty since then").
+ *
+ * The other field's clock comes from the reducer's meta rather than being left
+ * out. Leaving it out is what made these columns nullable, and a NULL fell back
+ * to the row clock at read time — which moves on every write to either field, so
+ * writing the amount silently advanced the note's clock and a genuinely older
+ * note write lost a comparison it should have won. In one arrival order only, so
+ * two devices ended up with different notes and neither was wrong by its own
+ * reckoning. Reproduced by execution; see drizzle/0003.
  */
 async function writeManualContribution(
   tx: Tx,
   entryId: Id,
-  field: "amount" | "note",
+  field: ManualField,
   next: SyncState,
 ): Promise<void> {
   const cid = manualContributionId(entryId);
   const meta = next.meta[contributionFieldKey(cid, field)];
   if (!meta) return;
 
-  const contribution = next.contributions[cid];
-  if (!contribution) {
-    // Both fields cleared — setManualField drops the row entirely.
-    await tx.delete(contributions).where(eq(contributions.id, cid));
-    return;
-  }
+  /**
+   * Both fields cleared. The RECORD goes — the reducer holds none, so keeping
+   * one here would put the server out of step with every client — but the ROW
+   * stays, emptied, because the row is where the per-field clocks live.
+   *
+   * Deleting it was a real divergence bug, and a quiet one. A missing clock is
+   * not "no opinion", it is "anything wins": `wins(op, undefined)` returns true
+   * whatever the op's timestamp says. So clearing an amount here at T3 and a
+   * stale `set_amount` from T2 arriving afterwards left the server with the
+   * amount restored and the clearing device without it — and neither would ever
+   * budge, because each was applying last-write-wins correctly against the facts
+   * it had. Two shopping lists, permanently disagreeing about how much milk,
+   * with no error anywhere.
+   */
+  const contribution = next.contributions[cid] ?? {
+    id: cid,
+    entryId,
+    sourceKind: "manual" as const,
+    recipeAdditionId: null,
+    amount: null,
+    note: null,
+    modifier: null,
+  };
 
+  /**
+   * Only the targeted field's clock is written — on INSERT as well as on UPDATE.
+   *
+   * The tempting shortcut is to stamp both on insert, since the row is new. It
+   * is wrong, and subtly: a `set_amount` at 05:00 creating the row would be
+   * asserting "and the note has been empty since 05:00", which the op never
+   * said. A note genuinely written at 03:00 then loses — but only in that
+   * arrival order, so the two devices settle on different notes. The other
+   * column stays NULL, meaning "nobody has written this", which is exactly what
+   * the reducer holds and what makes any later write land.
+   */
   const fieldColumns =
     field === "amount"
       ? { amountUpdatedAt: new Date(meta.at), amountUpdatedBy: meta.by }
-      : { noteUpdatedAt: new Date(meta.at), noteUpdatedBy: meta.by };
+      : field === "note"
+        ? { noteUpdatedAt: new Date(meta.at), noteUpdatedBy: meta.by }
+        : { modifierUpdatedAt: new Date(meta.at), modifierUpdatedBy: meta.by };
+
+  // "Last touched, either field" — informational, and the only clock recipe and
+  // scan contributions have. This call IS the most recent touch by construction.
+  const touched = { at: new Date(meta.at), by: meta.by };
 
   await tx
     .insert(contributions)
@@ -508,8 +814,9 @@ async function writeManualContribution(
       amountValue: contribution.amount?.value ?? null,
       amountUnit: contribution.amount?.unit ?? null,
       note: contribution.note,
-      updatedAt: new Date(meta.at),
-      updatedBy: meta.by,
+      modifier: contribution.modifier,
+      updatedAt: touched.at,
+      updatedBy: touched.by,
       ...fieldColumns,
     })
     .onConflictDoUpdate({
@@ -518,8 +825,9 @@ async function writeManualContribution(
         amountValue: contribution.amount?.value ?? null,
         amountUnit: contribution.amount?.unit ?? null,
         note: contribution.note,
-        updatedAt: new Date(meta.at),
-        updatedBy: meta.by,
+        modifier: contribution.modifier,
+        updatedAt: touched.at,
+        updatedBy: touched.by,
         ...fieldColumns,
       },
     });
@@ -533,6 +841,12 @@ async function writeContribution(tx: Tx, id: Id, next: SyncState): Promise<void>
     await tx.delete(contributions).where(eq(contributions.id, id));
     return;
   }
+  // Recipe and scan contributions are written whole by a single op and resolve
+  // on the ROW-level key, so the per-field clock columns stay NULL for them —
+  // nothing has written those fields independently, and saying otherwise would
+  // be inventing a history. Their ids are disjoint from manual ones
+  // (`recipeContributionId` vs `manualContributionId`), so the two clocking
+  // schemes never meet on one row.
   await tx
     .insert(contributions)
     .values({
@@ -593,16 +907,168 @@ async function writeAddition(tx: Tx, id: Id, next: SyncState): Promise<void> {
   }
 }
 
+/**
+ * A product, with its four clocks in their own four column pairs.
+ *
+ * The clocks are NULLABLE here and NOT NULL for a vara, and preserving that is
+ * the whole care in this function: a product born from Open Food Facts has
+ * genuinely never had its mapping asserted by anyone, and a clock invented for it
+ * would put the machine's guess ahead of the human correction the review queue
+ * exists to collect. `productClockColumns` writes NULL for a field the reducer
+ * holds no clock for; nothing falls back to `updated_at`.
+ */
+async function writeProduct(tx: Tx, id: Id, next: SyncState): Promise<void> {
+  const rowMeta = next.meta[productKey(id)];
+  const product = next.products[id];
+  // A record with no meta cannot happen; meta with no record means either an
+  // `update_product` for a product this server has never seen (the reducer
+  // no-ops that too) or a tombstone, which is already in the column.
+  if (!rowMeta || !product) return;
+
+  const fieldMeta = (field: ProductField): RecordMeta | undefined =>
+    next.meta[productFieldKey(id, field)];
+  const clocks = productClockColumns(fieldMeta);
+  // Derived from whatever clocks exist, never stamped with whichever op arrived
+  // last — see latestClock. The row clock is not a conflict input for any field
+  // on this row; it exists so the tombstone has a timestamp and so /varor can
+  // order by recency.
+  const touched = latestClock([
+    rowMeta,
+    ...PRODUCT_FIELDS.map(fieldMeta).filter((m) => m !== undefined),
+  ]);
+
+  await tx
+    .insert(products)
+    .values({
+      id: product.id,
+      name: product.name,
+      brand: product.brand,
+      catalogItemId: product.catalogItemId,
+      defaultSizeValue: product.defaultSize?.value ?? null,
+      defaultSizeUnit: product.defaultSize?.unit ?? null,
+      sourceSizeText: product.sourceSizeText,
+      imageUrl: product.imageUrl,
+      // Earliest-wins, resolved by the reducer (`earliestCreation`) rather than
+      // here, because two offline phones scanning one unknown EAN both author a
+      // create for the same derived id and only one creation can be recorded.
+      // Written on conflict too: a losing create still lowers this.
+      createdAt: new Date(product.createdAt),
+      createdBy: product.createdBy,
+      deletedAt: null,
+      updatedAt: new Date(touched.at),
+      updatedBy: touched.by,
+      ...clocks,
+    })
+    .onConflictDoUpdate({
+      target: products.id,
+      set: {
+        name: product.name,
+        brand: product.brand,
+        catalogItemId: product.catalogItemId,
+        defaultSizeValue: product.defaultSize?.value ?? null,
+        defaultSizeUnit: product.defaultSize?.unit ?? null,
+        sourceSizeText: product.sourceSizeText,
+        imageUrl: product.imageUrl,
+        createdAt: new Date(product.createdAt),
+        createdBy: product.createdBy,
+        deletedAt: null,
+        updatedAt: new Date(touched.at),
+        updatedBy: touched.by,
+        ...clocks,
+      },
+    });
+}
+
+/**
+ * The merged-away word, kept so old recipe lines go on resolving.
+ *
+ * `createdAt`/`createdBy` come from the reducer's own record rather than from
+ * this call, so they are the WINNING merge's stamp in either arrival order — the
+ * same shape as the barcode pointer below, which the schema deliberately models
+ * on this one.
+ */
+async function writeAlias(tx: Tx, aliasNorm: string, next: SyncState): Promise<void> {
+  const meta = next.meta[aliasKey(aliasNorm)];
+  const alias = next.aliases[aliasNorm];
+  if (!meta || !alias) return;
+
+  await tx
+    .insert(catalogItemAliases)
+    .values({
+      aliasNorm: alias.aliasNorm,
+      catalogItemId: alias.catalogItemId,
+      createdAt: new Date(alias.createdAt),
+      createdBy: alias.createdBy,
+      deletedAt: null,
+      updatedAt: new Date(meta.at),
+      updatedBy: meta.by,
+    })
+    .onConflictDoUpdate({
+      target: catalogItemAliases.aliasNorm,
+      set: {
+        catalogItemId: alias.catalogItemId,
+        createdAt: new Date(alias.createdAt),
+        createdBy: alias.createdBy,
+        deletedAt: null,
+        updatedAt: new Date(meta.at),
+        updatedBy: meta.by,
+      },
+    });
+}
+
+/**
+ * One EAN, pointing at a product.
+ *
+ * `BarcodeLink` carries no creation info — the reducer has no use for it — so
+ * these columns are stamped from the record-level clock, which is the winning
+ * op's and therefore the same in either arrival order. Taking them from whichever
+ * write happened to insert the row first would make them depend on delivery
+ * order, which is the one property nothing in this file is allowed to have.
+ */
+async function writeBarcode(tx: Tx, ean: string, next: SyncState): Promise<void> {
+  const meta = next.meta[barcodeKey(ean)];
+  const link = next.barcodes[ean];
+  if (!meta || !link) return;
+  const at = new Date(meta.at);
+
+  await tx
+    .insert(barcodes)
+    .values({
+      ean: link.ean,
+      productId: link.productId,
+      source: link.source,
+      createdAt: at,
+      createdBy: meta.by,
+      deletedAt: null,
+      updatedAt: at,
+      updatedBy: meta.by,
+    })
+    .onConflictDoUpdate({
+      target: barcodes.ean,
+      set: {
+        productId: link.productId,
+        source: link.source,
+        createdAt: at,
+        createdBy: meta.by,
+        deletedAt: null,
+        updatedAt: at,
+        updatedBy: meta.by,
+      },
+    });
+}
+
 async function persist(tx: Tx, next: SyncState, scope: Scope): Promise<void> {
   for (const id of scope.listIds) await writeList(tx, id, next);
   for (const id of scope.catalogIds) await writeCatalogItem(tx, id, next);
   for (const id of scope.entryIds) await writeEntry(tx, id, next);
-  if (scope.manualContributionField) {
-    const { entryId, field } = scope.manualContributionField;
+  for (const { entryId, field } of scope.manualContributionFields) {
     await writeManualContribution(tx, entryId, field, next);
   }
   for (const id of scope.contributionIds) await writeContribution(tx, id, next);
   for (const id of scope.additionIds) await writeAddition(tx, id, next);
+  for (const id of scope.productIds) await writeProduct(tx, id, next);
+  for (const aliasNorm of scope.aliasNorms) await writeAlias(tx, aliasNorm, next);
+  for (const ean of scope.eans) await writeBarcode(tx, ean, next);
 }
 
 /**
@@ -630,18 +1096,149 @@ async function recordPurchaseIfBought(tx: Tx, op: Op, next: SyncState): Promise<
   const eid = makeEntryId(op.listId, op.catalogItemId);
   if (!wonThisOp(next, entryKey(eid), op)) return;
 
-  await tx.insert(purchases).values({
-    id: randomUUID(),
-    catalogItemId: op.catalogItemId,
-    listId: op.listId,
-    purchasedAt: new Date(op.at),
-    actor: op.actor,
-  });
+  await tx
+    .insert(purchases)
+    .values({
+      id: randomUUID(),
+      catalogItemId: op.catalogItemId,
+      listId: op.listId,
+      purchasedAt: new Date(op.at),
+      actor: op.actor,
+      clientOpId: op.clientOpId,
+    })
+    // A replayed op must not count as a second shop. The op log is already
+    // idempotent per clientOpId; this makes the purchase row idempotent on the
+    // same key, one layer down, so the two can never disagree.
+    .onConflictDoNothing({ target: purchases.clientOpId });
 
   await tx
     .update(catalogItems)
     .set({ useCount: sql`${catalogItems.useCount} + 1`, lastUsedAt: new Date(op.at) })
     .where(eq(catalogItems.id, op.catalogItemId));
+}
+
+/**
+ * The other half of a merge — the half the reducer must not do.
+ *
+ * `merge_catalog_items` tombstones the losing vara and records its word as an
+ * alias, and NOTHING else, because a merge implemented as row rewriting does not
+ * converge: `merge(B→A)` at T5 followed by a long-offline `add_item(B)` at T7
+ * ends with an entry for B in one arrival order and for A in the other. So the
+ * re-pointing lives here, on the same boundary `recordPurchaseIfBought` sits on,
+ * and it is deliberately restricted to rows that carry NO clock of their own:
+ *
+ *   - `purchases` and `recipe_ingredients` never go through the reducer at all,
+ *     so moving them can contradict nothing.
+ *   - `catalog_item_aliases` DOES sync, and this moves it anyway — because the
+ *     alternative is a chain of merges leaving old words aiming at a vara that no
+ *     longer exists, which breaks the one thing the alias is for. The stated
+ *     cost: a client holding that alias keeps the old target until it rehydrates.
+ *     Bounded and self-repairing, unlike a word that resolves to a tombstone.
+ *
+ * Entries and contributions are NOT here, and that omission is the design rather
+ * than an oversight. Both arrival orders end with the same orphan entry on a
+ * tombstoned vara: visible, manually fixable, and above all identical everywhere.
+ *
+ * Idempotent by construction — every statement is `WHERE catalog_item_id =
+ * fromItemId`, which matches nothing on a second run — and gated on the op having
+ * actually WON, so a stale merge that lost to a newer one never re-points
+ * anything.
+ */
+async function repointMergedCatalogItem(
+  tx: Tx,
+  op: Op,
+  next: SyncState,
+): Promise<void> {
+  if (op.kind !== "merge_catalog_items") return;
+  if (!wonThisOp(next, catalogKey(op.fromItemId), op)) return;
+
+  // Scan-sourced purchases are deliberately untouched: they carry a product, not
+  // a vara, and resolve through it (see purchase-attribution.ts). Moving the
+  // product's mapping is a separate, human decision with its own clock.
+  await tx
+    .update(purchases)
+    .set({ catalogItemId: op.toItemId })
+    .where(eq(purchases.catalogItemId, op.fromItemId));
+
+  await tx
+    .update(recipeIngredients)
+    .set({ catalogItemId: op.toItemId })
+    .where(eq(recipeIngredients.catalogItemId, op.fromItemId));
+
+  // Aliases that already pointed at the merged-away vara. The alias this op
+  // itself creates was written by `persist` above and already names `toItemId`,
+  // so it is not matched here.
+  await tx
+    .update(catalogItemAliases)
+    .set({ catalogItemId: op.toItemId })
+    .where(eq(catalogItemAliases.catalogItemId, op.fromItemId));
+}
+
+/**
+ * Undo, on the history side.
+ *
+ * The other half of "Ångra". Putting the item back on the list is the visible
+ * half and the client does it locally; this is the half nobody could see, and
+ * without it every mis-tap left a permanent purchase behind. Since purchase
+ * history is the only input to the cadence engine, and soon to the statistics
+ * and the "probably still in the fridge" rule, a purchase the user explicitly
+ * retracted is not a small inaccuracy — it is the app confidently telling you
+ * something you already told it was wrong.
+ *
+ * Idempotent by key, so a replayed undo deletes nothing the second time.
+ */
+async function retractPurchaseIfUndo(tx: Tx, op: Op): Promise<void> {
+  if (op.kind !== "add_item" || !op.undoesClientOpId) return;
+
+  // Resolved BEFORE the delete rather than from a RETURNING clause, because a
+  // scan-sourced purchase keeps its vara on the product and `DELETE` cannot
+  // join. Both statements key on the same `clientOpId` inside one transaction,
+  // so the idempotency is exactly what it was: a replayed undo finds nothing and
+  // does nothing.
+  const [removed] = await tx
+    .select({ catalogItemId: effectiveCatalogItemId })
+    .from(purchases)
+    .leftJoin(products, purchaseProductJoin)
+    .where(eq(purchases.clientOpId, op.undoesClientOpId))
+    .limit(1);
+
+  // Nothing to undo: the purchase was never written (a `bought: false` removal,
+  // or one that lost its LWW comparison), or this undo already applied.
+  if (!removed) return;
+
+  await tx
+    .delete(purchases)
+    .where(eq(purchases.clientOpId, op.undoesClientOpId));
+
+  // A scan of a product nobody has placed on a vara yet. There is no catalog row
+  // to correct — `use_count` was never incremented for it, because nothing knew
+  // which vara to credit. Retracting the purchase is the half that matters and
+  // has already happened.
+  if (removed.catalogItemId === null) return;
+
+  // `lastUsedAt` is recomputed from what is left rather than simply cleared.
+  // Clearing it would erase a genuine earlier purchase, and leaving it would let
+  // the retracted timestamp go on standing in for one — either way the catalog's
+  // recency ordering, and later the fridge inference, would read a date that no
+  // purchase row supports.
+  // Through the same resolution, not `purchases.catalog_item_id` directly. A
+  // scan of a placed product is a genuine purchase of this vara, and counting it
+  // here but not in the cadence would leave two answers to one question.
+  const [latest] = await tx
+    .select({ purchasedAt: purchases.purchasedAt })
+    .from(purchases)
+    .leftJoin(products, purchaseProductJoin)
+    .where(eq(effectiveCatalogItemId, removed.catalogItemId))
+    .orderBy(desc(purchases.purchasedAt))
+    .limit(1);
+
+  await tx
+    .update(catalogItems)
+    .set({
+      useCount: sql`greatest(${catalogItems.useCount} - 1, 0)`,
+      lastUsedAt: latest?.purchasedAt ?? null,
+    })
+    .where(eq(catalogItems.id, removed.catalogItemId));
 }
 
 // ---------------------------------------------------------------------------
@@ -711,6 +1308,8 @@ export async function applyOpToDatabase(
 
     await persist(tx, next, scope);
     await recordPurchaseIfBought(tx, safeOp, next);
+    await retractPurchaseIfUndo(tx, safeOp);
+    await repointMergedCatalogItem(tx, safeOp, next);
 
     const [inserted] = await tx
       .insert(opsTable)

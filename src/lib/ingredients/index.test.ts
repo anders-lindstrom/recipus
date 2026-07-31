@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { CATALOG_ITEMS } from "@/db/seed-data";
 import { normalizeName, slugify } from "@/lib/utils";
 import {
+  AUTO_MAP_MIN_SCORE,
+  autoMapProductName,
+  buildMatchCandidates,
   matchIngredient,
   matchParsedIngredient,
   parseIngredientLine,
@@ -299,6 +302,144 @@ describe("matchIngredient", () => {
   });
 });
 
+describe("buildMatchCandidates: aliases", () => {
+  // A merge tombstones the merged-away vara and keeps its word as an alias, so
+  // recipe lines written before the merge keep resolving. The matcher needs no
+  // say in this: it already takes a candidate *list*, so one candidate per
+  // name-or-alias is all the expansion there is.
+  const MERGED_AWAY = "köttfärs";
+  const SURVIVOR = "nötfärs";
+
+  /** The catalog as it looks after `merge_catalog_items(köttfärs → nötfärs)`. */
+  const afterMerge: MatchCandidate[] = catalog.filter((c) => c.id !== idFor(MERGED_AWAY));
+  const aliasRow = { itemId: idFor(SURVIVOR), aliasNorm: normalizeName(MERGED_AWAY) };
+
+  it("returns the items unchanged when there are no aliases", () => {
+    expect(buildMatchCandidates(afterMerge)).toEqual(afterMerge);
+  });
+
+  it("contributes one candidate per alias, pointing at the surviving item", () => {
+    const candidates = buildMatchCandidates(afterMerge, [aliasRow]);
+    expect(candidates).toHaveLength(afterMerge.length + 1);
+    expect(candidates).toContainEqual({ id: idFor(SURVIVOR), nameNorm: normalizeName(MERGED_AWAY) });
+  });
+
+  it("the merged-away word stops resolving on its own — this is what the alias repairs", () => {
+    // Not a hypothetical: "köttfärs" shares no prefix, compound head or whole
+    // word with any surviving catalog name, so the old recipe line goes from a
+    // 1.0 match to nothing the moment the merge lands.
+    expect(matchIngredient(MERGED_AWAY, catalog)).toEqual({ id: idFor(MERGED_AWAY), score: 1.0 });
+    expect(matchIngredient(MERGED_AWAY, afterMerge)).toBeNull();
+  });
+
+  it("an old recipe line naming the merged-away vara resolves to the survivor", () => {
+    const candidates = buildMatchCandidates(afterMerge, [aliasRow]);
+    const parsed = parseIngredientLine(`500 g ${MERGED_AWAY}`);
+    expect(matchParsedIngredient(parsed, candidates)).toEqual({
+      id: idFor(SURVIVOR),
+      score: 1.0,
+    });
+  });
+
+  it("resolves the alias identically whichever order the rows arrive in", () => {
+    const candidates = buildMatchCandidates(afterMerge, [aliasRow]);
+    expect(matchIngredient(MERGED_AWAY, [...candidates].reverse())).toEqual({
+      id: idFor(SURVIVOR),
+      score: 1.0,
+    });
+  });
+
+  it("does not let an alias outrank a better match on another item", () => {
+    // An alias adds a way to reach its own item, it does not promote it: a
+    // household that merged "mjölkchoklad" into "chokladkaka" must not find
+    // "mjölk" resolving to chocolate on the strength of a prefix.
+    const candidates = buildMatchCandidates(catalog, [
+      { itemId: idFor("chokladkaka"), aliasNorm: normalizeName("mjölkchoklad") },
+    ]);
+    expect(matchIngredient("mjölk", candidates)).toEqual({ id: idFor("mjölk"), score: 1.0 });
+  });
+});
+
+describe("matchIngredient: deterministic tie-break", () => {
+  // The candidate list comes from a `select` with no ORDER BY, so its order is
+  // Postgres' business — it can differ between two devices holding identical
+  // rows, and after a VACUUM it can differ between two calls on one device. A
+  // tie broken by array position is therefore a match that depends on
+  // something no device can observe or agree on, which is exactly what this
+  // codebase exists to rule out. These queries tie on the real seeded catalog.
+  const ORDERS: Array<{ label: string; of: (c: MatchCandidate[]) => MatchCandidate[] }> = [
+    { label: "as seeded", of: (c) => c },
+    { label: "reversed", of: (c) => [...c].reverse() },
+    {
+      label: "sorted by name",
+      of: (c) => [...c].sort((a, b) => a.nameNorm.localeCompare(b.nameNorm)),
+    },
+    {
+      label: "sorted by name, descending",
+      of: (c) => [...c].sort((a, b) => b.nameNorm.localeCompare(a.nameNorm)),
+    },
+  ];
+
+  // Each query prefix-matches two real items of *identical* name length, so
+  // neither the score nor the shorter-name rule can separate them.
+  const TIED_QUERIES: Array<{ query: string; winner: string; loser: string }> = [
+    { query: "havre", winner: "havregryn", loser: "havremjöl" },
+    { query: "wiener", winner: "wienerbröd", loser: "wienerkorv" },
+    { query: "disk", winner: "diskmedel", loser: "disksvamp" },
+  ];
+
+  it.each(TIED_QUERIES)("'$query' really is a tie: $winner vs $loser", ({ query, winner, loser }) => {
+    const both = [winner, loser].map((n) =>
+      matchIngredient(query, [{ id: idFor(n), nameNorm: normalizeName(n) }]),
+    );
+    expect(both[0]?.score).toBe(both[1]?.score);
+    expect(normalizeName(winner).length).toBe(normalizeName(loser).length);
+  });
+
+  it.each(TIED_QUERIES)("'$query' resolves to $winner in every order", ({ query, winner }) => {
+    for (const order of ORDERS) {
+      expect(matchIngredient(query, order.of(catalog)), order.label).toEqual({
+        id: idFor(winner),
+        score: 0.8,
+      });
+    }
+  });
+
+  it("is stable across every permutation of a three-way tie", () => {
+    // Three names of equal length, all prefixed by the query: score and length
+    // are exhausted, so only the id can decide. All six orderings must agree.
+    const tied: MatchCandidate[] = [
+      { id: "c-item", nameNorm: "sockerlag" },
+      { id: "a-item", nameNorm: "sockerbit" },
+      { id: "b-item", nameNorm: "sockerark" },
+    ];
+    const permutations = [
+      [0, 1, 2],
+      [0, 2, 1],
+      [1, 0, 2],
+      [1, 2, 0],
+      [2, 0, 1],
+      [2, 1, 0],
+    ];
+    for (const p of permutations) {
+      expect(matchIngredient("socker", p.map((i) => tied[i]!)), p.join("")).toEqual({
+        id: "a-item",
+        score: 0.8,
+      });
+    }
+  });
+
+  it("still prefers the shorter catalog name before falling back to the id", () => {
+    // The id rule is a last resort, not a replacement: a shorter (more
+    // generic) name still wins even when its id sorts later.
+    const c: MatchCandidate[] = [
+      { id: "aaa", nameNorm: "mjolkchokladdryck" },
+      { id: "zzz", nameNorm: "mjolk" },
+    ];
+    expect(matchIngredient("mjolkchoklad", c)).toEqual({ id: "zzz", score: 0.8 });
+  });
+});
+
 describe("parseIngredientLine: nameWithPreparation", () => {
   it("equals name when there is no preparation word", () => {
     const parsed = parseIngredientLine("2 dl vispgrädde");
@@ -368,6 +509,55 @@ describe("matchParsedIngredient", () => {
   it("returns null when neither the raw nor the stripped name matches anything", () => {
     const parsed = parseIngredientLine("2 dl xyzingrediens");
     expect(matchParsedIngredient(parsed, catalog)).toBeNull();
+  });
+});
+
+describe("autoMapProductName: the 0.8 threshold", () => {
+  // Twelve product names of the shape a Swedish scan actually returns, matched
+  // against the real seeded catalog. What auto-commits and what queues is the
+  // whole decision, so it is spelled out rather than summarised: in buy mode an
+  // auto-map writes a purchase, and a wrong one writes it against the wrong
+  // vara with nothing on screen to notice.
+  const PRODUCTS: Array<{ name: string; autoMapsTo: string | null; queuedBecause?: string }> = [
+    { name: "Krossade tomater Garant", autoMapsTo: "krossade tomater" },
+    { name: "Vispgrädde 36% Arla", autoMapsTo: "vispgrädde" },
+    { name: "Kaffe Gevalia Mellanrost", autoMapsTo: null, queuedBecause: "0.7 -> ost" },
+    { name: "Zoégas Skånerost", autoMapsTo: null, queuedBecause: "0.7 -> ost" },
+    { name: "Kelda Tomatsoppa", autoMapsTo: null, queuedBecause: "0.7 -> soppa" },
+    { name: "Wasa Husman Knäckebröd", autoMapsTo: null, queuedBecause: "0.6 -> knäckebröd" },
+    { name: "Felix Ketchup", autoMapsTo: null, queuedBecause: "0.6 -> ketchup" },
+    { name: "Scan Falukorv Original", autoMapsTo: null, queuedBecause: "0.6 -> falukorv" },
+    { name: "Arla Ko Mellanmjölk 1,5%", autoMapsTo: null, queuedBecause: "0.6 -> mellanmjölk" },
+    { name: "Kronägg Frigående ägg", autoMapsTo: null, queuedBecause: "0.6 -> ägg" },
+    { name: "Bregott Normalsaltat", autoMapsTo: null, queuedBecause: "no match at all" },
+    { name: "Marabou Mjölkchoklad", autoMapsTo: null, queuedBecause: "no match at all" },
+  ];
+
+  it.each(PRODUCTS)("$name", ({ name, autoMapsTo }) => {
+    const mapped = autoMapProductName(name, catalog);
+    expect(mapped?.id ?? null).toBe(autoMapsTo === null ? null : idFor(autoMapsTo));
+  });
+
+  it("auto-commits two of twelve and queues ten — the ratio is the design", () => {
+    // Ten trips to a review queue is not the threshold failing. A queued
+    // product costs one tap later; an auto-mapped wrong one costs a purchase
+    // recorded against a vara nobody bought, which then feeds cadence and
+    // statistics as if it were true.
+    const auto = PRODUCTS.filter((p) => autoMapProductName(p.name, catalog) !== null);
+    expect(auto).toHaveLength(2);
+  });
+
+  it("never auto-maps on the compound-head tier — this is what 0.8 buys", () => {
+    // The named failure: Swedish compounding makes "-rost" end in "ost", so the
+    // 0.7 tier confidently maps two different coffees to cheese.
+    expect(matchIngredient("Kaffe Gevalia Mellanrost", catalog)).toEqual({
+      id: idFor("ost"),
+      score: 0.7,
+    });
+    expect(matchIngredient("Zoégas Skånerost", catalog)).toEqual({ id: idFor("ost"), score: 0.7 });
+    expect(autoMapProductName("Kaffe Gevalia Mellanrost", catalog)).toBeNull();
+    expect(autoMapProductName("Zoégas Skånerost", catalog)).toBeNull();
+    expect(AUTO_MAP_MIN_SCORE).toBe(0.8);
   });
 });
 

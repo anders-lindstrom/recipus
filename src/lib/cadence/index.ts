@@ -6,7 +6,8 @@
  * docs/superpowers/specs/2026-07-29-recipus-design.md section 5.3.
  */
 
-import type { Id } from "@/lib/domain";
+import type { Amount, Id, UnitFamily } from "@/lib/domain";
+import { toBase, unitFamily } from "@/lib/units";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -67,7 +68,69 @@ export interface CadenceStats {
  * intervals (e.g. 3, 90, 12, 200 days apart) has cv well above 0.8 and scores
  * near zero regardless of count.
  */
-export function analyzeCadence(purchaseDates: Date[], now: Date): CadenceStats {
+/**
+ * One purchase per calendar day, keeping the latest.
+ *
+ * Cadence is measured in intervals between consecutive purchases, so two
+ * purchases on the same day inject a zero-day interval — and since the median is
+ * taken over every interval, enough of those halve it. That is not a rare shape:
+ * two people shopping at different shops on a Saturday, or one item ticked off
+ * on both the Hemköp and the ICA list, produce it without anyone doing anything
+ * unusual. The engine would then decide you buy milk every three days and start
+ * suggesting it on Tuesday.
+ *
+ * Collapsing to days is the honest unit anyway. Nothing downstream can act on
+ * finer resolution than a day — `overdueScore`, the suggestion reasons and the
+ * fridge inference are all expressed in whole days — so a distinction the engine
+ * cannot use is only there to be wrong.
+ *
+ * The LAST purchase of a day is the one kept, which leaves `daysSinceLast`
+ * exactly as it was: dedup must not make the app think you shopped longer ago
+ * than you did.
+ *
+ * Days are LOCAL days, not UTC. The boundary is a proxy for "the same shopping
+ * occasion" and there is no exact answer, but a household's sense of "today" is
+ * the one on their own clock. Getting the boundary wrong by an hour either way
+ * moves an interval between 0 and 1 days, which is noise against a median
+ * measured in days to weeks.
+ */
+/**
+ * Which LOCAL calendar day a moment falls on, as `YYYY-MM-DD`.
+ *
+ * Exported because two features ask the same question and must never answer it
+ * differently: this engine collapses purchases to one per day (see
+ * `purchaseDays`), and a suggestion dismissal silences an item "for the rest of
+ * today". Both mean the household's own day — not a UTC day, and not a rolling
+ * 24 hours. Two implementations would agree all year and diverge for one hour
+ * around a boundary, which is the least reproducible kind of bug there is.
+ *
+ * Local means the server process's zone, which the production image pins to
+ * Europe/Stockholm (see the Dockerfile and the compose file's explicit TZ).
+ *
+ * Zero-padded because this string is half of a database primary key, and
+ * `2026-7-5` neither sorts nor compares as a date.
+ */
+export function localDayKey(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+export function purchaseDays(purchaseDates: Date[]): Date[] {
+  const latestByDay = new Map<string, Date>();
+  for (const date of purchaseDates) {
+    const day = localDayKey(date);
+    const seen = latestByDay.get(day);
+    if (!seen || date.getTime() > seen.getTime()) latestByDay.set(day, date);
+  }
+  return [...latestByDay.values()].sort((a, b) => a.getTime() - b.getTime());
+}
+
+export function analyzeCadence(rawPurchaseDates: Date[], now: Date): CadenceStats {
+  // Deliberately before the count is taken: `purchaseCount` feeds MIN_PURCHASES,
+  // and three purchases in one afternoon is one data point about cadence, not
+  // three.
+  const purchaseDates = purchaseDays(rawPurchaseDates);
   const purchaseCount = purchaseDates.length;
 
   if (purchaseCount === 0) {
@@ -203,4 +266,75 @@ export function catalogOrderScore(useCount: number, lastUsedAt: Date | null, now
   if (lastUsedAt === null) return 0;
   const daysSinceLastUse = Math.max(0, daysBetween(lastUsedAt, now));
   return useCount * Math.pow(2, -daysSinceLastUse / CATALOG_ORDER_HALF_LIFE_DAYS);
+}
+
+// ---------------------------------------------------------------------------
+// "We probably still have this"
+// ---------------------------------------------------------------------------
+
+/**
+ * Confidence floor for excluding an ingredient from a recipe.
+ *
+ * Stricter than SUGGESTION_CONFIDENCE_FLOOR on purpose. Being wrong about a
+ * suggestion costs a glance at a row you did not need; being wrong here costs an
+ * ingredient you discover missing while cooking.
+ */
+const STILL_HAVE_CONFIDENCE_FLOOR = 0.5;
+
+/**
+ * How far into the normal interval we are still willing to assume you have it.
+ *
+ * Half. Not "within a week" — a flat window gets yoghurt and soy sauce wrong in
+ * opposite directions, and the whole point of having a cadence per item is that
+ * the app already knows the difference.
+ */
+const STILL_HAVE_INTERVAL_FRACTION = 0.5;
+
+/**
+ * The largest demand we will assume is already covered by what is in the cupboard.
+ *
+ * This gate is doing the work a perishability taxonomy would otherwise do, and we
+ * do not have one: no quantity is recorded per purchase, so "bought grädde two
+ * days ago" cannot distinguish one carton from three. What we DO know is what the
+ * recipe is asking for. Gating on that captures the real win — spices, oils,
+ * vinegar, mustard, soy — and refuses the dangerous one, 5 dl of cream or 500 g of
+ * mince, whatever the history says.
+ */
+const CONDIMENT_SCALE: Record<UnitFamily, number> = {
+  volume: 100, // ml, i.e. 1 dl
+  mass: 100, // g
+  count: 2, // st
+};
+
+/** True when the recipe wants little enough that the cupboard plausibly covers it. */
+export function isCondimentScale(amount: Amount | null): boolean {
+  // "Salt och peppar" has no amount at all, which is exactly the case this is for.
+  if (amount === null) return true;
+  return toBase(amount) <= CONDIMENT_SCALE[unitFamily(amount.unit)];
+}
+
+/**
+ * Whether a recipe ingredient is probably already in the kitchen.
+ *
+ * Four independent gates, ALL of which must hold. That is the design, not
+ * belt-and-braces: excluding something you actually needed is discovered while
+ * cooking, which is far worse than a redundant tile you can ignore. The
+ * asymmetry is deliberate and is what the tests pin.
+ *
+ * Degrades to "no" by construction. With no purchase history there is no median,
+ * so nothing is ever excluded — which means this is inert on a fresh install and
+ * only starts helping as history accumulates. There is no cliff to fall off.
+ */
+export function probablyStillHave(
+  stats: CadenceStats,
+  amount: Amount | null,
+): boolean {
+  if (stats.medianIntervalDays === null) return false; // implies < MIN_PURCHASES
+  if (stats.daysSinceLast === null) return false;
+  if (stats.confidence < STILL_HAVE_CONFIDENCE_FLOOR) return false;
+  if (!isCondimentScale(amount)) return false;
+  return (
+    stats.daysSinceLast <=
+    stats.medianIntervalDays * STILL_HAVE_INTERVAL_FRACTION
+  );
 }

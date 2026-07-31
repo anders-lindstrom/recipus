@@ -15,6 +15,34 @@
       "when": 1785329192616,
       "tag": "0001_absent_red_ghost",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785389778537,
+      "tag": "0002_long_scarlet_spider",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785430630252,
+      "tag": "0003_per_field_clocks",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785431348710,
+      "tag": "0004_priority_and_modifiers",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785517200000,
+      "tag": "0005_registry",
+      "breakpoints": true
     }
   ]
 }

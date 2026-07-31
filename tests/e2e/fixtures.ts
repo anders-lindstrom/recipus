@@ -30,14 +30,14 @@ const sql = postgres(
  */
 let listSeq = 0;
 
-async function createTestList(): Promise<string> {
+async function createTestList(name = "E2E"): Promise<string> {
   const id = `e2e-${process.pid}-${++listSeq}`;
   const [{ categoryOrder }] = await sql<[{ categoryOrder: string[] }]>`
     select category_order as "categoryOrder" from lists where id = 'hemkop'
   `;
   await sql`
     insert into lists (id, name, icon, position, category_order, updated_by)
-    values (${id}, 'E2E', '1F6D2', 99, ${sql.json(categoryOrder ?? [])}, 'e2e')
+    values (${id}, ${name}, '1F6D2', 99, ${sql.json(categoryOrder ?? [])}, 'e2e')
   `;
   return id;
 }
@@ -48,24 +48,157 @@ async function dropTestList(id: string) {
   await sql`update catalog_items set use_count = 0, last_used_at = null`;
 }
 
-export const test = base.extend<{ freshPage: Page; listId: string }>({
-  listId: async ({}, use) => {
+/**
+ * Remove varor a test invented, along with everything pointing at them.
+ *
+ * `delete_catalog_item` is a SOFT delete — deliberately, so a stale create from a
+ * phone in a drawer loses instead of resurrecting the vara — which makes it the
+ * wrong tool for teardown: tombstoning is invisible to the app but leaves the row
+ * behind forever, and a suite run a few hundred times would quietly accumulate
+ * thousands of them. So the harness reaches past the op log, exactly as
+ * `dropTestList` does, and takes the rows out.
+ *
+ * The dependants are deleted by hand rather than left to cascades, because the
+ * interesting ones do not cascade: a product's mapping to a vara is a plain FK,
+ * and a test that placed one would otherwise fail teardown with a constraint
+ * violation that looks like a bug in the registry.
+ */
+export async function dropCatalogItems(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql`delete from purchases where product_id in (select id from products where catalog_item_id in ${sql(ids)})`;
+  await sql`delete from products where catalog_item_id in ${sql(ids)}`;
+  await sql`delete from purchases where catalog_item_id in ${sql(ids)}`;
+  await sql`delete from catalog_item_aliases where catalog_item_id in ${sql(ids)}`;
+  await sql`delete from list_entries where catalog_item_id in ${sql(ids)}`;
+  await sql`delete from catalog_items where id in ${sql(ids)}`;
+}
+
+/** Products a test created that never landed on one of its own varor. */
+export async function dropProducts(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql`delete from purchases where product_id in ${sql(ids)}`;
+  await sql`delete from products where id in ${sql(ids)}`;
+}
+
+export const test = base.extend<
+  {
+    freshPage: Page;
+    listId: string;
+    otherListId: string;
+  },
+  { closeDb: void }
+>({
+  /**
+   * Closing the pool, once per WORKER rather than once per file.
+   *
+   * This was a `test.afterAll`, and that was invisible until there was a second
+   * spec file. A module-level hook registers into the suite of whichever file
+   * imported the module first, so `sql.end()` ran the moment `list.spec.ts`
+   * finished — and every later file got `write CONNECTION_ENDED` from its very
+   * first fixture, which reads like a database problem and is not one.
+   *
+   * A worker-scoped auto fixture tears down when the worker does, which is
+   * exactly when the connection is genuinely finished with. It has to exist at
+   * all because postgres.js keeps an idle connection open and with it the event
+   * loop, so a worker that never ends the pool never exits.
+   */
+  closeDb: [
+    async ({}, use) => {
+      await use();
+      await sql.end();
+    },
+    { scope: "worker", auto: true },
+  ],
+
+  /**
+   * Depends on `page` purely for the teardown ORDER, and that dependency is
+   * load-bearing.
+   *
+   * Without it, teardown ran: drop the list, then close the page — and the page
+   * is a live client with an outbox and an SSE reconnect loop. Anything it
+   * posted in that window hit a list that no longer existed, so every full run
+   * logged one `op refused by server` against a foreign key violation, on a
+   * different op and a different test each time. It looked like a real sync bug
+   * for a while; it was the harness pulling the table out from under the client.
+   *
+   * Closing the page first makes the teardown mean what it says: the client is
+   * gone, so nothing can be in flight when the list goes.
+   */
+  listId: async ({ page }, use) => {
     const id = await createTestList();
     await use(id);
+    await page.close();
     await dropTestList(id);
   },
   freshPage: async ({ page, listId }, use) => {
     await page.goto(`/?list=${listId}`);
     await expect(page.getByText("Att handla")).toBeVisible();
     await use(page);
+    await settle(page);
+  },
+  /**
+   * A second list, for the one thing that needs two: `move_item`.
+   *
+   * Depends on `freshPage` rather than on `page` so the ordering is decided
+   * rather than incidental — it is set up last and so torn down first, while the
+   * client is still alive. Hence the `settle` before the drop: a move op naming
+   * this list arriving after the row is gone is a foreign key violation, which
+   * is exactly the harness-induced "op refused by server" this suite already
+   * spent a session mistaking for a sync bug.
+   *
+   * Opt-in, so the other tests keep seeing a household with a single list and
+   * the move affordance stays absent from them.
+   */
+  otherListId: async ({ freshPage }, use) => {
+    const id = await createTestList("E2E Andra");
+    await use(id);
+    await settle(freshPage);
+    await dropTestList(id);
   },
 });
 
-test.afterAll(async () => {
-  await sql.end();
-});
+/**
+ * Wait for the client to stop having anything to say.
+ *
+ * Every assertion in this suite passes on the OPTIMISTIC state — that is the
+ * app's whole design, and testing it any other way would be testing something
+ * else. But it means a test can finish while its ops are still in flight, and
+ * teardown then drops the list out from under a POST the server has already
+ * accepted: `insert or update on table "list_entries" violates foreign key
+ * constraint`, logged once per run against a different op each time. It read
+ * like an intermittent sync bug for a while. It was the harness.
+ *
+ * Best-effort on purpose. A test that deliberately ends offline still has a full
+ * outbox, and making that a failure would break the tests this app most needs.
+ */
+async function settle(page: Page, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      if ((await outboxSize(page)) === 0) return;
+    } catch {
+      // Page already closing, or IndexedDB gone. Nothing left to drain.
+      return;
+    }
+    await page.waitForTimeout(50);
+  }
+}
 
 export { expect };
+
+/**
+ * How many purchases this list has recorded.
+ *
+ * The mode's entire justification is that a plan-time tap records nothing and a
+ * shop-time tap records exactly one, and neither is visible on screen — the tile
+ * leaves the zone either way. So the only honest assertion is against the table.
+ */
+export async function purchaseCount(listId: string): Promise<number> {
+  const [{ count }] = await sql<[{ count: string }]>`
+    select count(*)::text as count from purchases where list_id = ${listId}
+  `;
+  return Number(count);
+}
 
 /**
  * Locate a tile by its EXACT name.

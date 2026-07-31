@@ -1,9 +1,10 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { entryId } from "@/lib/domain";
+import { emptyState, entryId } from "@/lib/domain";
 import type { ListSnapshot } from "@/lib/services/list-data";
 import type { Op } from "@/lib/sync";
-import { deleteDb } from "./db";
+import { entryKey } from "@/lib/sync";
+import { deleteDb, loadState, saveMeta, saveState, STATE_VERSION } from "./db";
 import { createListStore, type EventSourceLike } from "./store";
 
 afterEach(async () => {
@@ -45,10 +46,14 @@ function emptySnapshot(listId: string): ListSnapshot {
     catalog: [],
     entries: [],
     contributions: [],
+    products: [],
+    aliases: [],
+    barcodes: [],
     recipeAdditions: {},
     recipeTitles: {},
     meta: {},
     suggestions: [],
+    purchaseStats: {},
   };
 }
 
@@ -342,5 +347,170 @@ describe("online reachability", () => {
     store.connect();
 
     await vi.waitFor(() => expect(store.status().online).toBe(true));
+  });
+});
+
+describe("state version tripwire", () => {
+  /**
+   * A device whose cached state was written by an older build.
+   *
+   * That build dropped any op kind it did not recognise — correct, it is what
+   * keeps it from crashing — but it still advanced its cursor, so those ops are
+   * never re-fetched and its state is permanently missing a fact. The version
+   * stamp is how the newer build notices and repairs itself, and the repair has
+   * to be a full snapshot rather than a log replay.
+   */
+  it("re-hydrates from a snapshot when the cached state predates this build", async () => {
+    await saveMeta({
+      listId: LIST,
+      cursor: 42,
+      lastHydratedAt: "2026-03-12T09:00:00.000Z",
+      stateVersion: STATE_VERSION - 1,
+    });
+
+    const onSnapshot = vi.fn(() => jsonResponse(emptySnapshot(LIST)));
+    const store = createListStore(LIST, "anders", {
+      fetch: makeFetchMock({ onSnapshot }),
+      createEventSource: () => new FakeEventSource(),
+    });
+    await store.ready();
+    store.connect();
+
+    await vi.waitFor(() => expect(onSnapshot).toHaveBeenCalled());
+    store.disconnect();
+  });
+
+  it("does not re-hydrate when the cached state is current", async () => {
+    await saveMeta({
+      listId: LIST,
+      cursor: 42,
+      lastHydratedAt: "2026-03-12T09:00:00.000Z",
+      stateVersion: STATE_VERSION,
+    });
+
+    const onSnapshot = vi.fn(() => jsonResponse(emptySnapshot(LIST)));
+    const store = createListStore(LIST, "anders", {
+      fetch: makeFetchMock({ onSnapshot }),
+      createEventSource: () => new FakeEventSource(),
+    });
+    await store.ready();
+    store.connect();
+
+    // Give the reconnect cycle room to have taken a snapshot if it were going to.
+    await vi.waitFor(() => expect(store.status().online).toBe(true));
+    expect(onSnapshot).not.toHaveBeenCalled();
+    store.disconnect();
+  });
+});
+
+describe("retention", () => {
+  /**
+   * Tombstones are pruned when the app opens, not left to grow forever.
+   *
+   * The meta map is re-serialised to IndexedDB on every single tap, so a
+   * tombstone that never leaves costs a little more work on every interaction
+   * for the rest of the install's life. `pruneTombstones` was written for this
+   * and then had no caller anywhere; this is the caller.
+   */
+  it("drops tombstones past the retention window when it loads", async () => {
+    const old = entryId(LIST, "gammalt");
+    const recent = entryId(LIST, MILK);
+    const now = Date.now();
+    const daysAgo = (n: number) =>
+      new Date(now - n * 24 * 60 * 60 * 1000).toISOString();
+
+    const state = emptyState();
+    state.entries[old] = {
+      id: old,
+      listId: LIST,
+      catalogItemId: "gammalt",
+      createdAt: daysAgo(90),
+      createdBy: "anders",
+      removedAt: daysAgo(60),
+      priority: "normal",
+      updatedAt: daysAgo(60),
+      updatedBy: "anders",
+    };
+    state.entries[recent] = {
+      id: recent,
+      listId: LIST,
+      catalogItemId: MILK,
+      createdAt: daysAgo(10),
+      createdBy: "anders",
+      removedAt: daysAgo(2),
+      priority: "normal",
+      updatedAt: daysAgo(2),
+      updatedBy: "anders",
+    };
+    state.meta[entryKey(old)] = { at: daysAgo(60), by: "anders", deleted: true };
+    state.meta[entryKey(recent)] = { at: daysAgo(2), by: "anders", deleted: true };
+    await saveState(LIST, state);
+
+    const store = createListStore(LIST, "anders", { fetch: makeFetchMock() });
+    await store.ready();
+
+    expect(store.getState().entries[old]).toBeUndefined();
+    expect(store.getState().meta[entryKey(old)]).toBeUndefined();
+    // Still inside the window: a straggler could yet arrive arguing about it.
+    expect(store.getState().entries[recent]).toBeDefined();
+
+    // And the pruning is written back, or it happens again on every open and
+    // the stored blob never actually shrinks.
+    const reloaded = await loadState(LIST);
+    expect(reloaded!.entries[old]).toBeUndefined();
+  });
+});
+
+describe("hydrating the registry", () => {
+  /**
+   * The same fresh-literal hazard as `pruneTombstones`, one layer further along.
+   *
+   * `applySnapshot` rebuilds `SyncState` from `emptyState()` and populates it map
+   * by map, BY NAME — so a map the server started sending is simply not read, and
+   * the failure is silent: /varor renders an empty registry after every hydrate,
+   * which looks exactly like a household that has not scanned anything yet.
+   *
+   * Worth a test rather than a careful reading, because the snapshot and the
+   * state are two shapes that have to be mapped explicitly; there is no
+   * structural trick that makes a new field carry itself here.
+   */
+  it("reads products, aliases and barcodes out of the snapshot", async () => {
+    const snapshot = emptySnapshot(LIST);
+    snapshot.products = [
+      {
+        id: "prod:7310865004703",
+        name: "Arla Standardmjölk",
+        brand: "Arla",
+        catalogItemId: MILK,
+        defaultSize: { value: 1.5, unit: "l" },
+        sourceSizeText: "1,5 l",
+        imageUrl: null,
+        createdAt: "2026-03-12T10:00:00.000Z",
+        createdBy: "anders",
+      },
+    ];
+    snapshot.aliases = [
+      {
+        aliasNorm: "kottfars",
+        catalogItemId: "notfars",
+        createdAt: "2026-03-12T10:00:00.000Z",
+        createdBy: "anders",
+      },
+    ];
+    snapshot.barcodes = [
+      {
+        ean: "7310865004703",
+        productId: "prod:7310865004703",
+        source: "off",
+      },
+    ];
+
+    const store = createListStore(LIST, "anders", { fetch: makeFetchMock() });
+    await store.hydrate(snapshot);
+
+    const state = store.getState();
+    expect(state.products["prod:7310865004703"]?.catalogItemId).toBe(MILK);
+    expect(state.aliases["kottfars"]?.catalogItemId).toBe("notfars");
+    expect(state.barcodes["7310865004703"]?.productId).toBe("prod:7310865004703");
   });
 });

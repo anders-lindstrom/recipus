@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { UiIcon } from "./ui-icon";
 
 /**
  * The barcode scanner.
@@ -14,11 +15,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * continuous session, not eight round trips through a modal.
  */
 
+/**
+ * What the last scan did, and how to take it back.
+ *
+ * Buy-mode scanning acts immediately — it adds the item and records the purchase
+ * with no dialog — so the only thing standing between a mis-scan and a wrong
+ * purchase is this. It belongs in the scanner rather than in a toast because the
+ * scanner stays open: you work through a basket, and a confirmation that covered
+ * the viewfinder or interrupted the session would defeat the point.
+ */
+export interface ScanOutcome {
+  text: string;
+  /** Absent when there is nothing to take back (an unknown code, say). */
+  undo?: () => void;
+}
+
 export interface ScannerProps {
   onScan: (ean: string) => void;
   onClose: () => void;
   /** Feedback for the last scan: what happened, in Swedish. */
-  lastResult?: string | null;
+  lastResult?: ScanOutcome | null;
 }
 
 type DetectFn = (video: HTMLVideoElement) => Promise<string[]>;
@@ -168,11 +184,19 @@ export function Scanner({ onScan, onClose, lastResult }: ScannerProps) {
   }, [handleHit]);
 
   return (
+    // The scanner is the one screen that ignores the page theme, in both
+    // schemes: it is a viewfinder, and anything other than black around a
+    // camera feed competes with it for the eye.
     <div className="fixed inset-0 z-50 flex flex-col bg-black">
-      <div className="safe-top flex items-center justify-between px-4 py-3 text-white">
-        <span className="text-base font-bold">Skanna streckkod</span>
-        <button type="button" onClick={onClose} aria-label="Stäng" className="text-xl">
-          ✕
+      <div className="safe-top flex flex-none items-center gap-2 px-2 py-2 text-white">
+        <span className="flex-1 pl-2 text-title">Skanna streckkod</span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Stäng"
+          className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-white/10"
+        >
+          <UiIcon name="close" size={20} />
         </button>
       </div>
 
@@ -184,20 +208,46 @@ export function Scanner({ onScan, onClose, lastResult }: ScannerProps) {
           className="h-full w-full object-cover"
         />
         {!needsManual && (
+          // Corner brackets rather than a full rectangle: the frame is there to
+          // say "aim here", and a closed box reads as a control you can miss.
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-x-10 top-1/2 h-32 -translate-y-1/2 rounded-xl border-2 border-white/70"
-          />
+            className="pointer-events-none absolute inset-x-8 top-1/2 h-36 -translate-y-1/2"
+          >
+            <span className="absolute top-0 left-0 h-7 w-7 rounded-tl-lg border-t-[3px] border-l-[3px] border-white" />
+            <span className="absolute top-0 right-0 h-7 w-7 rounded-tr-lg border-t-[3px] border-r-[3px] border-white" />
+            <span className="absolute bottom-0 left-0 h-7 w-7 rounded-bl-lg border-b-[3px] border-l-[3px] border-white" />
+            <span className="absolute right-0 bottom-0 h-7 w-7 rounded-br-lg border-r-[3px] border-b-[3px] border-white" />
+          </div>
         )}
       </div>
 
-      <div className="safe-bottom bg-black px-4 py-4 text-white">
-        {error && <p className="mb-2 text-sm text-red-300">{error}</p>}
+      <div className="safe-bottom flex-none bg-black px-4 pt-4 pb-4 text-white">
+        {error && (
+          <p className="mb-3 flex items-start gap-2 text-body-sm text-red-300">
+            <UiIcon name="warning" size={16} className="mt-0.5 flex-none" />
+            {error}
+          </p>
+        )}
 
         {lastResult && (
-          <p aria-live="polite" className="mb-3 text-sm font-semibold">
-            {lastResult}
-          </p>
+          <div
+            aria-live="polite"
+            className="mb-3 flex items-center gap-2 rounded-control bg-white/10 px-3 py-2.5 text-body-sm font-semibold"
+          >
+            <UiIcon name="check" size={16} className="flex-none" />
+            <span className="flex-1">{lastResult.text}</span>
+            {lastResult.undo && (
+              <button
+                type="button"
+                onClick={lastResult.undo}
+                className="flex flex-none items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-caption font-semibold"
+              >
+                <UiIcon name="undo" size={13} />
+                Ångra
+              </button>
+            )}
+          </div>
         )}
 
         {needsManual ? (
@@ -218,18 +268,19 @@ export function Scanner({ onScan, onClose, lastResult }: ScannerProps) {
               inputMode="numeric"
               placeholder="Skriv streckkoden"
               aria-label="Streckkod"
-              className="flex-1 rounded-lg bg-white/10 px-3 py-2.5 text-white placeholder:text-white/40"
+              className="min-w-0 flex-1 rounded-control bg-white/10 px-3 py-3 text-body text-white outline-none placeholder:text-white/50"
             />
             <button
               type="submit"
-              className="rounded-lg bg-brand px-4 py-2.5 font-bold"
+              className="flex-none rounded-control bg-brand px-5 py-3 text-body font-semibold text-on-brand"
             >
               Sök
             </button>
           </form>
         ) : (
-          <p className="text-center text-xs text-white/60">
-            Rikta kameran mot streckkoden. Skannern fortsätter tills du stänger den.
+          <p className="text-center text-body-sm text-white/70">
+            Rikta kameran mot streckkoden. Skannern fortsätter tills du stänger
+            den.
           </p>
         )}
       </div>

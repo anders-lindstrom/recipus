@@ -3,59 +3,184 @@
 /*
  * Recipus design tokens.
  *
- * The palette comes from the approved mockup: a warm off-white paper, one
- * confident green, and almost nothing else. A shopping list is glanced at in
- * bad light while walking, so contrast and tile legibility beat decoration —
- * there are deliberately no gradients and no shadows below the FAB.
+ * Two rules hold the whole visual system together:
+ *
+ * 1. GREEN MEANS "ON THE LIST". It is a state colour, not decoration. Chrome is
+ *    paper and ink; the only saturated things on screen are the items you still
+ *    have to buy and the one primary action per screen. An app bar painted in
+ *    the same green made the signal and the furniture indistinguishable at a
+ *    glance, which is the one thing this app cannot afford — it is read at
+ *    arm's length, in bad light, while walking.
+ *
+ * 2. SURFACES ARE NAMED BY JOB, not by colour. `surface-sunken` is the well the
+ *    catalog sits in, `surface-raised` is anything that floats above the page.
+ *    Dark mode is a separate design with the same names, not an inversion — the
+ *    values below were each checked against WCAG AA for the size they are used
+ *    at, in both schemes.
+ *
+ * Tailwind v4 note: `@theme` must be top level, so the dark scheme overrides the
+ * plain custom properties instead. Utilities compile to `var(--color-*)`, so
+ * overriding the variable is all it takes.
  */
 @theme {
-  --color-paper: #f6f5f1;
-  --color-paper-raised: #ffffff;
-  --color-ink: #1b1c1a;
-  --color-ink-soft: #6b6d67;
-  --color-ink-faint: #9b9d97;
-  --color-line: rgb(0 0 0 / 0.07);
+  --color-surface: #f7f6f2;
+  --color-surface-raised: #ffffff;
+  --color-surface-sunken: #edebe4;
 
-  --color-brand: #1f6f4f;
-  --color-brand-ink: #14523a;
-  --color-brand-tint: #e6f2ea;
-  --color-brand-line: rgb(31 111 79 / 0.2);
+  --color-ink: #191b16;
+  --color-ink-soft: #55584f;
+  /* Solved, not eyeballed: this is the lightest value that still clears AA
+     against `surface-sunken`, the darkest surface it ever sits on. */
+  --color-ink-faint: #65685f;
 
-  --color-warn: #a06a1f;
-  --color-danger: #a3332c;
+  --color-line: rgb(25 27 22 / 0.1);
+  --color-line-strong: rgb(25 27 22 / 0.18);
 
-  --radius-tile: 12px;
-  --radius-card: 15px;
+  --color-brand: #1a6b4a;
+  --color-brand-strong: #14523a;
+  --color-brand-ink: #115437;
+  --color-brand-tint: #dcecdf;
+  --color-brand-line: rgb(26 107 74 / 0.26);
+  --color-on-brand: #ffffff;
 
+  --color-warn: #7d5210;
+  --color-warn-tint: #f5ecd9;
+  --color-danger: #a12a24;
+  --color-danger-tint: #f8e4e2;
+
+  /*
+   * Buy mode.
+   *
+   * A third colour channel, because the two obvious choices were both already
+   * spoken for: green means "this item is on your list" and nothing else, and
+   * ochre (`warn`) carries suggestions and the offline banner. Terracotta keeps
+   * the warm "act now" reading while separating from `warn` by hue.
+   *
+   * It separates by hue and NOT by lightness — measured, `--color-mode-buy-wash`
+   * sits ΔL* 1.60 from `--color-warn-tint` in light mode. So nothing tinted with
+   * `warn` may sit on this wash and expect to be legible; the sync banner is a
+   * raised card with a warn accent for exactly that reason.
+   *
+   * Plan mode has no tokens on purpose. It is the resting state, so it is
+   * untinted, and absence-versus-presence is a stronger signal than two colours
+   * would be — while keeping the loud one on the mode whose taps write history.
+   */
+  --color-mode-buy-wash: #fae4d8;
+  --color-mode-buy-ink: #9c4318;
+  --color-mode-buy-line: #c8622e;
+
+  /* One radius system. Interactive pills are the only full-round shape. */
+  --radius-control: 10px;
+  --radius-tile: 14px;
+  --radius-card: 16px;
+  --radius-sheet: 22px;
+
+  /*
+   * The type scale. Seven steps, and nothing off-scale — the previous twenty
+   * hand-picked pixel values were the main reason no two screens felt related.
+   * Sizes skew large for a phone: this is read at arm's length with a basket in
+   * the other hand.
+   */
+  --text-display: 1.375rem; /* 22px — recipe titles, sheet headings */
+  --text-display--line-height: 1.2;
+  --text-display--letter-spacing: -0.02em;
+  --text-display--font-weight: 700;
+
+  --text-title: 1.0625rem; /* 17px — screen and section titles */
+  --text-title--line-height: 1.3;
+  --text-title--letter-spacing: -0.015em;
+  --text-title--font-weight: 700;
+
+  --text-body: 0.9375rem; /* 15px — sheet rows, ingredient lines */
+  --text-body--line-height: 1.45;
+
+  --text-body-sm: 0.875rem; /* 14px — secondary rows, inputs */
+  --text-body-sm--line-height: 1.4;
+
+  --text-label: 0.8125rem; /* 13px — tile names */
+  --text-label--line-height: 1.25;
+  --text-label--font-weight: 600;
+
+  --text-caption: 0.75rem; /* 12px — metadata, quantities */
+  --text-caption--line-height: 1.3;
+
+  --text-badge: 0.625rem; /* 10px — NY VARA, HAR HEMMA, member initials */
+  --text-badge--line-height: 1.2;
+  --text-badge--letter-spacing: 0.04em;
+  --text-badge--font-weight: 700;
+
+  --text-overline: 0.6875rem; /* 11px — section headings */
+  --text-overline--line-height: 1.2;
+  --text-overline--letter-spacing: 0.08em;
+  --text-overline--font-weight: 700;
+
+  /*
+   * Familjen Grotesk is a Swedish public-information grotesk — drawn to stay
+   * legible on signage at distance, which is very close to this app's actual
+   * reading condition. It also means åäö were designed rather than adapted.
+   * The system stack behind it is what renders before the woff2 lands on a
+   * cold offline start.
+   */
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+    var(--font-familjen), ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (prefers-color-scheme: dark) {
-  @theme {
-    --color-paper: #14161a;
-    --color-paper-raised: #1d2026;
-    --color-ink: #eceef0;
-    --color-ink-soft: #a3a8b0;
-    --color-ink-faint: #6f757e;
-    --color-line: rgb(255 255 255 / 0.09);
+  :root {
+    --color-surface: #131512;
+    --color-surface-raised: #1e211d;
+    --color-surface-sunken: #0d0f0c;
 
-    --color-brand: #3f9c74;
-    --color-brand-ink: #6fc39c;
-    --color-brand-tint: #1b3a2e;
-    --color-brand-line: rgb(63 156 116 / 0.32);
+    --color-ink: #eef0ea;
+    --color-ink-soft: #a8ada2;
+    --color-ink-faint: #878b81;
 
-    --color-warn: #d3a355;
-    --color-danger: #e0706a;
+    --color-line: rgb(255 255 255 / 0.1);
+    --color-line-strong: rgb(255 255 255 / 0.2);
+
+    /* Deep green goes muddy against near-black, so dark mode runs a lighter,
+       less saturated green and puts near-black on top of it. */
+    --color-brand: #4da97f;
+    --color-brand-strong: #74c8a0;
+    --color-brand-ink: #85d2ab;
+    --color-brand-tint: #1c3b2d;
+    --color-brand-line: rgb(77 169 127 / 0.36);
+    --color-on-brand: #071510;
+
+    --color-warn: #dcaa62;
+    --color-warn-tint: #322a15;
+    --color-danger: #ec8981;
+    --color-danger-tint: #3a1f1d;
+
+    --color-mode-buy-wash: #4a2a14;
+    --color-mode-buy-ink: #f0a06a;
+    --color-mode-buy-line: #e08a4e;
   }
+}
+
+/*
+ * The ground the pinned chrome is currently painted in.
+ *
+ * The aisle rail's right-edge fade has to blend into whatever is behind it, and
+ * in buy mode that is the terracotta wash rather than the page. Reading it from a
+ * variable set on <header> keeps the rail from having to know anything about
+ * modes — it just fades into its own background, whatever that is.
+ */
+:root {
+  --mode-wash: var(--color-surface);
 }
 
 html,
 body {
-  background: var(--color-paper);
+  background: var(--color-surface);
   color: var(--color-ink);
   font-family: var(--font-sans);
+  /* Familjen Grotesk's default figures are proportional, which makes a column
+     of quantities ("2 l", "11 dl") sit unevenly. */
+  font-variant-numeric: tabular-nums;
 }
 
 body {
@@ -74,6 +199,14 @@ button,
   user-select: none;
 }
 
+/* Keyboard focus has to survive a design that removes every default outline.
+   `:focus-visible` keeps it off the tile you just tapped with a thumb. */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* Respect the notch and the home indicator — this runs as a standalone PWA,
    where nothing else will. */
 .safe-top {
@@ -81,6 +214,68 @@ button,
 }
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Aisle headings are the rail's jump targets, and they land underneath two
+   pinned things. Without this the browser scrolls them to y=0 — behind the
+   header and the rail both — and the tap looks like it did nothing.
+   Header (3rem) + rail (2.75rem) + a little air, on top of the notch. */
+.aisle-anchor {
+  scroll-margin-top: calc(env(safe-area-inset-top) + 6.25rem);
+}
+
+/* The rail is a horizontal scroller inside a vertical one; hiding its bar keeps
+   it from reading as a second page-level scrollbar on desktop. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * Motion is feedback only — there is no ambient animation anywhere in this app.
+ * A tile arriving in "att handla" and a tile leaving it are the two moments
+ * where something moved without the user watching it happen, so those get a
+ * transition and nothing else does.
+ */
+@keyframes tile-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-tile-in {
+  animation: tile-in 0.22s var(--ease-out-soft) both;
+}
+.animate-sheet-in {
+  animation: sheet-in 0.26s var(--ease-out-soft) both;
+}
+.animate-fade-in {
+  animation: fade-in 0.18s ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {

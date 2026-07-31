@@ -1,7 +1,15 @@
 import { emptyState, type Id, type SyncState } from "@/lib/domain";
-import { applyOp, applyOps, type Op } from "@/lib/sync";
+import { retentionCutoff } from "@/lib/retention";
+import { applyOp, applyOps, pruneTombstones, type Op } from "@/lib/sync";
 import type { ListSnapshot } from "@/lib/services/list-data";
-import { loadMeta, loadState, saveMeta, saveState, type SyncMeta } from "./db";
+import {
+  loadMeta,
+  loadState,
+  saveMeta,
+  saveState,
+  STATE_VERSION,
+  type SyncMeta,
+} from "./db";
 import * as outbox from "./outbox";
 
 /**
@@ -165,22 +173,33 @@ async function fetchCatchUp(
 async function postOps(
   fetchImpl: typeof fetch,
   ops: Op[],
-): Promise<Array<{ clientOpId: string }>> {
+): Promise<outbox.PostOutcome> {
   const body = (await apiFetch(fetchImpl, `/api/ops`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ops }),
   })) as { results: OpResult[] };
 
-  const accepted: Array<{ clientOpId: string }> = [];
+  // Refusals are reported separately from acceptances rather than merely
+  // logged. A refused op used to be skipped and left in the outbox, so it was
+  // re-sent on every flush for the lifetime of the install, `pendingCount`
+  // never returned to zero, and the sync banner stayed up describing a
+  // connection problem that did not exist.
+  const accepted: string[] = [];
+  const refused: string[] = [];
   for (const result of body.results) {
     if (result.error) {
-      console.warn("[client-store] op rejected by server", result.clientOpId, result.error);
+      console.warn(
+        "[client-store] op refused by server",
+        result.clientOpId,
+        result.error,
+      );
+      refused.push(result.clientOpId);
       continue;
     }
-    accepted.push({ clientOpId: result.clientOpId });
+    accepted.push(result.clientOpId);
   }
-  return accepted;
+  return { accepted, refused };
 }
 
 function streamUrl(listId: Id, since: number): string {
@@ -196,7 +215,15 @@ export function createListStore(
   const createEventSource = deps.createEventSource ?? defaultCreateEventSource;
 
   let state: SyncState = emptyState();
-  let syncMeta: SyncMeta = { listId, cursor: null, lastHydratedAt: null };
+  // Stamped from the start, not only on the stale path: every `saveMeta` spreads
+  // this object, so a fresh install that omitted the version would read back as
+  // version 0 and force a rehydrate on every single open.
+  let syncMeta: SyncMeta = {
+    listId,
+    cursor: null,
+    lastHydratedAt: null,
+    stateVersion: STATE_VERSION,
+  };
   const listeners = new Set<() => void>();
 
   let pendingCount = 0;
@@ -267,7 +294,36 @@ export function createListStore(
           outbox.pending(),
         ]);
         if (savedState) state = savedState;
-        if (savedMeta) syncMeta = savedMeta;
+        // Forget what is past recall, once per open.
+        //
+        // Tombstones exist only so a late op loses; past the window no phone can
+        // still be holding one that old. Left alone they never leave, and the
+        // meta map they keep alive is re-serialised on every single tap — so the
+        // cost is not storage, it is a little more work per interaction for the
+        // rest of this install's life. Same window as the server's prune, from
+        // the same constant, because a client pruning sooner than the server is
+        // how a stale op arrives to find nothing to lose against.
+        if (savedState) {
+          const pruned = pruneTombstones(state, retentionCutoff(new Date()));
+          // Written back only when something actually went, so an ordinary open
+          // does not pay for a full re-serialisation to change nothing.
+          if (Object.keys(pruned.meta).length !== Object.keys(state.meta).length) {
+            state = pruned;
+            await saveState(listId, state);
+          }
+        }
+        if (savedMeta) {
+          // State written by an older build may be missing facts this one cares
+          // about: that build dropped op kinds it did not recognise, yet still
+          // advanced its cursor, so those ops will never be re-fetched. Keep the
+          // state — it is what makes the app usable offline right now — but
+          // clear `lastHydratedAt` so `reconnectCycle` takes a full snapshot the
+          // next time there IS a network, and repairs the gap.
+          const stale = (savedMeta.stateVersion ?? 0) < STATE_VERSION;
+          syncMeta = stale
+            ? { ...savedMeta, lastHydratedAt: null, stateVersion: STATE_VERSION }
+            : savedMeta;
+        }
         pendingCount = outboxOps.length;
         for (const op of outboxOps) originatedClientOpIds.add(op.clientOpId);
         updateStatus();
@@ -320,6 +376,19 @@ export function createListStore(
     for (const [id, addition] of Object.entries(snapshot.recipeAdditions)) {
       base.recipeAdditions[id] = addition;
     }
+    // The registry. Keyed by the thing that identifies each one — a product by
+    // its id, an alias by its normalized word, a barcode by its EAN — which is
+    // the same identity the reducer's own cases write under, so an op arriving
+    // after a hydrate lands on the record it means.
+    //
+    // Easy to forget, and silent when forgotten: this function maps the snapshot
+    // onto the state map by map, by name, so a map the server has started sending
+    // is simply not read and /varor renders an empty registry after every
+    // hydrate — indistinguishable from a household that has not scanned anything.
+    // There is a test for exactly that.
+    for (const product of snapshot.products) base.products[product.id] = product;
+    for (const alias of snapshot.aliases) base.aliases[alias.aliasNorm] = alias;
+    for (const barcode of snapshot.barcodes) base.barcodes[barcode.ean] = barcode;
     Object.assign(base.meta, snapshot.meta);
 
     const outboxOps = await outbox.pending();

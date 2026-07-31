@@ -2,7 +2,12 @@ import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Op } from "@/lib/sync";
 import { deleteDb } from "./db";
-import { ack, enqueue, flush, pending } from "./outbox";
+import { ack, enqueue, flush, pending, type PostOutcome } from "./outbox";
+
+/** The server accepted everything it was sent. */
+function allAccepted(ops: Op[]): PostOutcome {
+  return { accepted: ops.map((o) => o.clientOpId), refused: [] };
+}
 
 afterEach(async () => {
   await deleteDb();
@@ -56,9 +61,7 @@ describe("flush", () => {
     await enqueue(addItem("op-1"));
     await enqueue(addItem("op-2"));
 
-    const post = vi.fn(async (ops: Op[]) =>
-      ops.map((o) => ({ clientOpId: o.clientOpId })),
-    );
+    const post = vi.fn(async (ops: Op[]) => allAccepted(ops));
 
     await flush(post);
 
@@ -68,7 +71,7 @@ describe("flush", () => {
   });
 
   it("does nothing when the outbox is empty", async () => {
-    const post = vi.fn(async () => []);
+    const post = vi.fn(async () => ({ accepted: [], refused: [] }));
     await flush(post);
     expect(post).not.toHaveBeenCalled();
   });
@@ -86,10 +89,10 @@ describe("flush", () => {
   it("two concurrent flushes post the batch exactly once", async () => {
     await enqueue(addItem("op-1"));
 
-    let resolvePost!: (value: { clientOpId: string }[]) => void;
+    let resolvePost!: (value: PostOutcome) => void;
     const post = vi.fn(
       () =>
-        new Promise<{ clientOpId: string }[]>((resolve) => {
+        new Promise<PostOutcome>((resolve) => {
           resolvePost = resolve;
         }),
     );
@@ -101,7 +104,7 @@ describe("flush", () => {
     // tick to reach `post` before asserting — the guard against a second
     // POST is synchronous (see below); this is only waiting for the first.
     await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
-    resolvePost([{ clientOpId: "op-1" }]);
+    resolvePost({ accepted: ["op-1"], refused: [] });
 
     await Promise.all([first, second]);
     expect(post).toHaveBeenCalledTimes(1);
@@ -111,16 +114,16 @@ describe("flush", () => {
   it("a flush that joins an in-flight one still picks up ops enqueued in between", async () => {
     await enqueue(addItem("op-1"));
 
-    let resolveFirstPost!: (value: { clientOpId: string }[]) => void;
+    let resolveFirstPost!: (value: PostOutcome) => void;
     let callCount = 0;
     const post = vi.fn((ops: Op[]) => {
       callCount += 1;
       if (callCount === 1) {
-        return new Promise<{ clientOpId: string }[]>((resolve) => {
+        return new Promise<PostOutcome>((resolve) => {
           resolveFirstPost = resolve;
         });
       }
-      return Promise.resolve(ops.map((o) => ({ clientOpId: o.clientOpId })));
+      return Promise.resolve(allAccepted(ops));
     });
 
     // First flush reads [op-1] and is now awaiting the (still-pending) post.
@@ -132,11 +135,77 @@ describe("flush", () => {
     // in-flight run rather than post op-1 again, but must not lose op-2.
     const second = flush(post);
 
-    resolveFirstPost([{ clientOpId: "op-1" }]);
+    resolveFirstPost({ accepted: ["op-1"], refused: [] });
     await Promise.all([first, second]);
 
     expect(post).toHaveBeenCalledTimes(2);
     expect(post.mock.calls[1][0].map((o) => o.clientOpId)).toEqual(["op-2"]);
     expect(await pending()).toEqual([]);
+  });
+});
+
+describe("server refusals", () => {
+  /**
+   * A refusal is not a delivery failure.
+   *
+   * Before this, an op the server actively declined was logged and skipped but
+   * left in the outbox, so it was re-sent on every flush for the lifetime of the
+   * install: `pendingCount` never returned to zero, the sync banner stayed up
+   * blaming the network, and each batch grew. Now a refusal is counted, retried
+   * a few times in case it was transient, then given up on so the queue drains.
+   */
+  function refuseAll(ops: Op[]): PostOutcome {
+    return { accepted: [], refused: ops.map((o) => o.clientOpId) };
+  }
+
+  it("keeps a refused op queued, so a transient refusal is retried", async () => {
+    await enqueue(addItem("op-1"));
+    const post = vi.fn(async (ops: Op[]) => refuseAll(ops));
+
+    await flush(post);
+
+    // Still there: an add_item can legitimately fail once against a
+    // create_catalog_item that has not committed yet.
+    expect(await pending()).toHaveLength(1);
+  });
+
+  it("gives up after repeated refusals so the queue cannot wedge forever", async () => {
+    await enqueue(addItem("op-1"));
+    const post = vi.fn(async (ops: Op[]) => refuseAll(ops));
+
+    // Each flush is one attempt; MAX_ATTEMPTS is 5.
+    for (let i = 0; i < 5; i++) await flush(post);
+
+    expect(await pending()).toEqual([]);
+  });
+
+  it("gives up on the refused op without taking accepted ones with it", async () => {
+    await enqueue(addItem("op-good"));
+    await enqueue(addItem("op-bad"));
+
+    const post = vi.fn(async (ops: Op[]) => ({
+      accepted: ops.filter((o) => o.clientOpId !== "op-bad").map((o) => o.clientOpId),
+      refused: ops.filter((o) => o.clientOpId === "op-bad").map((o) => o.clientOpId),
+    }));
+
+    await flush(post);
+    expect((await pending()).map((o) => o.clientOpId)).toEqual(["op-bad"]);
+
+    for (let i = 0; i < 4; i++) await flush(post);
+    expect(await pending()).toEqual([]);
+  });
+
+  it("does not count a delivery failure as a refusal", async () => {
+    await enqueue(addItem("op-1"));
+    const offline = vi.fn(async () => {
+      throw new Error("offline");
+    });
+
+    // Ten failed deliveries must not burn through the refusal budget — being
+    // offline for a while is the normal case this whole app is built around.
+    for (let i = 0; i < 10; i++) {
+      await expect(flush(offline)).rejects.toThrow("offline");
+    }
+    expect(await pending()).toHaveLength(1);
   });
 });

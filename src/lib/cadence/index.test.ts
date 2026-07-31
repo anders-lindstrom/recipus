@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { Amount } from "@/lib/domain";
 import {
   analyzeCadence,
   catalogOrderScore,
+  isCondimentScale,
+  localDayKey,
+  probablyStillHave,
+  purchaseDays,
   rankSuggestions,
   type SuggestionInput,
 } from "@/lib/cadence";
@@ -114,6 +119,53 @@ describe("analyzeCadence", () => {
     const stats = analyzeCadence(purchases, now);
     expect(stats.overdueScore).toBeCloseTo(7.5, 5);
     expect(stats.overdueScore).toBeGreaterThan(2);
+  });
+
+  /**
+   * The bug this dedup exists for.
+   *
+   * Two people shopping at different shops on the same Saturday, or one item
+   * ticked off on both the Hemköp and the ICA list, and every one of those days
+   * contributes a zero-day interval. Half the intervals being zero drags the
+   * median to half its true value, and the engine starts suggesting weekly items
+   * every three or four days.
+   */
+  it("does not let a same-day double purchase halve the median", () => {
+    const weekly = datesFromIntervals(START, [7, 7, 7, 7, 7, 7, 7]);
+    const doubled = weekly.flatMap((d) => [d, new Date(d.getTime() + 3 * 60 * 60 * 1000)]);
+
+    const clean = analyzeCadence(weekly, addDays(START, 60));
+    const withDoubles = analyzeCadence(doubled, addDays(START, 60));
+
+    expect(clean.medianIntervalDays).toBe(7);
+    expect(withDoubles.medianIntervalDays).toBe(7);
+    expect(withDoubles.purchaseCount).toBe(clean.purchaseCount);
+    // Confidence too: zero-day intervals inflate the MAD as well as moving the
+    // median, so an item bought like clockwork looked erratic.
+    expect(withDoubles.confidence).toBeCloseTo(clean.confidence, 10);
+  });
+
+  /**
+   * Dedup keeps the LAST purchase of a day, not the first.
+   *
+   * Keeping the first would make the app think you shopped longer ago than you
+   * did, which is the direction that produces a false "you're out of this".
+   */
+  it("measures daysSinceLast from the last purchase of the day", () => {
+    const morning = new Date("2026-02-10T08:00:00.000Z");
+    const evening = new Date("2026-02-10T19:00:00.000Z");
+    const now = new Date("2026-02-11T19:00:00.000Z");
+    const stats = analyzeCadence([morning, evening], now);
+    expect(stats.purchaseCount).toBe(1);
+    expect(stats.daysSinceLast).toBe(1);
+  });
+
+  /** Two genuinely separate days are still two purchases. */
+  it("does not collapse purchases on different days", () => {
+    const purchases = datesFromIntervals(START, [1, 1]);
+    const stats = analyzeCadence(purchases, addDays(START, 3));
+    expect(stats.purchaseCount).toBe(3);
+    expect(stats.medianIntervalDays).toBe(1);
   });
 });
 
@@ -289,5 +341,118 @@ describe("catalogOrderScore", () => {
     const now = addDays(START, 30);
     const score = catalogOrderScore(10, START, now);
     expect(score).toBeCloseTo(5, 5);
+  });
+});
+
+describe("probablyStillHave", () => {
+  /**
+   * The gates are asymmetric on purpose: a redundant tile is a glance, a missing
+   * ingredient is discovered while cooking. These tests pin that asymmetry rather
+   * than the individual numbers, so tuning the thresholds later cannot quietly
+   * widen the rule into the dangerous direction.
+   */
+  const now = new Date("2026-03-30T12:00:00.000Z");
+
+  /** Weekly-ish purchases, so median ≈ 7 days and confidence is high. */
+  function weekly(count: number, daysSinceLast: number): Date[] {
+    const out: Date[] = [];
+    for (let i = count - 1; i >= 0; i--) {
+      out.push(new Date(now.getTime() - (daysSinceLast + i * 7) * 86400000));
+    }
+    return out;
+  }
+
+  const soy: Amount = { value: 1, unit: "msk" };
+  const cream: Amount = { value: 5, unit: "dl" };
+  const mince: Amount = { value: 500, unit: "g" };
+
+  it("excludes a condiment bought well inside its normal interval", () => {
+    const stats = analyzeCadence(weekly(8, 2), now);
+    expect(probablyStillHave(stats, soy)).toBe(true);
+  });
+
+  it("does not exclude one bought more than half an interval ago", () => {
+    const stats = analyzeCadence(weekly(8, 5), now);
+    expect(probablyStillHave(stats, soy)).toBe(false);
+  });
+
+  it("never excludes a bulk quantity, however strong the history", () => {
+    // The load-bearing test. Bought yesterday, years of weekly history — and it
+    // must STILL go on the list, because the recipe wants five decilitres.
+    const stats = analyzeCadence(weekly(50, 1), now);
+    expect(stats.confidence).toBeGreaterThan(0.9);
+    expect(probablyStillHave(stats, cream)).toBe(false);
+    expect(probablyStillHave(stats, mince)).toBe(false);
+  });
+
+  it("excludes an ingredient with no stated amount", () => {
+    // "salt och peppar" — the case the amount gate exists to allow.
+    const stats = analyzeCadence(weekly(8, 1), now);
+    expect(probablyStillHave(stats, null)).toBe(true);
+  });
+
+  it("excludes nothing without enough history", () => {
+    // Fresh install: inert by construction, which is the graceful degradation.
+    expect(probablyStillHave(analyzeCadence([], now), soy)).toBe(false);
+    expect(probablyStillHave(analyzeCadence(weekly(1, 1), now), soy)).toBe(false);
+    expect(probablyStillHave(analyzeCadence(weekly(2, 1), now), soy)).toBe(false);
+  });
+
+  it("respects the per-item interval rather than a flat window", () => {
+    // Three weeks since the last bottle. Yoghurt bought weekly: you are out.
+    // Soy sauce bought yearly: you certainly are not. A flat "within a week"
+    // rule would get both wrong, in opposite directions.
+    const yearly: Date[] = [];
+    for (let i = 4; i >= 0; i--) {
+      yearly.push(new Date(now.getTime() - (21 + i * 365) * 86400000));
+    }
+    expect(probablyStillHave(analyzeCadence(weekly(10, 21), now), soy)).toBe(false);
+    expect(probablyStillHave(analyzeCadence(yearly, now), soy)).toBe(true);
+  });
+
+  it("treats the condiment ceiling by unit family, not raw number", () => {
+    expect(isCondimentScale({ value: 1, unit: "dl" })).toBe(true);
+    expect(isCondimentScale({ value: 2, unit: "dl" })).toBe(false);
+    expect(isCondimentScale({ value: 100, unit: "g" })).toBe(true);
+    expect(isCondimentScale({ value: 1, unit: "hg" })).toBe(true);
+    expect(isCondimentScale({ value: 2, unit: "st" })).toBe(true);
+    expect(isCondimentScale({ value: 3, unit: "st" })).toBe(false);
+  });
+});
+
+describe("localDayKey", () => {
+  /**
+   * One definition of "which day is this", shared by the cadence engine's
+   * per-day purchase collapsing and by suggestion dismissals.
+   *
+   * They are the same question — "the same shopping occasion" and "for the rest
+   * of today" both mean a household's local calendar day, not a UTC one and not
+   * a rolling 24 hours. Two implementations of that would drift at exactly one
+   * hour of the year and be unreproducible when they did.
+   */
+  it("is the local calendar day, zero-padded", () => {
+    expect(localDayKey(new Date(2026, 6, 5, 13, 30))).toBe("2026-07-05");
+    // Padding is not cosmetic: unpadded keys sort wrong, and this string is a
+    // database primary key component.
+    expect(localDayKey(new Date(2026, 11, 31, 23, 59))).toBe("2026-12-31");
+  });
+
+  it("puts just-before-midnight and just-after on different days", () => {
+    const before = localDayKey(new Date(2026, 6, 5, 23, 59, 59));
+    const after = localDayKey(new Date(2026, 6, 6, 0, 0, 1));
+    expect(before).not.toBe(after);
+  });
+
+  it("agrees with the day boundary purchaseDays already uses", () => {
+    // If these two ever disagree, a dismissal silences an item for a window
+    // that does not line up with the day the engine reasons about.
+    const evening = new Date(2026, 6, 5, 22, 0);
+    const nextMorning = new Date(2026, 6, 6, 7, 0);
+    expect(purchaseDays([evening, nextMorning])).toHaveLength(2);
+    expect(localDayKey(evening)).not.toBe(localDayKey(nextMorning));
+
+    const sameDay = new Date(2026, 6, 5, 8, 0);
+    expect(purchaseDays([evening, sameDay])).toHaveLength(1);
+    expect(localDayKey(evening)).toBe(localDayKey(sameDay));
   });
 });

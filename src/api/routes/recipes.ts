@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
-import { catalogItems, recipeIngredients, recipes } from "@/db/schema";
-import { matchParsedIngredient, parseIngredientLine, type MatchCandidate } from "@/lib/ingredients";
+import { recipeIngredients, recipes } from "@/db/schema";
+import { matchParsedIngredient, parseIngredientLine } from "@/lib/ingredients";
+import { loadMatchCandidates } from "@/lib/services/match-candidates";
 import { importRecipeFromUrl } from "@/lib/recipes";
 import type { Unit } from "@/lib/domain";
 import type { ApiEnv } from "..";
@@ -54,12 +55,12 @@ export function recipesRoutes() {
         );
       }
 
-      // The matcher assumes pre-normalized candidate names — it reads
-      // name_norm straight off the row rather than re-normalizing `name`
-      // itself, since that is exactly the column search already relies on.
-      const candidates: MatchCandidate[] = (
-        await db.select({ id: catalogItems.id, nameNorm: catalogItems.nameNorm }).from(catalogItems)
-      ).map((c) => ({ id: c.id, nameNorm: c.nameNorm }));
+      // Live varor AND every word that reaches one, so an ingredient line
+      // written against a word the household has since merged away still
+      // resolves — which is the entire point of keeping the merged-away word as
+      // an alias. See loadMatchCandidates for why the tombstone filter lives
+      // there rather than in the matcher.
+      const candidates = await loadMatchCandidates();
 
       const recipeId = randomUUID();
       const ingredientRows = imported.ingredientLines.map((line, position) => {

@@ -20,12 +20,36 @@ export interface StateRecord {
   state: SyncState;
 }
 
+/**
+ * The shape-and-semantics version of the persisted `SyncState` blob.
+ *
+ * Bump this whenever a build can no longer trust state written by an older one —
+ * most importantly when a new op kind ships. An older build drops op kinds it
+ * does not recognise (see the `default` branch in sync/reducer.ts) but still
+ * advances its cursor, so the dropped op is never re-fetched and that device's
+ * state is quietly missing a fact forever. On finding an older version here, the
+ * client discards `lastHydratedAt`, which makes the next ONLINE open take a full
+ * snapshot and repair the gap.
+ *
+ * Deliberately not the IndexedDB `DB_VERSION`. That governs stores and indexes,
+ * a bump is a one-way door (an older build reopening a newer database throws
+ * VersionError and the store's cached rejected promise then fails every read),
+ * and it cannot express "the records are fine, our understanding of them moved
+ * on". This is a plain integer in a row we already write.
+ */
+export const STATE_VERSION = 1;
+
 export interface SyncMeta {
   listId: Id;
   /** Server op `seq` this list has fully caught up to. Null before first hydration. */
   cursor: number | null;
   /** ISO timestamp of the last full hydration from a `ListSnapshot`. */
   lastHydratedAt: string | null;
+  /**
+   * `STATE_VERSION` of the build that last wrote this blob. Absent on rows
+   * written before versioning existed, which is treated as version 0.
+   */
+  stateVersion?: number;
 }
 
 export interface OutboxRecord {
@@ -33,6 +57,14 @@ export interface OutboxRecord {
   localSeq?: number;
   clientOpId: string;
   op: Op;
+  /**
+   * How many times the server has actively refused this op. Absent means zero.
+   *
+   * Only counts refusals, never delivery failures — see MAX_ATTEMPTS in
+   * outbox.ts for why the distinction is the whole point. Optional so records
+   * written by older builds read back fine without a version bump.
+   */
+  attempts?: number;
 }
 
 interface RecipusDB extends DBSchema {

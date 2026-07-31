@@ -38,6 +38,63 @@ export async function ack(clientOpIds: string[]): Promise<void> {
   await tx.done;
 }
 
+/**
+ * How many times an op the server actively refuses is re-sent before it is given
+ * up on.
+ *
+ * A refusal is not the same as a failure to deliver. If `post` throws — offline,
+ * lapsed session, 500 — nothing is acked and everything stays queued, which is
+ * right. But when the server answers with a per-op `error` it has seen the op
+ * and declined it, and some of those refusals are permanent: an op kind this
+ * server is too old to understand, or a reference to a row that will never
+ * exist. Left alone, one of those sits at the head of the queue forever, so
+ * `pendingCount` never reaches zero, the sync banner never clears, and every
+ * flush re-posts a batch that grows for the rest of the install's life.
+ *
+ * A few retries first, because some refusals genuinely are transient — the
+ * route applies a batch sequentially and an `add_item` can legitimately fail
+ * once against a `create_catalog_item` that has not committed yet.
+ */
+const MAX_ATTEMPTS = 5;
+
+/**
+ * Count a server-side refusal against each op, and drop the ones out of chances.
+ *
+ * Returns the ops that were given up on, so the caller can make noise about
+ * them. Dropping a user's edit is genuinely bad and this is the lesser of two
+ * bads — the alternative is a queue that never drains.
+ */
+export async function recordRefusals(clientOpIds: string[]): Promise<Op[]> {
+  if (clientOpIds.length === 0) return [];
+  const db = await getDb();
+  const tx = db.transaction("outbox", "readwrite");
+  const index = tx.store.index("by-clientOpId");
+  const abandoned: Op[] = [];
+
+  await Promise.all(
+    clientOpIds.map(async (id) => {
+      const key = await index.getKey(id);
+      if (key === undefined) return;
+      const row = await tx.store.get(key);
+      if (!row) return;
+
+      const attempts = (row.attempts ?? 0) + 1;
+      if (attempts >= MAX_ATTEMPTS) {
+        abandoned.push(row.op);
+        await tx.store.delete(key);
+        return;
+      }
+      // No explicit key: this store keys in-line off `localSeq` (see db.ts), so
+      // passing one is a DataError. `row` already carries its own key, and
+      // spreading it keeps the FIFO position the ascending key encodes.
+      await tx.store.put({ ...row, attempts });
+    }),
+  );
+
+  await tx.done;
+  return abandoned;
+}
+
 // Module-level guard making `flush` re-entrant-safe: two triggers landing at
 // the same instant (a `visibilitychange` firing right as `online` fires) must
 // not both start posting, or the same batch goes out twice. The second caller
@@ -49,9 +106,20 @@ let inFlight: Promise<void> | null = null;
 // go of the guard.
 let rerun = false;
 
-export async function flush(
-  post: (ops: Op[]) => Promise<{ clientOpId: string }[]>,
-): Promise<void> {
+/**
+ * What the server said about a batch.
+ *
+ * `refused` is the ops it saw and declined, which is a different thing from a
+ * batch that never arrived — see MAX_ATTEMPTS.
+ */
+export interface PostOutcome {
+  accepted: string[];
+  refused: string[];
+}
+
+export type PostFn = (ops: Op[]) => Promise<PostOutcome>;
+
+export async function flush(post: PostFn): Promise<void> {
   if (inFlight) {
     rerun = true;
     return inFlight;
@@ -62,9 +130,7 @@ export async function flush(
   return inFlight;
 }
 
-async function run(
-  post: (ops: Op[]) => Promise<{ clientOpId: string }[]>,
-): Promise<void> {
+async function run(post: PostFn): Promise<void> {
   for (;;) {
     rerun = false;
     const ops = await pending();
@@ -72,8 +138,24 @@ async function run(
     // If `post` rejects (offline, server error, session lapsed) this throws
     // out of `run`, the guard above releases, and every op is still in the
     // outbox — nothing was acked, so nothing is lost.
-    const accepted = await post(ops);
-    await ack(accepted.map((a) => a.clientOpId));
-    if (!rerun) return;
+    const { accepted, refused } = await post(ops);
+    await ack(accepted);
+
+    const abandoned = await recordRefusals(refused);
+    for (const op of abandoned) {
+      // Loud, because this is the one path that discards a user's edit. It is
+      // still better than the alternative it replaces: a refused op used to sit
+      // at the head of the queue forever, so the outbox never drained and the
+      // sync banner never cleared.
+      console.error(
+        `[outbox] giving up on ${op.kind} after ${MAX_ATTEMPTS} refusals`,
+        op,
+      );
+    }
+
+    // A batch of nothing but refusals would otherwise spin: `pending()` still
+    // returns rows, so the loop would re-post them until the cap ran out in one
+    // tight burst rather than across separate flushes.
+    if (!rerun || accepted.length === 0) return;
   }
 }

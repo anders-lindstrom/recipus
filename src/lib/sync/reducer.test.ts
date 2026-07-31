@@ -5,12 +5,21 @@ import {
   manualContributionId,
   recipeContributionId,
   type CatalogItem,
+  type Product,
   type SyncState,
 } from "@/lib/domain";
 import type { Op } from "./ops";
-import { applyOp, applyOps, pruneTombstones } from "./reducer";
+import {
+  applyOp,
+  applyOps,
+  contributionFieldKey,
+  entryPriorityKey,
+  pruneTombstones,
+} from "./reducer";
 
 const LIST = "hemkop";
+/** The other shop, for move_item. A different aisle order, a different trip. */
+const OTHER = "bauhaus";
 const CREAM = "gradde";
 const MILK = "mjolk";
 
@@ -64,6 +73,9 @@ function observable(state: SyncState) {
     entries: state.entries,
     contributions: state.contributions,
     recipeAdditions: state.recipeAdditions,
+    products: state.products,
+    aliases: state.aliases,
+    barcodes: state.barcodes,
   };
 }
 
@@ -511,24 +523,352 @@ describe("amounts and notes", () => {
 });
 
 describe("move_item", () => {
+  /**
+   * The move carries what it moves.
+   *
+   * `move_item` is the only op that would otherwise have to READ the state it
+   * rewrites — "take whatever is on the source and put it over there" — and a
+   * read-modify-write cannot be order-independent. A `set_amount` the mover had
+   * not seen yet is present in one arrival order and absent in the other, so the
+   * two devices settle on different amounts at the destination and neither is
+   * wrong by its own reckoning. Putting the payload IN the op makes the reducer a
+   * pure function of the op set again, which is the property everything here
+   * rests on. The permutation test at the bottom of this block is what proves it.
+   */
+  function moveOp(
+    actor: string,
+    minute: number,
+    carried: {
+      priority?: "urgent" | "normal" | "convenient";
+      manual?: Extract<Op, { kind: "move_item" }>["manual"];
+    } = {},
+  ): Op {
+    return {
+      ...base(actor, minute),
+      kind: "move_item",
+      fromListId: LIST,
+      toListId: OTHER,
+      catalogItemId: CREAM,
+      priority: carried.priority ?? "normal",
+      manual: carried.manual ?? null,
+    };
+  }
+
+  const FULL = {
+    priority: "urgent" as const,
+    manual: {
+      amount: { value: 5, unit: "dl" as const },
+      note: "helst ekologisk",
+      modifier: "vispgrädde",
+    },
+  };
+
   it("moves an item between lists", () => {
     const state = applyOps(emptyState(), [
       { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
-      {
-        ...base("anders", 2),
-        kind: "move_item",
-        fromListId: LIST,
-        toListId: "bauhaus",
-        catalogItemId: CREAM,
-      },
+      moveOp("anders", 2),
     ]);
 
     expect(state.entries[entryId(LIST, CREAM)].removedAt).not.toBeNull();
-    expect(state.entries[entryId("bauhaus", CREAM)].removedAt).toBeNull();
+    expect(state.entries[entryId(OTHER, CREAM)].removedAt).toBeNull();
+  });
+
+  it("carries the amount, note, modifier and priority to the destination", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      moveOp("anders", 5, FULL),
+    ]);
+
+    expect(state.entries[entryId(OTHER, CREAM)].priority).toBe("urgent");
+    expect(state.contributions[manualContributionId(entryId(OTHER, CREAM))]).toEqual({
+      id: manualContributionId(entryId(OTHER, CREAM)),
+      entryId: entryId(OTHER, CREAM),
+      sourceKind: "manual",
+      recipeAdditionId: null,
+      amount: { value: 5, unit: "dl" },
+      note: "helst ekologisk",
+      modifier: "vispgrädde",
+    });
+  });
+
+  /**
+   * A move relocates; it does not copy. Leaving the qualifier behind would mean
+   * the item is at Bauhaus and the "helst ekologisk" is still at Hemköp, waiting
+   * to reappear the moment anyone puts cream back on the first list.
+   */
+  it("takes the manual contribution and the urgency off the source", () => {
+    // Built with real ops rather than asserted against an empty source: an
+    // implementation that never touches the source passes vacuously otherwise,
+    // which is exactly the defect this test exists to catch.
+    const state = applyOps(emptyState(), [
+      {
+        ...base("anders", 1),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: CREAM,
+        amount: { value: 5, unit: "dl" },
+      },
+      {
+        ...base("anders", 2),
+        kind: "set_note",
+        listId: LIST,
+        catalogItemId: CREAM,
+        note: "helst ekologisk",
+      },
+      {
+        ...base("anders", 3),
+        kind: "set_modifier",
+        listId: LIST,
+        catalogItemId: CREAM,
+        modifier: "vispgrädde",
+      },
+      {
+        ...base("anders", 4),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: CREAM,
+        priority: "urgent",
+      },
+      moveOp("anders", 5, FULL),
+    ]);
+
+    const source = state.entries[entryId(LIST, CREAM)];
+    expect(source.removedAt).not.toBeNull();
+    // The urgency travelled with the item; it did not stay behind to reappear
+    // the next time anyone puts cream back on this list.
+    expect(source.priority).toBe("normal");
+    expect(
+      state.contributions[manualContributionId(entryId(LIST, CREAM))],
+    ).toBeUndefined();
+    // And it really did arrive at the other end, from the source's own values.
+    expect(
+      state.contributions[manualContributionId(entryId(OTHER, CREAM))].note,
+    ).toBe("helst ekologisk");
+  });
+
+  /**
+   * The values move with their clocks, or the move is a data-loss bug waiting for
+   * the next op.
+   *
+   * A written value whose clock is absent is not "no opinion", it is "anything
+   * wins" — `wins(op, undefined)` is true whatever the op's timestamp says. So a
+   * destination amount with no clock loses to the first stale `set_amount` that
+   * turns up, and the source's surviving clocks would let a stale write refill
+   * the record the move just emptied.
+   */
+  it("stamps both ends' clocks, so neither is open to a stale write", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      moveOp("anders", 5, FULL),
+    ]);
+
+    const stamp = { at: at(5), by: "anders" };
+    for (const field of ["amount", "note", "modifier"] as const) {
+      expect(
+        state.meta[
+          contributionFieldKey(manualContributionId(entryId(OTHER, CREAM)), field)
+        ],
+      ).toEqual(stamp);
+      expect(
+        state.meta[
+          contributionFieldKey(manualContributionId(entryId(LIST, CREAM)), field)
+        ],
+      ).toEqual(stamp);
+    }
+    expect(state.meta[entryPriorityKey(entryId(OTHER, CREAM))]).toEqual(stamp);
+  });
+
+  it("loses the carried amount to a genuinely newer write on the destination", () => {
+    const state = applyOps(emptyState(), [
+      moveOp("anders", 5, FULL),
+      {
+        ...base("maria", 9),
+        kind: "set_amount",
+        listId: OTHER,
+        catalogItemId: CREAM,
+        amount: { value: 1, unit: "l" },
+      },
+    ]);
+    const cid = manualContributionId(entryId(OTHER, CREAM));
+    expect(state.contributions[cid].amount).toEqual({ value: 1, unit: "l" });
+    // Only the amount lost. The note and the modifier were nobody else's claim.
+    expect(state.contributions[cid].note).toBe("helst ekologisk");
+  });
+
+  it("beats a write on the destination that predates it", () => {
+    const state = applyOps(emptyState(), [
+      {
+        ...base("maria", 2),
+        kind: "set_amount",
+        listId: OTHER,
+        catalogItemId: CREAM,
+        amount: { value: 1, unit: "l" },
+      },
+      moveOp("anders", 5, FULL),
+    ]);
+    expect(
+      state.contributions[manualContributionId(entryId(OTHER, CREAM))].amount,
+    ).toEqual({ value: 5, unit: "dl" });
+  });
+
+  /**
+   * A recipe's share stays on the list the recipe was added to.
+   *
+   * Recipe additions are list-scoped (`recipe_additions.list_id`), so a recipe
+   * that asked for cream at Hemköp has no meaning at Bauhaus — dragging its
+   * contribution across would make one recipe appear on two lists. Moving an item
+   * is a statement about where you will buy it, not about the recipe. The manual
+   * contribution is different: its id is a pure function of the entry, and the
+   * ask is the person's own.
+   */
+  it("leaves a recipe's share on the list the recipe was added to", () => {
+    const state = applyOps(emptyState(), [
+      {
+        ...base("anders", 1),
+        kind: "add_recipe",
+        listId: LIST,
+        recipeId: "r1",
+        recipeAdditionId: "ra1",
+        scaleFactor: 1,
+        items: [{ catalogItemId: CREAM, amount: { value: 8, unit: "dl" } }],
+      },
+      moveOp("anders", 5),
+    ]);
+
+    const share = state.contributions[recipeContributionId("ra1", CREAM)];
+    expect(share.entryId).toBe(entryId(LIST, CREAM));
+    expect(share.amount).toEqual({ value: 8, unit: "dl" });
+    expect(
+      state.contributions[manualContributionId(entryId(OTHER, CREAM))],
+    ).toBeUndefined();
+  });
+
+  /**
+   * The test that has caught every real bug in this codebase, pointed at the op
+   * that re-treads all of their ground at once: two entries, two priority clocks,
+   * three manual field clocks, and edits landing on both lists.
+   */
+  const interleaved: Op[] = [
+    { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+    {
+      ...base("maria", 2),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: { value: 5, unit: "dl" },
+    },
+    {
+      ...base("anders", 3),
+      kind: "set_amount",
+      listId: OTHER,
+      catalogItemId: CREAM,
+      amount: { value: 1, unit: "l" },
+    },
+    moveOp("anders", 4, {
+      priority: "urgent",
+      manual: { amount: { value: 2, unit: "dl" }, note: "till såsen", modifier: null },
+    }),
+    {
+      ...base("maria", 6),
+      kind: "set_priority",
+      listId: OTHER,
+      catalogItemId: CREAM,
+      priority: "convenient",
+    },
+  ];
+
+  it("converges under every ordering of a move and edits on both lists", () => {
+    const orderings = permutations(interleaved);
+    expect(orderings.length).toBe(120);
+
+    const reference = observable(applyOps(emptyState(), orderings[0]));
+    for (const ordering of orderings) {
+      expect(observable(applyOps(emptyState(), ordering))).toEqual(reference);
+    }
+  });
+
+  it("converges on the bookkeeping too, and on one further op after it", () => {
+    // What the user sees agreeing is not enough: `meta` is what the NEXT op
+    // resolves against, so a clock that ended up different diverges one write
+    // later, long after the ordering that caused it is forgotten.
+    const probe: Op = {
+      ...base("maria", 9),
+      kind: "set_amount",
+      listId: OTHER,
+      catalogItemId: CREAM,
+      amount: { value: 3, unit: "dl" },
+    };
+
+    const orderings = permutations(interleaved);
+    const first = applyOps(emptyState(), orderings[0]);
+    const referenceMeta = first.meta;
+    const referenceProbed = observable(applyOp(first, probe));
+
+    for (const ordering of orderings) {
+      const state = applyOps(emptyState(), ordering);
+      expect(state.meta).toEqual(referenceMeta);
+      expect(observable(applyOp(state, probe))).toEqual(referenceProbed);
+    }
   });
 });
 
 describe("pruneTombstones", () => {
+  /**
+   * The fresh-literal hazard, one level up from `writeEntry`'s.
+   *
+   * This function rebuilt its result from `emptyState()` and copied four maps
+   * across BY NAME, so every map added to `SyncState` afterwards was silently
+   * dropped — and since the client now prunes on every app open, "silently
+   * dropped" means the registry would vanish from the store the first time
+   * anyone opened the app, with no error anywhere.
+   *
+   * The fix is structural rather than three more copy lines: the result starts
+   * as a copy of the whole state and overrides only what it actually prunes, so
+   * a new map is carried by default. This test exists to fail if anyone reverses
+   * that, because the next map to be added will not come with a reminder.
+   */
+  it("carries every part of the state it does not prune", () => {
+    const state = emptyState();
+    state.products["prod:7310865004703"] = {
+      id: "prod:7310865004703",
+      name: "Arla Standardmjölk",
+      brand: "Arla",
+      catalogItemId: MILK,
+      defaultSize: { value: 1.5, unit: "l" },
+      sourceSizeText: "1,5 l",
+      imageUrl: null,
+      createdAt: at(1),
+      createdBy: "anders",
+    };
+    state.aliases["kottfars"] = {
+      aliasNorm: "kottfars",
+      catalogItemId: "notfars",
+      createdAt: at(1),
+      createdBy: "anders",
+    };
+    state.barcodes["7310865004703"] = {
+      ean: "7310865004703",
+      productId: "prod:7310865004703",
+      source: "off",
+    };
+    state.recipes["r1"] = {
+      id: "r1",
+      title: "Pannkakor",
+      sourceUrl: null,
+      servings: 4,
+      servingsUnit: "portioner",
+      imageUrl: null,
+      ingredients: [],
+    };
+
+    const pruned = pruneTombstones(state, new Date(at(60)));
+
+    expect(pruned.products).toEqual(state.products);
+    expect(pruned.aliases).toEqual(state.aliases);
+    expect(pruned.barcodes).toEqual(state.barcodes);
+    expect(pruned.recipes).toEqual(state.recipes);
+  });
+
   it("drops old tombstones and keeps live entries", () => {
     const state = applyOps(emptyState(), [
       { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
@@ -573,5 +913,862 @@ describe("pruneTombstones", () => {
 
     const pruned = pruneTombstones(state, new Date(at(30)));
     expect(Object.keys(pruned.meta)).toHaveLength(0);
+  });
+
+  /**
+   * Per-field clocks have to go with their record.
+   *
+   * They carry no `deleted` flag of their own — a cleared amount is a value, not
+   * a tombstone — so the ordinary "keep unless deleted and old" rule kept them
+   * forever. Every clock this codebase has added since (amount, note, modifier,
+   * priority, and four on the catalog) would have leaked the same way, and the
+   * meta map is re-serialised on every tap.
+   */
+  it("forgets per-field clocks along with the record they describe", () => {
+    const state = applyOps(emptyState(), [
+      {
+        ...base("anders", 1),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: MILK,
+        amount: { value: 2, unit: "l" },
+      },
+      {
+        ...base("anders", 2),
+        kind: "set_modifier",
+        listId: LIST,
+        catalogItemId: MILK,
+        modifier: "laktosfri",
+      },
+      {
+        ...base("anders", 3),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: MILK,
+        priority: "urgent",
+      },
+      {
+        ...base("anders", 4),
+        kind: "remove_item",
+        listId: LIST,
+        catalogItemId: MILK,
+        bought: true,
+      },
+    ]);
+    expect(
+      Object.keys(state.meta).some((k) => k.endsWith(":modifier")),
+    ).toBe(true);
+
+    const pruned = pruneTombstones(state, new Date(at(30)));
+    expect(Object.keys(pruned.meta)).toHaveLength(0);
+  });
+
+  /**
+   * A live record's own clock survives even when its id ends in a field name.
+   *
+   * Ids contain colons (`entryId` is `listId:catalogItemId`), so a custom item
+   * slugged "priority" makes `entry:hemkop:priority` look exactly like a field
+   * key. Pruning it would drop a live entry's clock — and a missing clock is
+   * "anything wins", which is a resurrection bug.
+   */
+  it("does not mistake an item named like a field for a field clock", () => {
+    const state = applyOp(emptyState(), {
+      ...base("anders", 1),
+      kind: "add_item",
+      listId: LIST,
+      catalogItemId: "priority",
+    });
+
+    const pruned = pruneTombstones(state, new Date(at(30)));
+    expect(pruned.meta[`entry:${entryId(LIST, "priority")}`]).toBeDefined();
+  });
+});
+
+describe("forward compatibility", () => {
+  /**
+   * A phone that has not been updated receiving an op from one that has.
+   *
+   * This is not hypothetical politeness: before the `default` branch existed the
+   * switch fell through and returned `undefined`, `applyOps` threw on the next
+   * op, and the client store wrote `undefined` over its cached state and retried
+   * forever — the app opened to an empty list in a shop and blamed the network.
+   * Every future op kind depends on this behaviour already being deployed, which
+   * is why it is tested rather than assumed.
+   */
+  /**
+   * A kind this build genuinely does not have.
+   *
+   * It used to be `set_priority`, which has since shipped — so this test quietly
+   * stopped testing forward compatibility and started testing priority. Worth
+   * knowing when picking the next placeholder: anything on the roadmap will do
+   * this again. `set_colour` is not, and will not be, a thing.
+   */
+  const fromTheFuture = {
+    ...base("maria", 3),
+    kind: "set_colour",
+    listId: LIST,
+    catalogItemId: CREAM,
+    colour: "ochre",
+  } as unknown as Op;
+
+  it("ignores an op kind it does not know, leaving state untouched", () => {
+    const before = applyOp(emptyState(), {
+      ...base("anders", 1),
+      kind: "add_item",
+      listId: LIST,
+      catalogItemId: CREAM,
+    });
+
+    const after = applyOp(before, fromTheFuture);
+    expect(after).toBe(before);
+  });
+
+  it("keeps applying the rest of a batch around an unknown op", () => {
+    // The batch matters more than the single op: an unknown kind in the middle
+    // must not take the known ops on either side of it down with it.
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      fromTheFuture,
+      { ...base("anders", 4), kind: "add_item", listId: LIST, catalogItemId: MILK },
+    ]);
+
+    expect(state).toBeDefined();
+    expect(state.entries[entryId(LIST, CREAM)]?.removedAt).toBeNull();
+    expect(state.entries[entryId(LIST, MILK)]?.removedAt).toBeNull();
+  });
+});
+
+describe("meta convergence", () => {
+  /**
+   * The existing convergence test compares `observable()`, which deliberately
+   * excludes `meta`. That proves what the user sees agrees — but `meta` is what
+   * the NEXT op resolves against, so two clients can display an identical list
+   * and then diverge on the following write. This closes that gap in both
+   * directions: the bookkeeping itself must converge, and convergence must
+   * survive one more op landing afterwards.
+   */
+  const ops: Op[] = [
+    { ...base("anders", 0), kind: "create_catalog_item", item: item(CREAM) },
+    { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+    {
+      ...base("maria", 2),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: { value: 5, unit: "dl" },
+    },
+    {
+      ...base("anders", 3),
+      kind: "set_note",
+      listId: LIST,
+      catalogItemId: CREAM,
+      note: "helst ekologisk",
+    },
+    {
+      ...base("maria", 4),
+      kind: "remove_item",
+      listId: LIST,
+      catalogItemId: CREAM,
+      bought: true,
+    },
+  ];
+
+  it("converges on the meta map under every ordering", () => {
+    const orderings = permutations(ops);
+    expect(orderings.length).toBe(120);
+
+    const reference = applyOps(emptyState(), orderings[0]).meta;
+    for (const ordering of orderings) {
+      expect(applyOps(emptyState(), ordering).meta).toEqual(reference);
+    }
+  });
+
+  it("still converges after one further op, whatever order preceded it", () => {
+    // The probe is what catches divergence hiding in the bookkeeping: a clock
+    // that ended up different resolves this next write differently.
+    const probe: Op = {
+      ...base("anders", 9),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: { value: 2, unit: "dl" },
+    };
+
+    const orderings = permutations(ops);
+    const reference = observable(
+      applyOp(applyOps(emptyState(), orderings[0]), probe),
+    );
+    for (const ordering of orderings) {
+      const probed = applyOp(applyOps(emptyState(), ordering), probe);
+      expect(observable(probed)).toEqual(reference);
+    }
+  });
+});
+
+describe("priority", () => {
+  const add: Op = {
+    ...base("anders", 1),
+    kind: "add_item",
+    listId: LIST,
+    catalogItemId: CREAM,
+  };
+
+  it("defaults to normal", () => {
+    const state = applyOp(emptyState(), add);
+    expect(state.entries[entryId(LIST, CREAM)].priority).toBe("normal");
+  });
+
+  /**
+   * The `writeEntry` fresh-literal hazard.
+   *
+   * Every entry write rebuilds the record from scratch, so anything not carried
+   * forward explicitly is silently reset. `add_item` is dispatched by far more
+   * paths than anyone keeps in their head — the add bar, a scan, a suggestion,
+   * undo, `set_amount`, `set_note` — and each of them would quietly clear the
+   * urgency of an item already on the list.
+   */
+  it("survives a later add_item", () => {
+    const state = applyOps(emptyState(), [
+      add,
+      {
+        ...base("maria", 2),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: CREAM,
+        priority: "urgent",
+      },
+      { ...base("anders", 3), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      {
+        ...base("anders", 4),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: CREAM,
+        amount: { value: 2, unit: "dl" },
+      },
+    ]);
+    expect(state.entries[entryId(LIST, CREAM)].priority).toBe("urgent");
+  });
+
+  /**
+   * Removal clears it, which is what keeps urgency meaning anything. Without the
+   * clear, buying the urgent milk and re-adding it next week leaves it ochre and
+   * first — and once a third of the list is urgent, nothing is.
+   */
+  it("is cleared by removal, and stays cleared through a re-add", () => {
+    const state = applyOps(emptyState(), [
+      add,
+      {
+        ...base("maria", 2),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: CREAM,
+        priority: "urgent",
+      },
+      {
+        ...base("anders", 3),
+        kind: "remove_item",
+        listId: LIST,
+        catalogItemId: CREAM,
+        bought: true,
+      },
+      { ...base("anders", 9), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+    ]);
+    const entry = state.entries[entryId(LIST, CREAM)];
+    expect(entry.removedAt).toBeNull();
+    expect(entry.priority).toBe("normal");
+  });
+
+  /**
+   * A genuinely newer "mark urgent" must survive an older removal arriving late.
+   *
+   * This is why priority has its own clock rather than riding the entry's: with
+   * one clock, whichever op the network delivered second would win outright, and
+   * the two devices would settle on different lists.
+   */
+  it("converges when a removal and a newer priority cross", () => {
+    const remove: Op = {
+      ...base("anders", 5),
+      kind: "remove_item",
+      listId: LIST,
+      catalogItemId: CREAM,
+      bought: true,
+    };
+    const urgent: Op = {
+      ...base("maria", 9),
+      kind: "set_priority",
+      listId: LIST,
+      catalogItemId: CREAM,
+      priority: "urgent",
+    };
+
+    const a = applyOps(emptyState(), [add, remove, urgent]);
+    const b = applyOps(emptyState(), [add, urgent, remove]);
+    expect(observable(a)).toEqual(observable(b));
+    expect(a.entries[entryId(LIST, CREAM)].priority).toBe("urgent");
+  });
+
+  it("converges under every ordering of priority, add and remove", () => {
+    const ops: Op[] = [
+      add,
+      {
+        ...base("maria", 4),
+        kind: "set_priority",
+        listId: LIST,
+        catalogItemId: CREAM,
+        priority: "convenient",
+      },
+      {
+        ...base("anders", 6),
+        kind: "remove_item",
+        listId: LIST,
+        catalogItemId: CREAM,
+        bought: true,
+      },
+      { ...base("maria", 8), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+    ];
+
+    const orderings = permutations(ops);
+    const reference = observable(applyOps(emptyState(), orderings[0]));
+    for (const ordering of orderings) {
+      expect(observable(applyOps(emptyState(), ordering))).toEqual(reference);
+    }
+  });
+});
+
+describe("modifiers", () => {
+  /**
+   * A third independent fact on one record needs a third independent clock.
+   *
+   * Folding the modifier onto `set_amount` would reproduce the data-loss bug
+   * this codebase has already paid for twice: an older write to one field
+   * arriving after a newer write to another takes the first field's value with
+   * it.
+   */
+  it("does not lose an amount to a later modifier, in either order", () => {
+    const amount: Op = {
+      ...base("anders", 5),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: { value: 2, unit: "dl" },
+    };
+    const modifier: Op = {
+      ...base("maria", 3),
+      kind: "set_modifier",
+      listId: LIST,
+      catalogItemId: CREAM,
+      modifier: "vispbar",
+    };
+
+    const a = applyOps(emptyState(), [amount, modifier]);
+    const b = applyOps(emptyState(), [modifier, amount]);
+    expect(observable(a)).toEqual(observable(b));
+
+    const cid = manualContributionId(entryId(LIST, CREAM));
+    expect(a.contributions[cid].amount).toEqual({ value: 2, unit: "dl" });
+    expect(a.contributions[cid].modifier).toBe("vispbar");
+  });
+
+  it("drops the contribution only when all three fields are empty", () => {
+    const cid = manualContributionId(entryId(LIST, CREAM));
+
+    const withBoth = applyOps(emptyState(), [
+      {
+        ...base("anders", 1),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: CREAM,
+        amount: { value: 2, unit: "dl" },
+      },
+      {
+        ...base("anders", 2),
+        kind: "set_modifier",
+        listId: LIST,
+        catalogItemId: CREAM,
+        modifier: "vispbar",
+      },
+    ]);
+
+    // Clearing the amount leaves the modifier, so the record stays.
+    const amountCleared = applyOp(withBoth, {
+      ...base("anders", 3),
+      kind: "set_amount",
+      listId: LIST,
+      catalogItemId: CREAM,
+      amount: null,
+    });
+    expect(amountCleared.contributions[cid]).toBeDefined();
+    expect(amountCleared.contributions[cid].modifier).toBe("vispbar");
+
+    const allCleared = applyOp(amountCleared, {
+      ...base("anders", 4),
+      kind: "set_modifier",
+      listId: LIST,
+      catalogItemId: CREAM,
+      modifier: null,
+    });
+    expect(allCleared.contributions[cid]).toBeUndefined();
+    // The entry stays — "grädde, mängd ospecificerad" is a thing you want.
+    expect(allCleared.entries[entryId(LIST, CREAM)].removedAt).toBeNull();
+  });
+
+  it("converges under every ordering of the three manual fields", () => {
+    const ops: Op[] = [
+      { ...base("anders", 1), kind: "add_item", listId: LIST, catalogItemId: CREAM },
+      {
+        ...base("maria", 5),
+        kind: "set_amount",
+        listId: LIST,
+        catalogItemId: CREAM,
+        amount: { value: 2, unit: "dl" },
+      },
+      {
+        ...base("anders", 3),
+        kind: "set_note",
+        listId: LIST,
+        catalogItemId: CREAM,
+        note: "helst ekologisk",
+      },
+      {
+        ...base("maria", 4),
+        kind: "set_modifier",
+        listId: LIST,
+        catalogItemId: CREAM,
+        modifier: "vispbar",
+      },
+    ];
+
+    const orderings = permutations(ops);
+    const reference = applyOps(emptyState(), orderings[0]);
+    for (const ordering of orderings) {
+      const state = applyOps(emptyState(), ordering);
+      expect(observable(state)).toEqual(observable(reference));
+      expect(state.meta).toEqual(reference.meta);
+    }
+  });
+});
+
+describe("catalog field clocks", () => {
+  /**
+   * Editing different facts about one item must converge.
+   *
+   * With a single clock for the whole row, a rename at T5 and a re-filing at T2
+   * settle differently depending on which the server sees first: T2-then-T5
+   * keeps both, T5-then-T2 drops the re-filing and the item silently walks back
+   * to its old aisle. Same ops, two states.
+   *
+   * This is the shape the item registry makes routine — two people tidying the
+   * catalog on a Sunday afternoon — so it is pinned exhaustively rather than by
+   * example, the same way the amount/note split is.
+   */
+  const create: Op = {
+    ...base("anders", 0),
+    kind: "create_catalog_item",
+    item: item(CREAM),
+  };
+
+  /**
+   * The create is a fixture rather than part of the permutation, and that is a
+   * deliberate statement about what converges.
+   *
+   * `update_catalog_item` DROPS an update for an item it has never seen, exactly
+   * as `update_list` does — conjuring a partial record from a patch would leave
+   * a half-built item with no name. So create-then-update and update-then-create
+   * genuinely differ, and the guarantee rests on the transport instead: the
+   * server assigns `seq` on arrival, clients replay in `seq` order, and an
+   * update can only be authored on a device that already has the item. The
+   * create is always first. Pinned by the last test in this block so the
+   * assumption is written down rather than assumed.
+   */
+  const edits: Op[] = [
+    {
+      ...base("maria", 5),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { name: "vispgrädde", nameNorm: "vispgradde" },
+    },
+    {
+      ...base("anders", 2),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { categoryId: "frukt-gront" },
+    },
+    {
+      ...base("maria", 3),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { iconRef: "1F34E" },
+    },
+    {
+      ...base("anders", 4),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { hasAtHome: true },
+    },
+  ];
+
+  it("converges under every ordering of concurrent field edits", () => {
+    const orderings = permutations(edits);
+    expect(orderings.length).toBe(24);
+
+    const reference = observable(applyOps(emptyState(), [create, ...orderings[0]]));
+    for (const ordering of orderings) {
+      expect(observable(applyOps(emptyState(), [create, ...ordering]))).toEqual(
+        reference,
+      );
+    }
+  });
+
+  it("converges on the meta map too, so the next write resolves the same", () => {
+    const orderings = permutations(edits);
+    const reference = applyOps(emptyState(), [create, ...orderings[0]]).meta;
+    for (const ordering of orderings) {
+      expect(applyOps(emptyState(), [create, ...ordering]).meta).toEqual(reference);
+    }
+  });
+
+  it("keeps every edit — none of them shadow each other", () => {
+    const state = applyOps(emptyState(), [create, ...edits]);
+    const cream = state.catalog[CREAM];
+    expect(cream.name).toBe("vispgrädde");
+    expect(cream.nameNorm).toBe("vispgradde");
+    expect(cream.categoryId).toBe("frukt-gront");
+    expect(cream.iconRef).toBe("1F34E");
+    expect(cream.hasAtHome).toBe(true);
+  });
+
+  /**
+   * An op that is silent about a field must not stamp that field's clock.
+   *
+   * Otherwise a rename would beat a LATER re-filing, purely because it happened
+   * to be written second — the clock would be recording "someone touched this
+   * row" rather than "someone set this field", which is the moving clock the
+   * split exists to remove.
+   */
+  it("does not let a rename shadow a later re-filing", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 0), kind: "create_catalog_item", item: item(CREAM) },
+      {
+        ...base("maria", 9),
+        kind: "update_catalog_item",
+        itemId: CREAM,
+        patch: { name: "vispgrädde" },
+      },
+      {
+        ...base("anders", 5),
+        kind: "update_catalog_item",
+        itemId: CREAM,
+        patch: { categoryId: "frukt-gront" },
+      },
+    ]);
+    expect(state.catalog[CREAM].name).toBe("vispgrädde");
+    expect(state.catalog[CREAM].categoryId).toBe("frukt-gront");
+  });
+
+  /**
+   * The counters are not household opinions.
+   *
+   * `useCount` and `lastUsedAt` are derived from purchase history by the server
+   * with an atomic increment. A client asserting an absolute value would clobber
+   * a concurrent one — a lost update, which last-write-wins cannot help with —
+   * so a patch naming them is ignored rather than resolved.
+   */
+  it("ignores the derived counters in a patch", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 0), kind: "create_catalog_item", item: item(CREAM) },
+      {
+        ...base("maria", 9),
+        kind: "update_catalog_item",
+        itemId: CREAM,
+        patch: { useCount: 999, lastUsedAt: "2030-01-01T00:00:00.000Z" },
+      },
+    ]);
+    expect(state.catalog[CREAM].useCount).toBe(0);
+    expect(state.catalog[CREAM].lastUsedAt).toBeNull();
+  });
+
+  /**
+   * The one ordering that does NOT converge, written down on purpose.
+   *
+   * An update for an item the reducer has never seen is dropped rather than used
+   * to conjure a partial record — the same call `update_list` makes, for the
+   * same reason. So this pair genuinely settles two ways, and the guarantee is
+   * carried by the transport rather than by the reducer: `seq` is assigned on
+   * arrival, replay follows `seq`, and an update can only be authored on a
+   * device that already holds the item.
+   *
+   * Asserted rather than left implicit so that anyone who later makes an update
+   * reachable without a create — a registry import, a merge, a repair path —
+   * fails here and has to think about it, instead of shipping a silent
+   * divergence.
+   */
+  it("drops an update that arrives before its create (known, transport-guarded)", () => {
+    const rename: Op = {
+      ...base("maria", 5),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { name: "vispgrädde" },
+    };
+
+    const natural = applyOps(emptyState(), [create, rename]);
+    const inverted = applyOps(emptyState(), [rename, create]);
+
+    expect(natural.catalog[CREAM].name).toBe("vispgrädde");
+    // Not a bug being enshrined — a boundary being stated. The rename is gone.
+    expect(inverted.catalog[CREAM].name).toBe(CREAM);
+  });
+});
+
+describe("registry", () => {
+  const EAN = "7310865004703";
+  const PROD = `prod:${EAN}`;
+
+  function product(over: Partial<Product> = {}): Product {
+    return {
+      id: PROD,
+      name: "Arla Standardmjölk",
+      brand: "Arla",
+      catalogItemId: null,
+      defaultSize: { value: 1.5, unit: "l" },
+      sourceSizeText: "1,5 l",
+      imageUrl: null,
+      createdAt: at(1),
+      createdBy: "anders",
+      ...over,
+    };
+  }
+
+  /**
+   * Two phones in two shops scan the same unknown barcode. The id is derived, so
+   * they are creating the SAME row and only one creation can be recorded — which
+   * means it has to be the one that does not depend on arrival order. Exactly the
+   * rule `earliestCreation` already enforces for entries.
+   */
+  it("keeps the earliest creation when two devices scan the same barcode", () => {
+    const mine: Op = {
+      ...base("anders", 3),
+      kind: "create_product",
+      product: product({ createdAt: at(3), createdBy: "anders" }),
+    };
+    const theirs: Op = {
+      ...base("maria", 1),
+      kind: "create_product",
+      product: product({ name: "Standardmjölk", createdAt: at(1), createdBy: "maria" }),
+    };
+
+    const a = applyOps(emptyState(), [mine, theirs]);
+    const b = applyOps(emptyState(), [theirs, mine]);
+    expect(observable(a)).toEqual(observable(b));
+    expect(a.products[PROD].createdAt).toBe(at(1));
+    expect(a.products[PROD].createdBy).toBe("maria");
+  });
+
+  it("places a product on a vara, and lets the placing be corrected", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "create_product", product: product() },
+      {
+        ...base("anders", 2),
+        kind: "update_product",
+        productId: PROD,
+        patch: { catalogItemId: "ost" },
+      },
+      // A wrong auto-map is precisely what a person is there to fix.
+      {
+        ...base("maria", 3),
+        kind: "update_product",
+        productId: PROD,
+        patch: { catalogItemId: MILK },
+      },
+    ]);
+    expect(state.products[PROD].catalogItemId).toBe(MILK);
+  });
+
+  /**
+   * The four-clocks rule, on the registry's own table. A patch that says nothing
+   * about the brand must not stamp the brand's clock, or an op silent about a
+   * field beats one that actually changes it — the bug this codebase has paid
+   * for three times.
+   */
+  it("does not let a silent field beat one that was actually written", () => {
+    const renameLate: Op = {
+      ...base("anders", 9),
+      kind: "update_product",
+      productId: PROD,
+      patch: { name: "Arla Mellanmjölk" },
+    };
+    const placeEarly: Op = {
+      ...base("maria", 4),
+      kind: "update_product",
+      productId: PROD,
+      patch: { catalogItemId: MILK },
+    };
+    const create: Op = {
+      ...base("anders", 1),
+      kind: "create_product",
+      product: product(),
+    };
+
+    const a = applyOps(emptyState(), [create, renameLate, placeEarly]);
+    const b = applyOps(emptyState(), [create, placeEarly, renameLate]);
+    expect(observable(a)).toEqual(observable(b));
+    // Both edits stick: they are different facts, so neither can outrank the other.
+    expect(a.products[PROD].name).toBe("Arla Mellanmjölk");
+    expect(a.products[PROD].catalogItemId).toBe(MILK);
+  });
+
+  /**
+   * A row per EAN, not an array on the product. Two phones adding two different
+   * barcodes for the same pack must not conflict at all — last-write-wins on an
+   * array would silently drop one, and `wins()` cannot merge.
+   */
+  it("keeps both barcodes when two devices add different ones", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "create_product", product: product() },
+      { ...base("anders", 2), kind: "link_barcode", ean: EAN, productId: PROD, source: "off" },
+      { ...base("maria", 3), kind: "link_barcode", ean: "5901234123457", productId: PROD, source: "manual" },
+    ]);
+    expect(Object.keys(state.barcodes).sort()).toEqual(
+      ["5901234123457", EAN].sort(),
+    );
+    expect(state.barcodes[EAN].productId).toBe(PROD);
+  });
+
+  it("tombstones a deleted vara rather than dropping it", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 1), kind: "create_catalog_item", item: item(CREAM) },
+      { ...base("anders", 2), kind: "delete_catalog_item", itemId: CREAM },
+      // A stale create arriving afterwards must lose, or the vara comes back.
+      { ...base("maria", 1), kind: "create_catalog_item", item: item(CREAM) },
+    ]);
+    expect(state.catalog[CREAM]).toBeUndefined();
+  });
+
+  /**
+   * The merge convergence constraint, which is the whole reason the reducer only
+   * tombstones.
+   *
+   * A merge implemented as row REWRITING diverges: merge(B→A) at T5 followed by a
+   * long-offline add_item(B) at T7 leaves an entry for B in one arrival order and
+   * for A in the other. Tombstoning only means both orders end with the same
+   * orphan entry on a tombstoned vara — visible, manually fixable, and identical
+   * on every device, which is the property that actually matters.
+   */
+  it("converges when a merge and a stale add of the merged-away vara cross", () => {
+    const create: Op = {
+      ...base("anders", 1),
+      kind: "create_catalog_item",
+      item: item("kottfars"),
+    };
+    const merge: Op = {
+      ...base("anders", 5),
+      kind: "merge_catalog_items",
+      fromItemId: "kottfars",
+      toItemId: "notfars",
+      aliasNorm: "kottfars",
+    };
+    const staleAdd: Op = {
+      ...base("maria", 7),
+      kind: "add_item",
+      listId: LIST,
+      catalogItemId: "kottfars",
+    };
+
+    const a = applyOps(emptyState(), [create, merge, staleAdd]);
+    const b = applyOps(emptyState(), [create, staleAdd, merge]);
+    expect(observable(a)).toEqual(observable(b));
+
+    // The entry is untouched by the merge — no rewriting, ever.
+    expect(a.entries[entryId(LIST, "kottfars")]).toBeDefined();
+    expect(a.entries[entryId(LIST, "kottfars")].catalogItemId).toBe("kottfars");
+    expect(a.catalog["kottfars"]).toBeUndefined();
+  });
+
+  it("keeps the merged-away word as an alias", () => {
+    // Without this a recipe line reading "köttfärs" goes from a perfect match to
+    // nothing at all: it shares no prefix, compound head or whole word with
+    // "nötfärs".
+    const state = applyOp(emptyState(), {
+      ...base("anders", 5),
+      kind: "merge_catalog_items",
+      fromItemId: "kottfars",
+      toItemId: "notfars",
+      aliasNorm: "kottfars",
+    });
+    expect(state.aliases["kottfars"]).toEqual({
+      aliasNorm: "kottfars",
+      catalogItemId: "notfars",
+      createdAt: at(5),
+      createdBy: "anders",
+    });
+  });
+
+  /**
+   * `update_product` inherits `update_catalog_item`'s one non-converging pair,
+   * and for the same reason: an update for a product the reducer has never seen
+   * is dropped rather than used to conjure a partial row.
+   *
+   * The guarantee is the transport's, not the reducer's — `seq` is assigned on
+   * arrival, replay follows `seq`, and an update can only be authored on a device
+   * that already holds the product. Written down so that anyone who later makes
+   * an update reachable without a create (an Open Food Facts backfill, a repair
+   * path, an import) fails here and has to think, rather than shipping a silent
+   * divergence.
+   */
+  it("drops a product update that arrives before its create (transport-guarded)", () => {
+    const create: Op = {
+      ...base("anders", 1),
+      kind: "create_product",
+      product: product(),
+    };
+    const place: Op = {
+      ...base("maria", 5),
+      kind: "update_product",
+      productId: PROD,
+      patch: { catalogItemId: MILK },
+    };
+
+    expect(applyOps(emptyState(), [create, place]).products[PROD].catalogItemId).toBe(MILK);
+    // Not a bug being enshrined — a boundary being stated. The placing is gone.
+    expect(applyOps(emptyState(), [place, create]).products[PROD].catalogItemId).toBeNull();
+  });
+
+  it("converges under every ordering of registry ops", () => {
+    // The create is held FIRST rather than permuted, because of the boundary
+    // above: it is a precondition of the others, guaranteed by the transport
+    // rather than by the reducer. Permuting it would be asserting a property
+    // this design deliberately does not claim.
+    const create: Op = {
+      ...base("anders", 1),
+      kind: "create_product",
+      product: product(),
+    };
+    const ops: Op[] = [
+      { ...base("maria", 2), kind: "link_barcode", ean: EAN, productId: PROD, source: "off" },
+      {
+        ...base("anders", 4),
+        kind: "update_product",
+        productId: PROD,
+        patch: { catalogItemId: MILK },
+      },
+      {
+        ...base("maria", 6),
+        kind: "update_product",
+        productId: PROD,
+        patch: { name: "Arla Mellanmjölk", brand: "Arla" },
+      },
+      { ...base("anders", 8), kind: "create_catalog_item", item: item(MILK) },
+    ];
+
+    const orderings = permutations(ops);
+    expect(orderings.length).toBe(24);
+    const reference = applyOps(emptyState(), [create, ...orderings[0]]);
+    for (const ordering of orderings) {
+      const got = applyOps(emptyState(), [create, ...ordering]);
+      expect(observable(got)).toEqual(observable(reference));
+      expect(got.meta).toEqual(reference.meta);
+    }
+    // And the edits actually stuck, rather than converging on having lost them.
+    expect(reference.products[PROD].catalogItemId).toBe(MILK);
+    expect(reference.products[PROD].name).toBe("Arla Mellanmjölk");
   });
 });

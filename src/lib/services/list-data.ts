@@ -1,35 +1,60 @@
 import { and, asc, desc, eq, gte, inArray, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import {
+  barcodes,
+  catalogItemAliases,
   catalogItems,
   categories,
   contributions,
   listEntries,
   lists,
+  products,
   purchases,
   recipeAdditions,
   recipes,
 } from "@/db/schema";
+import { isClearedManualContribution } from "@/lib/domain";
 import type {
+  BarcodeLink,
+  BarcodeSource,
   CatalogItem,
+  CatalogItemAlias,
   Category,
   Contribution,
   Id,
   List,
   ListEntry,
+  Product,
   RecipeAddition,
   RecordMeta,
   Unit,
 } from "@/lib/domain";
-import { rankSuggestions, catalogOrderScore } from "@/lib/cadence";
+import {
+  analyzeCadence,
+  catalogOrderScore,
+  rankSuggestions,
+  type CadenceStats,
+} from "@/lib/cadence";
 import {
   additionKey,
+  aliasKey,
+  barcodeKey,
+  catalogFieldKey,
   catalogKey,
   contributionFieldKey,
   contributionKey,
   entryKey,
+  entryPriorityKey,
   listKey,
+  productFieldKey,
+  productKey,
 } from "@/lib/sync";
+import { catalogFieldClocks, productFieldClocks } from "./clocks";
+import {
+  effectiveCatalogItemId,
+  purchaseProductJoin,
+} from "./purchase-attribution";
+import { dismissedOn } from "./suggestion-dismissals";
 
 /**
  * Reading a list's world out of Postgres.
@@ -45,6 +70,18 @@ export interface ListSnapshot {
   catalog: CatalogItem[];
   entries: ListEntry[];
   contributions: Contribution[];
+  /**
+   * The registry, household-wide exactly as `catalog` is.
+   *
+   * It travels with the snapshot rather than behind its own endpoint because it
+   * is part of `SyncState`: a client that hydrates without it holds an empty
+   * registry until an op happens to arrive, and on a cold open in a shop none
+   * will. Scanning would then ask about barcodes the household answered months
+   * ago.
+   */
+  products: Product[];
+  aliases: CatalogItemAlias[];
+  barcodes: BarcodeLink[];
   /**
    * Full records, in the shape the reducer needs — NOT display info.
    *
@@ -68,6 +105,19 @@ export interface ListSnapshot {
   meta: Record<string, RecordMeta>;
   /** Cadence suggestions, already ranked and filtered. */
   suggestions: Array<{ catalogItemId: Id; reason: string }>;
+  /**
+   * Per-item purchase cadence, for items with any history at all.
+   *
+   * Deliberately HOUSEHOLD-wide rather than per-list, unlike `suggestions`.
+   * "Should I buy this here" is a question about this shop; "do we already have
+   * this in the cupboard" is a question about the kitchen, and the answer does not
+   * change because you happened to buy it at Bauhaus last time.
+   *
+   * Sent as a digest rather than raw dates: the median and the confidence do not
+   * age, only `daysSinceLast` does, and that is recomputable from the last
+   * purchase whenever it is needed.
+   */
+  purchaseStats: Record<Id, CadenceStats>;
 }
 
 function toAmount(
@@ -89,7 +139,14 @@ export async function loadListSnapshot(
     .limit(1);
   if (!listRow) return null;
 
-  const [categoryRows, catalogRows, entryRows] = await Promise.all([
+  const [
+    categoryRows,
+    catalogRows,
+    entryRows,
+    productRows,
+    aliasRows,
+    barcodeRows,
+  ] = await Promise.all([
     db.select().from(categories).orderBy(asc(categories.position)),
     db
       .select()
@@ -98,6 +155,14 @@ export async function loadListSnapshot(
       // tie-break so the catalog never reshuffles arbitrarily between loads.
       .orderBy(desc(catalogItems.useCount), asc(catalogItems.name)),
     db.select().from(listEntries).where(eq(listEntries.listId, listId)),
+    // Unfiltered, tombstones included — the clock has to travel even when the
+    // record does not. Filtering removed rows out here is the bug that
+    // resurrected removed recipe additions, one table over, and it left no
+    // trace: a missing clock reads as "no prior record", so a stale op replayed
+    // from an outbox wins by default. The records are withheld below instead.
+    db.select().from(products),
+    db.select().from(catalogItemAliases),
+    db.select().from(barcodes),
   ]);
 
   const entryIds = entryRows.map((e) => e.id);
@@ -121,23 +186,38 @@ export async function loadListSnapshot(
       scaleFactor: recipeAdditions.scaleFactor,
       addedAt: recipeAdditions.addedAt,
       addedBy: recipeAdditions.addedBy,
+      removedAt: recipeAdditions.removedAt,
       updatedAt: recipeAdditions.updatedAt,
       updatedBy: recipeAdditions.updatedBy,
       title: recipes.title,
     })
     .from(recipeAdditions)
     .innerJoin(recipes, eq(recipes.id, recipeAdditions.recipeId))
-    .where(
-      and(
-        eq(recipeAdditions.listId, listId),
-        isNull(recipeAdditions.removedAt),
-      ),
-    );
+    // Removed additions are loaded too, deliberately. Filtering them out here
+    // meant a hydrating client received neither the row NOR its clock — and a
+    // missing clock is not "no opinion", it is "anything wins": `wins(op,
+    // undefined)` is true whatever the op's timestamp. So a stale `add_recipe`
+    // replayed from an outbox resurrected the removed recipe and every
+    // contribution it asked for. The row is still withheld below; only the
+    // tombstone travels.
+    .where(eq(recipeAdditions.listId, listId));
 
   const meta: Record<string, RecordMeta> = {};
   const additions: Record<Id, RecipeAddition> = {};
   const recipeTitles: Record<Id, string> = {};
   for (const a of additionRows) {
+    const deleted = a.removedAt !== null;
+    // The clock travels for every addition; the record and its title only for
+    // the ones still on the list. Same shape as `apply-op`'s own loader, which
+    // has always done this correctly — the two must agree, since one reducer
+    // resolves against both.
+    meta[additionKey(a.id)] = {
+      at: a.updatedAt.toISOString(),
+      by: a.updatedBy,
+      deleted: deleted ? true : undefined,
+    };
+    if (deleted) continue;
+
     additions[a.id] = {
       id: a.id,
       listId: a.listId,
@@ -147,10 +227,6 @@ export async function loadListSnapshot(
       addedBy: a.addedBy,
     };
     recipeTitles[a.recipeId] = a.title;
-    meta[additionKey(a.id)] = {
-      at: a.updatedAt.toISOString(),
-      by: a.updatedBy,
-    };
   }
 
   meta[listKey(listRow.id)] = {
@@ -161,40 +237,118 @@ export async function loadListSnapshot(
     meta[catalogKey(c.id)] = {
       at: c.updatedAt.toISOString(),
       by: c.updatedBy,
+      // Retired by "Ta bort", or merged away. Withheld from the records below
+      // while the clock still travels, exactly as a removed recipe addition is:
+      // without the clock, a stale `create_catalog_item` from a phone that was in
+      // a drawer has nothing to lose against and brings the vara straight back.
+      deleted: c.deletedAt !== null ? true : undefined,
+    };
+    // The four editable facts each resolve against their own clock — see the
+    // reducer's update_catalog_item. Emitted here as well as in `apply-op`'s
+    // loader because a hydrating client resolves the same ops against the same
+    // reducer, and a clock the two loaders disagree about is worse than one
+    // neither has: a missing key reads as "no prior record", so the newest
+    // write always wins and conflict resolution silently stops working.
+    for (const [field, clock] of catalogFieldClocks(c)) {
+      meta[catalogFieldKey(c.id, field)] = clock;
+    }
+  }
+  for (const p of productRows) {
+    meta[productKey(p.id)] = {
+      at: p.updatedAt.toISOString(),
+      by: p.updatedBy,
+      deleted: p.deletedAt !== null ? true : undefined,
+    };
+    // Each from its own NULLABLE column, and an unset one emits nothing at all —
+    // see productFieldClocks. Absent is what the reducer holds for a product
+    // whose mapping nobody has asserted yet, and absent is what has to be
+    // reconstructed, or the review queue's whole purpose is quietly outranked.
+    for (const [field, clock] of productFieldClocks(p)) {
+      meta[productFieldKey(p.id, field)] = clock;
+    }
+  }
+  for (const a of aliasRows) {
+    meta[aliasKey(a.aliasNorm)] = {
+      at: a.updatedAt.toISOString(),
+      by: a.updatedBy,
+      deleted: a.deletedAt !== null ? true : undefined,
+    };
+  }
+  for (const b of barcodeRows) {
+    // One editable fact — which product this EAN points at — so the record-level
+    // clock IS that fact's clock and there is nothing to disambiguate.
+    meta[barcodeKey(b.ean)] = {
+      at: b.updatedAt.toISOString(),
+      by: b.updatedBy,
+      deleted: b.deletedAt !== null ? true : undefined,
     };
   }
   for (const e of entryRows) {
     meta[entryKey(e.id)] = {
       at: e.updatedAt.toISOString(),
       by: e.updatedBy,
+      // Tombstoned entries already travel as records (removedAt is a normal
+      // field on ListEntry), so this is harmless today — `wins()` ignores
+      // `deleted`. It stops being harmless the moment anything calls
+      // `pruneTombstones` client-side, which prunes on exactly this flag: an
+      // entry whose clock never said "deleted" would be kept, then resurrected.
+      // Same shape as the bug already fixed once in `writeEntry`.
+      deleted: e.removedAt !== null ? true : undefined,
     };
+    // Absent when never written, exactly as in `apply-op`'s loader: NULL means
+    // no op has set a priority, and the first one to arrive should land whatever
+    // its timestamp.
+    if (e.priorityUpdatedAt && e.priorityUpdatedBy) {
+      meta[entryPriorityKey(e.id)] = {
+        at: e.priorityUpdatedAt.toISOString(),
+        by: e.priorityUpdatedBy,
+      };
+    }
   }
   for (const c of contributionRows) {
     const row = { at: c.updatedAt.toISOString(), by: c.updatedBy };
     meta[contributionKey(c.id)] = row;
-    // Per-field clocks fall back to the row clock: recipe and scan
-    // contributions never populate them, and neither do pre-migration rows.
-    meta[contributionFieldKey(c.id, "amount")] =
-      c.amountUpdatedAt && c.amountUpdatedBy
-        ? { at: c.amountUpdatedAt.toISOString(), by: c.amountUpdatedBy }
-        : row;
-    meta[contributionFieldKey(c.id, "note")] =
-      c.noteUpdatedAt && c.noteUpdatedBy
-        ? { at: c.noteUpdatedAt.toISOString(), by: c.noteUpdatedBy }
-        : row;
+    // An unset per-field clock emits NOTHING, rather than falling back to the
+    // row clock — see the column comment in src/db/schema.ts. The row clock
+    // moves on every write to either field, so the fallback silently handed one
+    // field the other's timestamp and cost a genuinely newer write, in one
+    // arrival order only. Absent is what the reducer holds for a field no op has
+    // touched, and absent is what must be reconstructed.
+    if (c.amountUpdatedAt && c.amountUpdatedBy) {
+      meta[contributionFieldKey(c.id, "amount")] = {
+        at: c.amountUpdatedAt.toISOString(),
+        by: c.amountUpdatedBy,
+      };
+    }
+    if (c.noteUpdatedAt && c.noteUpdatedBy) {
+      meta[contributionFieldKey(c.id, "note")] = {
+        at: c.noteUpdatedAt.toISOString(),
+        by: c.noteUpdatedBy,
+      };
+    }
+    if (c.modifierUpdatedAt && c.modifierUpdatedBy) {
+      meta[contributionFieldKey(c.id, "modifier")] = {
+        at: c.modifierUpdatedAt.toISOString(),
+        by: c.modifierUpdatedBy,
+      };
+    }
   }
 
-  const catalog: CatalogItem[] = catalogRows.map((c) => ({
-    id: c.id,
-    name: c.name,
-    nameNorm: c.nameNorm,
-    categoryId: c.categoryId,
-    iconRef: c.iconRef,
-    isCustom: c.isCustom,
-    hasAtHome: c.hasAtHome,
-    useCount: c.useCount,
-    lastUsedAt: c.lastUsedAt?.toISOString() ?? null,
-  }));
+  // Tombstoned varor are dropped here, not in the query: their clocks were
+  // emitted above and have to survive the round trip, the records must not.
+  const catalog: CatalogItem[] = catalogRows
+    .filter((c) => c.deletedAt === null)
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      nameNorm: c.nameNorm,
+      categoryId: c.categoryId,
+      iconRef: c.iconRef,
+      isCustom: c.isCustom,
+      hasAtHome: c.hasAtHome,
+      useCount: c.useCount,
+      lastUsedAt: c.lastUsedAt?.toISOString() ?? null,
+    }));
 
   // Recency+frequency ordering. This is the cheap mechanism that makes the
   // catalog feel personal after about three shops, long before the cadence
@@ -220,6 +374,7 @@ export async function loadListSnapshot(
     createdAt: e.createdAt.toISOString(),
     createdBy: e.createdBy,
     removedAt: e.removedAt?.toISOString() ?? null,
+    priority: e.priority,
     updatedAt: e.updatedAt.toISOString(),
     updatedBy: e.updatedBy,
   }));
@@ -240,19 +395,95 @@ export async function loadListSnapshot(
     })),
     catalog,
     entries,
-    contributions: contributionRows.map((c) => ({
-      id: c.id,
-      entryId: c.entryId,
-      sourceKind: c.sourceKind,
-      recipeAdditionId: c.recipeAdditionId,
-      amount: toAmount(c.amountValue, c.amountUnit),
-      note: c.note,
-    })),
+    // Emptied manual rows are withheld, exactly as `apply-op`'s loader withholds
+    // them and for the same reason: the row exists only to carry the per-field
+    // clocks emitted above, and a hydrating client that took it as a record
+    // would hold a contribution the reducer never produces. Only the clock
+    // travels — the same shape as a removed recipe addition.
+    contributions: contributionRows
+      .map((c) => ({
+        id: c.id,
+        entryId: c.entryId,
+        sourceKind: c.sourceKind,
+        recipeAdditionId: c.recipeAdditionId,
+        amount: toAmount(c.amountValue, c.amountUnit),
+        note: c.note,
+        modifier: c.modifier,
+      }))
+      .filter((c) => !isClearedManualContribution(c)),
+    products: productRows
+      .filter((p) => p.deletedAt === null)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        brand: p.brand,
+        catalogItemId: p.catalogItemId,
+        defaultSize: toAmount(p.defaultSizeValue, p.defaultSizeUnit),
+        sourceSizeText: p.sourceSizeText,
+        imageUrl: p.imageUrl,
+        createdAt: p.createdAt.toISOString(),
+        createdBy: p.createdBy,
+      })),
+    aliases: aliasRows
+      .filter((a) => a.deletedAt === null)
+      .map((a) => ({
+        aliasNorm: a.aliasNorm,
+        catalogItemId: a.catalogItemId,
+        createdAt: a.createdAt.toISOString(),
+        createdBy: a.createdBy,
+      })),
+    barcodes: barcodeRows
+      .filter((b) => b.deletedAt === null)
+      .map((b) => ({
+        ean: b.ean,
+        productId: b.productId,
+        source: b.source as BarcodeSource,
+      })),
     recipeAdditions: additions,
     recipeTitles,
     meta,
     suggestions: await loadSuggestions(listId, entries, now),
+    purchaseStats: await loadPurchaseStats(now),
   };
+}
+
+/**
+ * Purchase cadence per item, across the whole household.
+ *
+ * Same two-year window and the same engine as the suggestion row, so the two can
+ * never disagree about how often you buy something. The only difference is scope:
+ * this one is not filtered by list.
+ */
+async function loadPurchaseStats(now: Date): Promise<Record<Id, CadenceStats>> {
+  const since = new Date(now);
+  since.setFullYear(since.getFullYear() - 2);
+
+  const rows = await db
+    .select({
+      catalogItemId: effectiveCatalogItemId,
+      purchasedAt: purchases.purchasedAt,
+    })
+    .from(purchases)
+    .leftJoin(products, purchaseProductJoin)
+    .where(gte(purchases.purchasedAt, since))
+    .orderBy(asc(purchases.purchasedAt));
+
+  const byItem = new Map<Id, Date[]>();
+  for (const r of rows) {
+    // NULL here means a scan of a product nobody has placed on a vara yet, so
+    // there is no honest answer to "how often do we buy this" — deferred, not
+    // lost. See purchase-attribution.ts.
+    if (r.catalogItemId === null) continue;
+    const list = byItem.get(r.catalogItemId);
+    if (list) list.push(r.purchasedAt);
+    else byItem.set(r.catalogItemId, [r.purchasedAt]);
+  }
+
+  const out: Record<Id, CadenceStats> = {};
+  for (const [catalogItemId, dates] of byItem) {
+    out[catalogItemId] = analyzeCadence(dates, now);
+  }
+  return out;
 }
 
 /**
@@ -271,10 +502,11 @@ async function loadSuggestions(
 
   const rows = await db
     .select({
-      catalogItemId: purchases.catalogItemId,
+      catalogItemId: effectiveCatalogItemId,
       purchasedAt: purchases.purchasedAt,
     })
     .from(purchases)
+    .leftJoin(products, purchaseProductJoin)
     .where(
       and(eq(purchases.listId, listId), gte(purchases.purchasedAt, since)),
     )
@@ -282,21 +514,30 @@ async function loadSuggestions(
 
   const byItem = new Map<Id, Date[]>();
   for (const r of rows) {
+    // Same resolution as `loadPurchaseStats`, and it has to be literally the
+    // same one: the suggestion row and the cadence stats must never disagree
+    // about how often you buy something.
+    if (r.catalogItemId === null) continue;
     const list = byItem.get(r.catalogItemId);
     if (list) list.push(r.purchasedAt);
     else byItem.set(r.catalogItemId, [r.purchasedAt]);
   }
 
-  const onList = new Set(
+  // Already wanted, or explicitly declined today. Both are the same instruction
+  // to the engine — "do not offer me this" — so they go in as one exclusion set
+  // rather than as a second concept inside `rankSuggestions`. The dismissals are
+  // household-wide by design; see src/lib/services/suggestion-dismissals.ts.
+  const exclude = new Set(
     entries.filter((e) => e.removedAt === null).map((e) => e.catalogItemId),
   );
+  for (const id of await dismissedOn(now)) exclude.add(id);
 
   return rankSuggestions(
     [...byItem.entries()].map(([catalogItemId, purchases]) => ({
       catalogItemId,
       purchases,
     })),
-    { now, excludeItemIds: onList },
+    { now, excludeItemIds: exclude },
   ).map((s) => ({ catalogItemId: s.catalogItemId, reason: s.reason }));
 }
 
