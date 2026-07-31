@@ -1533,3 +1533,49 @@ which was fine while a list's only editable fact was its name. Re-ordering the
 aisles did nothing visible until a reload, and a partner's re-order arriving over
 SSE was applied to the store and never drawn. It reads the store now, and falls
 back to the snapshot only for the first paint and the offline shell.
+
+# What the merge review found, 2026-07-31
+
+The merge work above was reviewed adversarially before anyone shipped on it, and
+four defects came back. All four had the same shape, which is the useful part:
+**the ops were right and what the device knew when it built them was not.** The
+convergence claim — only pre-existing op kinds, so nothing new races anything —
+survived every attack, including two devices merging in opposite directions, a
+long-offline `add_item` landing after the tombstone, and the server's re-pointing
+racing the client's. Worth separating those two things when reading this code:
+the op log is sound; the plan is only as good as the state the planner can see.
+
+Three of the four are fixed in the commit above. Two limits are left standing on
+purpose, and they are here rather than buried in a comment because both can
+surprise somebody.
+
+**A merge re-points the open list only.** The store holds one list — the snapshot
+selects `list_entries` by `list_id`, catch-up filters ops the same way, and
+`applySnapshot` rebuilds from empty — so a vara sitting on Hemköp *and* Ica has
+only its Hemköp entry within reach when you merge from `/varor?list=hemkop`. Ica
+keeps the orphan. That is no worse than the state the reducer has always allowed
+and it is now visible: it draws as a stand-in tile and one tap clears it. Fixing
+it properly means either loading every list's entries into the client, or moving
+the re-pointing server-side — and the latter is exactly the row-rewriting the
+merge case forbids, so it is not a small change and it is not obviously right.
+
+The same blind spot pre-dates the merge work and is worth knowing: `deletionBlockers`
+reads the same partial `state.entries`, so **"Ta bort" is offered for a vara that
+is live on another list.**
+
+**A merge's `set_amount` can lose a concurrent quantity.** The rule "if the
+survivor is already on the list, its own tile wins" is true only of tiles the
+merging device has already seen. A partner adding `vitlök 3 st` from a phone with
+no signal, seconds before you merge `vitlöksklyfta` into `vitlök`, loses their 3
+st to the merge's `set_amount` on a strictly later clock. Both devices settle on
+the same number, so this is a lost update rather than a divergence — the same
+class of trade `move_item` already makes and documents, and for the same reason:
+the alternative is a read-modify-write that cannot be order-independent.
+
+**And one process note.** The bag glyph was reported shipped, and had been added
+to `ui-icon.tsx` and used in zero files — in the same entry whose whole subject
+was a decision written and not implemented. It is invisible to lint, because an
+unused entry in an icon map is not an unused variable, and invisible to the
+tests. Screenshots caught it. This is the third time in this log that the
+intended end state got written down as the shipped state; if there is one habit
+worth taking from tonight, it is `grep` for the thing you claim to have wired.
