@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { CatalogItem, Id } from "@/lib/domain";
-import { rankMatches, splitQuery } from "@/lib/services/search";
+import { resolveQuery } from "@/lib/services/search";
 import { cn, normalizeName } from "@/lib/utils";
 import { ItemIcon } from "./icon";
 import { UiIcon } from "./ui-icon";
@@ -18,13 +18,22 @@ import { UiIcon } from "./ui-icon";
  * the list name and the aisle rail; a third pinned bar would eat a fifth of a
  * phone screen to save one flick back to the top, and the rail's "Listan"
  * button is that flick.
+ *
+ * It reads a query as amount + sort + vara rather than as one string to look
+ * up — see `resolveQuery`. "mogen mango" used to match nothing at all, and the
+ * only thing on offer was creating a second mango in Övrigt, permanently, next
+ * to the one that was already there.
  */
 
 export interface AddBarProps {
   catalog: CatalogItem[];
   /** Items already on the current list, so they can be marked rather than re-added. */
   onListItemIds: Set<Id>;
-  onPick: (itemId: Id, amountText: string) => void;
+  /**
+   * `modifier` is the household's qualifier read off the front of the query —
+   * "mogen" from "mogen mango". Empty when nothing led the vara's name.
+   */
+  onPick: (itemId: Id, amountText: string, modifier: string) => void;
   onCreate: (name: string, amountText: string) => void;
 }
 
@@ -35,18 +44,34 @@ export function AddBar({
   onCreate,
 }: AddBarProps) {
   const [raw, setRaw] = useState("");
-  const { name, amountText } = useMemo(() => splitQuery(raw), [raw]);
-  const matches = useMemo(() => rankMatches(catalog, name), [catalog, name]);
+  const input = useRef<HTMLInputElement>(null);
+  const { matches, modifier, amountText, name } = useMemo(
+    () => resolveQuery(catalog, raw),
+    [catalog, raw],
+  );
 
-  const exact = matches.find((m) => m.nameNorm === normalizeName(name));
+  // Against the whole typed name, not the matched vara: typing "mogen mango"
+  // resolves to mango, and creating "mogen mango" as its own vara has to stay
+  // available for the household that genuinely wants it as one.
+  const exact = matches.some((m) => m.nameNorm === normalizeName(name));
   const canCreate = name.length >= 2 && !exact;
 
+  /**
+   * Put the caret back in the field.
+   *
+   * Adding six things is one errand, not six. The suggestion row that took the
+   * tap unmounts on the same frame, so without this focus falls to <body> and
+   * the phone keyboard animates shut and open again between every single vara.
+   * `keepFocus` on the buttons stops the blur from happening at all; this is
+   * what recovers it on the platforms where preventing mousedown is not enough.
+   */
   function reset() {
     setRaw("");
+    input.current?.focus();
   }
 
   function pick(itemId: Id) {
-    onPick(itemId, amountText);
+    onPick(itemId, amountText, modifier);
     reset();
   }
 
@@ -55,11 +80,16 @@ export function AddBar({
     reset();
   }
 
+  // A press inside the dropdown must never take focus off the input. The click
+  // still fires; only the blur is cancelled.
+  const keepFocus = (e: React.MouseEvent) => e.preventDefault();
+
   return (
     <div className="relative my-3">
       <div className="flex items-center gap-2.5 rounded-card border border-line bg-surface-raised px-3 py-2.5">
         <UiIcon name="search" size={18} className="flex-none text-ink-faint" />
         <input
+          ref={input}
           value={raw}
           onChange={(e) => setRaw(e.target.value)}
           onKeyDown={(e) => {
@@ -86,6 +116,7 @@ export function AddBar({
         {raw && (
           <button
             type="button"
+            onMouseDown={keepFocus}
             onClick={reset}
             aria-label="Rensa"
             className="-mr-1 flex h-7 w-7 flex-none items-center justify-center rounded-full text-ink-faint"
@@ -103,6 +134,7 @@ export function AddBar({
               <li key={item.id}>
                 <button
                   type="button"
+                  onMouseDown={keepFocus}
                   onClick={() => pick(item.id)}
                   className={cn(
                     "flex w-full items-center gap-3 px-3 py-2.5 text-left",
@@ -110,11 +142,21 @@ export function AddBar({
                   )}
                 >
                   <ItemIcon iconRef={item.iconRef} className="text-xl" />
-                  <span className="flex-1 text-body font-semibold text-ink">
-                    {item.name}
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="text-body font-semibold text-ink">
+                      {item.name}
+                    </span>
+                    {/* Rendered exactly as the tile will render it — italic,
+                        under the name — so what you are about to get is what
+                        you are looking at. */}
+                    {modifier && (
+                      <span className="text-caption text-ink-faint italic">
+                        {modifier}
+                      </span>
+                    )}
                   </span>
                   {already && (
-                    <span className="text-caption font-semibold text-brand">
+                    <span className="flex-none text-caption font-semibold text-brand">
                       på listan
                     </span>
                   )}
@@ -127,6 +169,7 @@ export function AddBar({
             <li>
               <button
                 type="button"
+                onMouseDown={keepFocus}
                 onClick={create}
                 className="flex w-full items-center gap-3 border-t border-line px-3 py-2.5 text-left active:bg-brand-tint"
               >

@@ -12,11 +12,175 @@ import { normalizeName } from "@/lib/utils";
 const MAX_SUGGESTIONS = 6;
 
 /**
+ * Score tiers, worst-to-best downwards. Floats because INFLECTION had to be
+ * slotted between two tiers that already existed and renumbering them would
+ * have rewritten every test that pins an ordering.
+ */
+const SCORE_EXACT = 0;
+/** The catalog name starts with what was typed: "mj" -> "mjölk". */
+const SCORE_PREFIX = 1;
+/** What was typed starts with the catalog name: "tomater" -> "tomat". */
+const SCORE_INFLECTION = 1.5;
+/** A later word of the name starts with the query: "lök" -> "gul lök". */
+const SCORE_WORD_PREFIX = 2;
+/** The name merely contains the query: "mjölk" -> "havremjölk". */
+const SCORE_CONTAINS = 3;
+/** Nothing matched literally; this is a typo tolerance hit. */
+const SCORE_FUZZY = 4;
+
+/**
+ * The endings a query may add to a catalog name and still be the same vara.
+ *
+ * Spelled out rather than capped by length, and the difference is not
+ * pedantry: a plain "at most three more characters" rule reads *mjölk* as an
+ * inflection of *mjöl*, so typing the most-bought item in the catalog suggests
+ * flour second. Swedish plural and definite endings are a closed set, "k" is
+ * not in it, and listing them costs one array.
+ *
+ * Longest first, so the check never stops at a shorter ending that happens to
+ * be a suffix of the right one.
+ */
+const INFLECTIONS = [
+  "orna",
+  "erna",
+  "arna",
+  "rna",
+  "ena",
+  "er",
+  "ar",
+  "or",
+  "en",
+  "et",
+  "na",
+  "ns",
+  "ts",
+  "a",
+  "n",
+  "t",
+  "s",
+];
+
+/** Is `q` the catalog name `n` with a Swedish plural or definite ending? */
+function isInflectionOf(q: string, n: string): boolean {
+  if (!q.startsWith(n) || q.length === n.length) return false;
+  const ending = q.slice(n.length);
+  return INFLECTIONS.includes(ending);
+}
+
+/**
+ * Typo tolerance.
+ *
+ * Queries this short are not fuzzy-matched at all. At three characters almost
+ * everything is one edit from everything else — "ost" reaches *ris*, *ris*
+ * reaches *ros* — and the tier stops carrying information. The budget then
+ * grows with the query, because a longer word both affords more slips and is
+ * far less likely to collide by accident.
+ */
+const FUZZY_MIN_QUERY_LENGTH = 4;
+
+function fuzzyBudget(queryLength: number): number {
+  if (queryLength < FUZZY_MIN_QUERY_LENGTH) return 0;
+  return queryLength <= 5 ? 1 : 2;
+}
+
+/**
+ * Damerau-Levenshtein distance, abandoned as soon as it exceeds `max`.
+ *
+ * Transpositions count as one edit rather than two, which is the whole reason
+ * this is not plain Levenshtein: "mjölk" typed with a thumb comes out "mjökl"
+ * about as often as it comes out "mjök", and plain Levenshtein scores the
+ * transposition twice as bad as the dropped letter. They are the same slip.
+ *
+ * Returns null rather than a number when the distance is over budget, so
+ * callers cannot accidentally use a distance that was never fully computed.
+ */
+export function boundedEditDistance(
+  a: string,
+  b: string,
+  max: number,
+): number | null {
+  if (max <= 0) return a === b ? 0 : null;
+  // A length gap wider than the budget cannot be closed, and this prunes the
+  // overwhelming majority of a catalog before any table is allocated.
+  if (Math.abs(a.length - b.length) > max) return null;
+
+  // Three rows: the one before last is what a transposition reaches back to.
+  let beforePrev: number[] = [];
+  let prev: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
+
+  for (let i = 1; i <= a.length; i++) {
+    const row: number[] = new Array(b.length + 1);
+    row[0] = i;
+    let best = row[0];
+
+    for (let j = 1; j <= b.length; j++) {
+      const substitution = prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
+      let value = Math.min(prev[j] + 1, row[j - 1] + 1, substitution);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        value = Math.min(value, beforePrev[j - 2] + 1);
+      }
+      row[j] = value;
+      if (value < best) best = value;
+    }
+
+    // Every cell in this row is already over budget, so every row below it will
+    // be too — distances never decrease going down.
+    if (best > max) return null;
+
+    beforePrev = prev;
+    prev = row;
+  }
+
+  return prev[b.length] <= max ? prev[b.length] : null;
+}
+
+/**
+ * The closest a query gets to a catalog name, trying the whole name and each of
+ * its words.
+ *
+ * Per-word matters for the multi-word names the registry produces: "gul lök"
+ * should still be reachable from a fumbled "lok" even though the distance from
+ * the full name is four.
+ */
+function fuzzyDistance(query: string, name: string, max: number): number | null {
+  let best = boundedEditDistance(query, name, max);
+  if (best === 0) return 0;
+
+  for (const word of name.split(" ")) {
+    if (word === name) continue;
+    const d = boundedEditDistance(query, word, best === null ? max : best - 1);
+    if (d !== null && (best === null || d < best)) best = d;
+    if (best === 0) return 0;
+  }
+  return best;
+}
+
+interface Scored {
+  item: CatalogItem;
+  score: number;
+  /** Edit distance for fuzzy hits; 0 for everything that matched literally. */
+  distance: number;
+}
+
+/**
  * Rank catalog matches for a query.
  *
  * Prefix beats substring, because someone typing "mj" wants "mjölk" long before
  * "havremjölk". Beyond that it is the catalog's own recency/frequency ordering,
  * which is what makes the list feel like yours after a few shops.
+ *
+ * Two tiers sit outside that story and are worth knowing about:
+ *
+ * **Inflection**, because every literal tier asks whether the catalog name
+ * contains the query and none asked the reverse — so "tomater", the way anyone
+ * actually refers to the vegetable, reached *krossade tomater* and *passerade
+ * tomater* but never plain *tomat*.
+ *
+ * **Fuzzy**, last and only ever last, because this is typed with one thumb
+ * while walking. It cannot outrank anything that matched literally, and it
+ * deliberately does not feed the "create a new item" decision — see
+ * `resolveQuery`. A typo that silently resolves is a recoverable annoyance; a
+ * typo that silently creates a 343rd catalog item is permanent.
  */
 export function rankMatches(
   catalog: CatalogItem[],
@@ -26,23 +190,36 @@ export function rankMatches(
   const q = normalizeName(query);
   if (!q) return [];
 
-  const scored: Array<{ item: CatalogItem; score: number }> = [];
+  const budget = fuzzyBudget(q.length);
+  const scored: Scored[] = [];
+
   for (const item of catalog) {
     const name = item.nameNorm;
+    if (!name) continue;
+
     let score: number;
-    if (name === q) score = 0;
-    else if (name.startsWith(q)) score = 1;
+    if (name === q) score = SCORE_EXACT;
+    else if (name.startsWith(q)) score = SCORE_PREFIX;
+    else if (isInflectionOf(q, name)) score = SCORE_INFLECTION;
     // Start of any later word, so "lök" finds "gul lök".
-    else if (name.split(" ").some((w) => w.startsWith(q))) score = 2;
-    else if (name.includes(q)) score = 3;
-    else continue;
-    scored.push({ item, score });
+    else if (name.split(" ").some((w) => w.startsWith(q))) score = SCORE_WORD_PREFIX;
+    else if (name.includes(q)) score = SCORE_CONTAINS;
+    else {
+      if (budget === 0) continue;
+      const distance = fuzzyDistance(q, name, budget);
+      if (distance === null) continue;
+      scored.push({ item, score: SCORE_FUZZY, distance });
+      continue;
+    }
+
+    scored.push({ item, score, distance: 0 });
   }
 
   return scored
     .sort(
       (a, b) =>
         a.score - b.score ||
+        a.distance - b.distance ||
         b.item.useCount - a.item.useCount ||
         a.item.name.localeCompare(b.item.name, "sv"),
     )
@@ -82,4 +259,86 @@ export function splitQuery(raw: string): { name: string; amountText: string } {
   }
 
   return { name: trimmed, amountText: "" };
+}
+
+/**
+ * How many leading words may become a qualifier.
+ *
+ * "färska ekologiska" is a sort. Four words in front of a vara is a sentence,
+ * and reading it as a qualifier would put it on the tile under the name. Past
+ * the cap the query resolves to nothing, which is the honest answer: it offers
+ * to create what was actually typed.
+ */
+const MAX_MODIFIER_WORDS = 3;
+
+export interface ResolvedQuery {
+  matches: CatalogItem[];
+  /** Leading words the matched vara did not account for — "mogen". */
+  modifier: string;
+  /** The trailing or leading amount, verbatim — "2 l". */
+  amountText: string;
+  /** The query with the amount removed, for the "create a new vara" row. */
+  name: string;
+}
+
+/**
+ * Read a typed query as amount + qualifier + vara.
+ *
+ * The add bar used to ask one question — "is this whole string a vara?" — so
+ * "mogen mango" matched nothing at all and the only thing on offer was creating
+ * a 343rd catalog item next to the mango that already existed. Everything the
+ * household actually types is shaped like this: a quantity, some adjectives, and
+ * a thing. The thing is at the end.
+ *
+ * So: peel the amount, then take the LONGEST tail that names a vara, and let
+ * whatever leads become the qualifier. Longest-first is what keeps "gul lök"
+ * whole — it is a vara in its own right, not *lök* qualified with "gul" — and
+ * the same test protects "kokt skinka" and "krossade tomater".
+ *
+ * This mirrors the recipe importer's parse with one deliberate inversion.
+ * `parseIngredientLine` *discards* the leftover words, because "färsk" and
+ * "riven" describe what you do at the stove. A shopping list keeps them,
+ * because they describe what you pick off the shelf. Same reading, opposite
+ * disposal of the remainder.
+ *
+ * Fuzzy matches are excluded from the tail walk on purpose. Typo tolerance is
+ * there to help you find something that exists; letting it decide where a name
+ * ends would let one mistyped letter invent a qualifier out of the word in
+ * front of it.
+ */
+export function resolveQuery(
+  catalog: CatalogItem[],
+  raw: string,
+  limit = MAX_SUGGESTIONS,
+): ResolvedQuery {
+  const { name, amountText } = splitQuery(raw);
+  const empty: ResolvedQuery = { matches: [], modifier: "", amountText, name };
+  if (!name) return empty;
+
+  const words = name.split(" ");
+  const lastSplit = Math.min(words.length - 1, MAX_MODIFIER_WORDS);
+
+  for (let i = 0; i <= lastSplit; i++) {
+    const matches = rankMatches(catalog, words.slice(i).join(" "), limit);
+    if (matches.length === 0) continue;
+    // Only the whole query may resolve on a typo. Past that, a qualifier is
+    // being invented from the word in front, and it should be a create instead.
+    if (i > 0 && !literallyMatches(words.slice(i).join(" "), matches[0])) continue;
+    return { matches, modifier: words.slice(0, i).join(" "), amountText, name };
+  }
+
+  return empty;
+}
+
+/** Did this item match without any spelling forgiveness? */
+function literallyMatches(query: string, item: CatalogItem): boolean {
+  const q = normalizeName(query);
+  const n = item.nameNorm;
+  return (
+    n === q ||
+    n.startsWith(q) ||
+    isInflectionOf(q, n) ||
+    n.split(" ").some((w) => w.startsWith(q)) ||
+    n.includes(q)
+  );
 }

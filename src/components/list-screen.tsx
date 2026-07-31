@@ -496,7 +496,17 @@ export function ListScreen({
         <AddBar
           catalog={catalog}
           onListItemIds={onListIds}
-          onPick={(itemId, amountText) => {
+          onPick={(itemId, amountText, modifier) => {
+            // A qualifier that was typed is a statement, not an inheritance, so
+            // it just applies — and it overwrites whatever was there, because
+            // "mogen mango" said which mango it means. The question below only
+            // exists for the case where nothing was said.
+            if (modifier) {
+              actions.addItem(itemId, amountText);
+              actions.setModifier(itemId, modifier);
+              return;
+            }
+
             // The one case where adding from the bar is not unambiguous: the
             // item is already on the list carrying a qualifier, and the amount
             // about to be written shares a record with it. Applying silently

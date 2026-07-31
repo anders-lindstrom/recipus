@@ -1,3 +1,113 @@
+# Search session, 2026-07-31 — the add bar reads a query now
+
+A UX pass on the core loop with Bring as the reference. Three of the findings
+turned out to be one finding.
+
+## The add bar had the weaker of the app's two matchers
+
+`rankMatches` asked one question — does this catalog name contain what was
+typed — while `matchIngredient`, on the recipe path, asked five and knew about
+Swedish compounds, aliases and preparation words. So the fast path, the one used
+one-handed in a shop, was the worse one.
+
+Measured against the seeded catalog rather than reasoned about: `tomater`
+reached *krossade tomater* and *passerade tomater* but never *tomat*. `mogen
+mango`, `färsk basilika`, `röd paprika` and `laktosfri mjölk` reached nothing at
+all — and the only thing on offer for any of them was `create_catalog_item`,
+which files a permanent second mango under Övrigt beside the one already there.
+
+Same duplication the units engine was spared. "2 l" has one implementation in
+this codebase on purpose; matching had two.
+
+## Two tiers close it
+
+**Inflection**, because every literal tier asked whether the catalog name
+contained the query and none asked the reverse. `tomater` is how anyone refers
+to the vegetable.
+
+**Fuzzy**, last and only ever last. Damerau-Levenshtein, abandoned the moment a
+row goes over budget. Transposition costs one step rather than two because a
+thumb produces `mjköl` about as often as `mjök` and they are the same slip. The
+budget grows with the query — nothing under four characters, one step at four to
+five, two above — since at three characters nearly everything is one edit from
+everything and the tier stops carrying information.
+
+Two spurs are load-bearing. Fuzzy can never outrank something that matched
+literally, and it may never decide where a name **ends**: `mangp` alone resolves
+to mango, but `stor mangp` resolves to nothing, because otherwise one slipped
+letter turns the word in front of it into a qualifier nobody typed.
+
+## "mogen mango" is amount + sort + vara
+
+`resolveQuery` peels the amount, then takes the **longest** tail that names a
+vara and lets whatever leads become the modifier. Longest-first is the whole
+trick: it keeps `gul lök` and `krossade tomater` whole, since those are varor in
+their own right rather than *lök* and *tomat* wearing an adjective.
+
+This is `parseIngredientLine` with one deliberate inversion. The recipe importer
+*discards* the leftover words, because "färsk" and "riven" describe what you do
+at the stove. A shopping list *keeps* them, because they describe what you pick
+off the shelf. Same reading, opposite disposal of the remainder — and what is
+left over is exactly what `modifier` already existed to hold.
+
+No new op kind. `addItem` already sequenced `add_item` then `set_amount`;
+`set_modifier` joins that sequence, so this ships before anything new is on every
+phone — the same condition "Markera som köpt" was held to.
+
+A typed qualifier also skips the duplicate-ask sheet, and that is not a
+loophole. The sheet is a correction for a qualifier being **silently inherited**;
+someone who typed "mogen mango" has said which mango they mean. The sheet still
+fires unchanged when nothing was said.
+
+## Two rules that were wrong on the first attempt
+
+**The inflection tier started as a length cap** — at most three more characters
+— which is fine until it meets the real catalog. *mjölk* is *mjöl* plus a k, so
+the most-bought item in the shop suggested flour as its second result. Swedish
+plural and definite endings are a closed set, k is not in it, and listing them
+costs one array. Flour is still reachable from `mjölk`, one edit away, but now
+below a genuine substring match instead of above one.
+
+**The review also proposed requiring word boundaries** for substring matches, so
+`ägg` would stop dragging in *kalkonpålägg*. That rule would have taken
+*havremjölk* and *filmjölk* out of the results for `mjölk`, because Swedish
+compounds have no word boundaries to require. The noise was cosmetic — the exact
+match still sorted first — and the price was not. Substring matching is
+untouched.
+
+## Focus fell to `<body>` after every add
+
+The suggestion row that took the tap unmounts on the same frame, so nothing held
+focus afterwards. On a phone that closes the keyboard between every single vara:
+six things is one errand, and it cost six keyboard animations and six taps back
+into the field. `onMouseDown` preventDefault on the rows stops the blur
+happening; an explicit refocus recovers it where preventing mousedown is not
+enough.
+
+## Verified
+
+554 unit tests across 25 files, 16 e2e, tsc and eslint clean. In the real UI
+against the dev database: `mogen mango` lands mango on the list carrying "mogen"
+in one tap, written as `set_modifier`, rendered italic under the name on the
+tile. `smro` → smör, `havregyrn` → havregryn, `tomater` → tomat, `bananer` →
+banan. Focus sits in the input after a real tap. The duplicate-ask sheet still
+asks when nothing was typed.
+
+## Left undone, deliberately
+
+The empty field still does nothing when focused — Bring's actual trick is a
+grid of your most-used varor the moment you tap, and the `useCount` ordering
+here is per-aisle, so a household's top ten never share a screen. That is the
+largest remaining win and the only one needing a new surface, so it was not
+smuggled in alongside a search change.
+
+Also still open: `och` should split a query the way the ingredients engine
+already does, so `salt och peppar` offers two rows rather than none. And *gröt*
+is not in the seeded catalog at all — only *havregryn* — which is a gap in the
+catalog, not in the matching.
+
+---
+
 # Away session, 2026-07-30 (evening) — read this first
 
 Anders answered every open decision and then went out for a few hours. Nothing is
