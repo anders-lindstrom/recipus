@@ -37,6 +37,41 @@ export function slugify(s: string): string {
  * character. Used as the fallback when the OpenMoji sprite has not been built,
  * so the app is never iconless.
  */
+/**
+ * The inverse, for the icon picker: "🍞" → "1F35E".
+ *
+ * Icons are stored as codepoint refs because that is how the OpenMoji sprite
+ * names its files, but nobody types a codepoint — so the picker takes whatever
+ * the emoji keyboard produced and converts it here, and the storage format never
+ * reaches the person choosing.
+ *
+ * Every codepoint is kept, joined with hyphens, because a ZWJ sequence like 👨‍🍳
+ * is four of them; taking only the first would quietly store a different emoji
+ * than the one that was picked.
+ *
+ * Returns null for anything that is not an emoji. The input is a free-text field
+ * — "bröd" and "" both arrive here — and storing either would render as a missing
+ * sprite rather than as a refusal, which is a worse way to find out.
+ */
+export function emojiToCodepoint(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const points = [...trimmed];
+  // A single ASCII letter or a word is not an icon. Emoji live well above the
+  // Latin range, and the variation selector / ZWJ that glue sequences together
+  // are the only sub-range members worth accepting.
+  const isEmojiLike = points.every((c) => {
+    const cp = c.codePointAt(0)!;
+    return cp > 0x2000;
+  });
+  if (!isEmojiLike) return null;
+
+  return points
+    .map((c) => c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0"))
+    .join("-");
+}
+
 export function codepointToEmoji(ref: string): string {
   try {
     return ref

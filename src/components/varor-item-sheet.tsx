@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Category, Id, Product } from "@/lib/domain";
-import { cn } from "@/lib/utils";
+import { cn, emojiToCodepoint } from "@/lib/utils";
 import { ItemIcon } from "./icon";
 import { Sheet, SheetActions, SheetButton } from "./sheet";
 import { UiIcon } from "./ui-icon";
@@ -52,6 +52,8 @@ export interface VarorItemSheetProps {
   onRecategorize: (categoryId: Id) => void;
   /** Staples: excluded by default when a recipe is added. Nothing else set this. */
   onSetHasAtHome: (hasAtHome: boolean) => void;
+  /** A codepoint ref ("1F35E"), already converted from whatever was typed. */
+  onSetIcon: (iconRef: string) => void;
   onSplit: () => void;
   onMerge: () => void;
   onDelete: () => void;
@@ -72,6 +74,7 @@ export function VarorItemSheet({
   onRename,
   onRecategorize,
   onSetHasAtHome,
+  onSetIcon,
   onSplit,
   onMerge,
   onDelete,
@@ -82,6 +85,8 @@ export function VarorItemSheet({
 }: VarorItemSheetProps) {
   const [renaming, setRenaming] = useState(false);
   const [refiling, setRefiling] = useState(false);
+  const [pickingIcon, setPickingIcon] = useState(false);
+  const [iconDraft, setIconDraft] = useState("");
   const [draft, setDraft] = useState("");
 
   const blockers = deletionBlockers(vara);
@@ -139,6 +144,83 @@ export function VarorItemSheet({
               type="button"
               disabled={!nameOk}
               onClick={() => onRename(trimmed)}
+              className="flex-1 rounded-control bg-brand px-3 py-3 text-body font-semibold text-on-brand transition-transform duration-100 active:scale-[0.98] disabled:opacity-40"
+            >
+              Spara
+            </button>
+          </div>
+        </div>
+      </Sheet>
+    );
+  }
+
+  if (pickingIcon) {
+    const picked = emojiToCodepoint(iconDraft);
+    const category = categories.find((c) => c.id === vara.item.categoryId);
+    return (
+      <Sheet title={`Ikon för ${vara.item.name}`} onClose={onClose}>
+        <div className="px-4 pb-4">
+          <label
+            htmlFor="vara-icon"
+            className="mb-1.5 block text-overline text-ink-faint uppercase"
+          >
+            Emoji
+          </label>
+          <div className="flex items-center gap-3">
+            {/* The preview is the whole validation surface: a codepoint tells
+                nobody anything, and this is what will actually sit on the tile. */}
+            <span className="flex h-12 w-12 flex-none items-center justify-center rounded-control border border-line">
+              <ItemIcon
+                iconRef={picked ?? vara.item.iconRef}
+                className="text-2xl"
+              />
+            </span>
+            <input
+              id="vara-icon"
+              autoFocus
+              value={iconDraft}
+              onChange={(e) => setIconDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && picked) onSetIcon(picked);
+              }}
+              placeholder="🍞"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              className="min-w-0 flex-1 rounded-control border border-line bg-surface px-3.5 py-3 text-body text-ink outline-none"
+            />
+          </div>
+          <p className="mt-2 min-h-[1.25rem] text-caption text-ink-soft">
+            {iconDraft.trim() === ""
+              ? "Öppna emoji-tangentbordet och välj en."
+              : picked
+                ? "Ser bra ut."
+                : "Det där är ingen emoji."}
+          </p>
+
+          {category && (
+            <button
+              type="button"
+              onClick={() => onSetIcon(category.icon)}
+              className="mt-1 flex w-full items-center gap-2 rounded-control bg-surface px-3 py-3 text-body font-semibold text-ink"
+            >
+              <ItemIcon iconRef={category.icon} className="text-xl" />
+              Använd {category.name.toLowerCase()}s ikon
+            </button>
+          )}
+
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setPickingIcon(false)}
+              className="flex-1 rounded-control bg-surface px-3 py-3 text-body font-semibold text-ink"
+            >
+              Avbryt
+            </button>
+            <button
+              type="button"
+              disabled={!picked}
+              onClick={() => picked && onSetIcon(picked)}
               className="flex-1 rounded-control bg-brand px-3 py-3 text-body font-semibold text-on-brand transition-transform duration-100 active:scale-[0.98] disabled:opacity-40"
             >
               Spara
@@ -316,6 +398,16 @@ export function VarorItemSheet({
       <SheetActions>
         <SheetButton onClick={startRename} icon={<UiIcon name="edit" size={16} />}>
           Byt namn
+        </SheetButton>
+
+        <SheetButton
+          onClick={() => {
+            setIconDraft("");
+            setPickingIcon(true);
+          }}
+          icon={<ItemIcon iconRef={vara.item.iconRef} className="text-base" />}
+        >
+          Byt ikon
         </SheetButton>
 
         <SheetButton

@@ -46,6 +46,24 @@ async function dropTestList(id: string) {
   await sql`delete from purchases where list_id = ${id}`;
   await sql`delete from lists where id = ${id}`; // entries cascade
   await sql`update catalog_items set use_count = 0, last_used_at = null`;
+  /**
+   * The op log too, and this is not tidiness.
+   *
+   * Nothing deleted these, so they accumulated across every run this suite has
+   * ever had — a thousand of them within a few days. Household-wide ops
+   * (`list_id IS NULL`: catalog edits, the registry, and every `move_item`) are
+   * delivered to EVERY list's catch-up from seq 0, so each new test's client
+   * replayed the entire backlog before its own snapshot landed. That is slow,
+   * it gets slower forever, and it made hydrate lose races it should win.
+   *
+   * It also hid a bug: those replayed `move_item` ops create entries on lists the
+   * client is not looking at, and a locator matching an item by NAME happily
+   * matched one of those instead of the entry under test.
+   *
+   * Scoped to the e2e actor rather than to this list, because the ops worth
+   * removing are exactly the ones no list owns.
+   */
+  await sql`delete from ops where actor = 'e2e'`;
 }
 
 /**
@@ -170,15 +188,28 @@ export const test = base.extend<
  *
  * Best-effort on purpose. A test that deliberately ends offline still has a full
  * outbox, and making that a failure would break the tests this app most needs.
+ *
+ * Two things here are load-bearing and were not:
+ *
+ * A read that THROWS is not evidence the outbox is empty. IndexedDB rejects
+ * transiently while a navigation is in flight, and treating that as "nothing
+ * left to drain" made this give up instantly at exactly the moment ops were most
+ * likely to still be queued. It keeps polling now and only the deadline ends it.
+ *
+ * And the budget has to cover a real POST round trip. At 2s a slow one was
+ * routinely still open when the list was dropped, which is what produced the
+ * foreign-key errors this function exists to prevent — and worse, the failed
+ * transactions delayed the NEXT test's ops enough to lose a race of its own.
  */
-async function settle(page: Page, timeoutMs = 2000): Promise<void> {
+async function settle(page: Page, timeoutMs = 8000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       if ((await outboxSize(page)) === 0) return;
     } catch {
-      // Page already closing, or IndexedDB gone. Nothing left to drain.
-      return;
+      // Transient — a navigation, or IndexedDB briefly unavailable. Not proof of
+      // anything, so keep waiting rather than declaring victory.
+      if (page.isClosed()) return;
     }
     await page.waitForTimeout(50);
   }

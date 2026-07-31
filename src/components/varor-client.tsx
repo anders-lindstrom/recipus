@@ -214,11 +214,45 @@ export function VarorClient({
      * vara without either edit outranking the other. Bundling unrelated fields
      * into one patch would throw that away for no gain.
      */
-    recategorizeVara: (varaId: Id, categoryId: Id) =>
+    recategorizeVara: (varaId: Id, categoryId: Id) => {
+      const item = state.catalog[varaId];
+      const from = categories.find((c) => c.id === item?.categoryId);
+      const to = categories.find((c) => c.id === categoryId);
+
+      /**
+       * The icon follows the aisle, unless somebody chose one.
+       *
+       * Every category carries an icon, and a vara created from the add bar has
+       * never had one picked for it — it simply inherited Övrigt's box. Re-filing
+       * such a vara into Bröd and leaving it as a box would make the default per
+       * category a fiction: correct at creation, wrong forever after.
+       *
+       * "Was never chosen" is detected as "still equal to the OLD category's
+       * icon", which is exactly what inheriting means. An icon the household
+       * actually picked differs from it and is left alone — re-filing must not
+       * quietly undo a deliberate choice.
+       *
+       * Both facts in one patch, and that is not a contradiction of the
+       * one-field rule below: this single act genuinely asserts both, so both
+       * clocks should move. What the rule forbids is stamping a clock for a
+       * field the act said nothing about.
+       */
+      const inherited = Boolean(from && item && item.iconRef === from.icon);
       dispatch({
         kind: "update_catalog_item",
         itemId: varaId,
-        patch: { categoryId },
+        patch:
+          inherited && to
+            ? { categoryId, iconRef: to.icon }
+            : { categoryId },
+      });
+    },
+
+    setVaraIcon: (varaId: Id, iconRef: string) =>
+      dispatch({
+        kind: "update_catalog_item",
+        itemId: varaId,
+        patch: { iconRef },
       }),
 
     setHasAtHome: (varaId: Id, hasAtHome: boolean) =>

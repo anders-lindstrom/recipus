@@ -371,9 +371,21 @@ test("an item you invented can be moved out of Övrigt, and it stays moved", asy
   // reached the server and come back in the snapshot, not merely repainted.
   await page.reload();
   await page.getByRole("button", { name: new RegExp(varaName) }).click();
+  const moved = page.getByRole("dialog");
   await expect(
-    page.getByRole("dialog").getByRole("button", { name: /Byt kategori/ }),
+    moved.getByRole("button", { name: /Byt kategori/ }),
   ).not.toContainText("övrigt");
+
+  // The icon follows the aisle. An add-bar item never had one picked for it — it
+  // inherited Övrigt's box — so leaving it as a box after re-filing would make
+  // "a default icon per category" true only at creation and wrong forever after.
+  // The offer to reuse the category's icon names the NEW category, which is only
+  // possible if the item actually moved.
+  await expect(moved.getByRole("button", { name: /Byt ikon/ })).toBeVisible();
+  await moved.getByRole("button", { name: /Byt ikon/ }).click();
+  await expect(
+    page.getByRole("dialog").getByRole("button", { name: /Använd bröds ikon/ }),
+  ).toBeVisible();
 
   // slugify folds diacritics, so "Surdegsbröd" becomes "surdegsbrod-…" —
   // reproducing that by hand here would leave the row behind on every run.

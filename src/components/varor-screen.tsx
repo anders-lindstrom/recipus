@@ -59,6 +59,7 @@ export interface VarorScreenActions {
   recategorizeVara: (varaId: Id, categoryId: Id) => void;
   /** Staples, excluded by default when a recipe is added to a list. */
   setHasAtHome: (varaId: Id, hasAtHome: boolean) => void;
+  setVaraIcon: (varaId: Id, iconRef: string) => void;
   /** Creates `newName`, then moves exactly `productIds` onto it. The source stays. */
   splitVara: (varaId: Id, newName: string, productIds: Id[]) => void;
   /** Moves the products across, then tombstones `fromId` and keeps its word as an alias. */
@@ -424,6 +425,10 @@ export function VarorScreen({
           onSetHasAtHome={(hasAtHome) =>
             actions.setHasAtHome(openVara.item.id, hasAtHome)
           }
+          onSetIcon={(iconRef) => {
+            actions.setVaraIcon(openVara.item.id, iconRef);
+            setSheet(null);
+          }}
           onSplit={() => setSheet({ kind: "split", id: openVara.item.id })}
           onMerge={() => setSheet({ kind: "merge", id: openVara.item.id })}
           onDelete={() => {
