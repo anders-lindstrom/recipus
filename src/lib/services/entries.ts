@@ -206,16 +206,31 @@ export function activeEntries(entries: ListEntry[]): ListEntry[] {
  * pretty spelling is exactly what is missing; a box icon and an id-shaped word
  * read as "something odd is here, deal with it", which is the truth.
  */
-export function tileVaror(
-  catalog: CatalogItem[],
-  live: ListEntry[],
-): Map<Id, CatalogItem> {
+export interface TileVaror {
+  byId: Map<Id, CatalogItem>;
+  /**
+   * Which of them are stand-ins.
+   *
+   * Named rather than inferred, because the two things a caller must NOT do to a
+   * stand-in are both invisible from the item itself. Buying one records a
+   * purchase against a tombstoned vara — accepted, not rejected, since deletes
+   * here are soft — and the merge's server-side re-pointing has already run and
+   * will never collect it, so the credit stays on a word nobody uses and the
+   * survivor under-records for ever. And "Om <vara>" deep-links to a registry
+   * screen that cannot find it, which opens nothing and explains nothing.
+   */
+  standIns: Set<Id>;
+}
+
+export function tileVaror(catalog: CatalogItem[], live: ListEntry[]): TileVaror {
   const byId = new Map(catalog.map((c) => [c.id, c]));
+  const standIns = new Set<Id>();
   for (const entry of live) {
     if (byId.has(entry.catalogItemId)) continue;
     byId.set(entry.catalogItemId, standIn(entry.catalogItemId));
+    standIns.add(entry.catalogItemId);
   }
-  return byId;
+  return { byId, standIns };
 }
 
 function standIn(catalogItemId: Id): CatalogItem {

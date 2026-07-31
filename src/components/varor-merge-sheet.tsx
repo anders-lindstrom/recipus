@@ -99,15 +99,23 @@ export function VarorMergeSheet({
           // It used to say the item "försvinner därifrån", and it was telling the
           // truth about the intent and not about the code: the tile stopped being
           // drawn, but the row stayed on the list where nothing could reach it.
-          // The shopping now genuinely moves across — see `mergeVaror` — so this
-          // says that instead. Neutral about WHICH vara, because the target is
-          // chosen from the list below this line.
+          // The shopping now genuinely moves across — see `mergeVaraOps`.
+          //
+          // Then it over-promised in the other direction, and that was worse:
+          // it said the quantity follows, full stop, while the code carries it
+          // only when the survivor has no entry of its own — which is exactly
+          // the case where both words are already on the list, arguably the
+          // commonest reason to merge two of them. Being told the opposite of
+          // what happens, immediately before an irreversible action, is the one
+          // thing this whole panel exists to prevent. Both branches are named
+          // now. Neutral about WHICH vara, because the target is chosen below.
           <p className="mt-1.5 flex items-start gap-1.5 text-body text-ink-soft">
             <UiIcon name="warning" size={14} className="mt-1 flex-none" />
             <span>
-              {vara.item.name} står på {lists.join(" och ")} just nu. Mängden
-              följer med till varan du väljer — men vilket recept den kom från
-              gör det inte.
+              {vara.item.name} står på {lists.join(" och ")} just nu och flyttas
+              över till varan du väljer. Har den varan redan en mängd där
+              behåller den sin egen — annars följer mängden med, men inte vilket
+              recept den kom från.
             </span>
           </p>
         )}

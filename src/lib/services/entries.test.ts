@@ -405,9 +405,10 @@ describe("tileVaror", () => {
   }
 
   it("passes real varor through untouched", () => {
-    const map = tileVaror([vara(CREAM, "grädde")], [makeEntry()]);
-    expect(map.get(CREAM)!.name).toBe("grädde");
-    expect(map.size).toBe(1);
+    const { byId, standIns } = tileVaror([vara(CREAM, "grädde")], [makeEntry()]);
+    expect(byId.get(CREAM)!.name).toBe("grädde");
+    expect(byId.size).toBe(1);
+    expect(standIns.size).toBe(0);
   });
 
   it("stands in for an entry whose vara is gone, so the tile can be tapped off", () => {
@@ -416,9 +417,15 @@ describe("tileVaror", () => {
       catalogItemId: "vitloksklyfta",
     });
 
-    const map = tileVaror([vara(CREAM, "grädde")], [makeEntry(), stranded]);
+    const { byId, standIns } = tileVaror(
+      [vara(CREAM, "grädde")],
+      [makeEntry(), stranded],
+    );
 
-    const standIn = map.get("vitloksklyfta");
+    // Named, so the caller can refuse to record a purchase against a tombstoned
+    // vara and can hide the dead-end link into the registry.
+    expect([...standIns]).toEqual(["vitloksklyfta"]);
+    const standIn = byId.get("vitloksklyfta");
     expect(standIn).toBeDefined();
     // Named from the entry's own id, because the row that knew the pretty
     // spelling is precisely what is missing. Övrigt and a box say "something odd
@@ -436,7 +443,7 @@ describe("tileVaror", () => {
       id: entryId(LIST, "creme-fraiche"),
       catalogItemId: "creme-fraiche",
     });
-    expect(tileVaror([], [stranded]).get("creme-fraiche")!.name).toBe(
+    expect(tileVaror([], [stranded]).byId.get("creme-fraiche")!.name).toBe(
       "creme fraiche",
     );
   });
@@ -450,8 +457,9 @@ describe("tileVaror", () => {
       catalogItemId: "gone",
       removedAt: "2026-03-12T11:00:00.000Z",
     });
-    const map = tileVaror([], activeEntries([removed]));
-    expect(map.has("gone")).toBe(false);
+    const { byId, standIns } = tileVaror([], activeEntries([removed]));
+    expect(byId.has("gone")).toBe(false);
+    expect(standIns.has("gone")).toBe(false);
   });
 });
 

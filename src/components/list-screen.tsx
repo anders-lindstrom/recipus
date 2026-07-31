@@ -63,30 +63,6 @@ import { UiIcon } from "./ui-icon";
  * a heading you have to read.
  */
 
-/**
- * "Ångra" does not expire, and that is the whole point.
- *
- * It used to sit in the "Att handla" heading and vanish after eight seconds, and
- * an audit of a real shopping trip found what that costs. Ticking an item from a
- * later aisle — which is what mid-shop looks like — rendered the only undo 702px
- * above the viewport, most of a screen out of sight, and it was gone before
- * anyone scrolled up to look. So the shopper does the obvious thing instead:
- * finds the item in the catalog and taps it back on. That restores the item but
- * NOT the truth — `add_item` only retracts a purchase when handed the
- * `undoesClientOpId` that `undoLastBuy` alone passes — so the row stands and the
- * cadence engine learns from a purchase that never happened.
- *
- * That is the one thing `use-mode.ts` promises cannot happen: "you under-record
- * purchases, you never invent one". In the single most likely accident in a
- * moving shopper's hand, the app invented one.
- *
- * A timer is the wrong instrument for an undo whose entire job is to catch a
- * mistake you have not noticed yet — it expires exactly when it is needed. So
- * there is none. The offer stands until it is used, replaced by the next removal,
- * or dismissed, and it says which item it will undo so a stale one is ignorable
- * rather than confusing.
- */
-
 export interface ListScreenActions {
   /**
    * `amountText` is the raw trailing quantity the add bar split off ("2 l").
@@ -179,6 +155,29 @@ export function ListScreen({
 }: ListScreenProps) {
   const router = useRouter();
   const [openEntry, setOpenEntry] = useState<Id | null>(null);
+  /**
+   * "Ångra" does not expire, and that is the whole point.
+   *
+   * It used to sit in the "Att handla" heading and vanish after eight seconds, and
+   * an audit of a real shopping trip found what that costs. Ticking an item from a
+   * later aisle — which is what mid-shop looks like — rendered the only undo 702px
+   * above the viewport, most of a screen out of sight, and it was gone before
+   * anyone scrolled up to look. So the shopper does the obvious thing instead:
+   * finds the item in the catalog and taps it back on. That restores the item but
+   * NOT the truth — `add_item` only retracts a purchase when handed the
+   * `undoesClientOpId` that `undoLastBuy` alone passes — so the row stands and the
+   * cadence engine learns from a purchase that never happened.
+   *
+   * That is the one thing `use-mode.ts` promises cannot happen: "you under-record
+   * purchases, you never invent one". In the single most likely accident in a
+   * moving shopper's hand, the app invented one.
+   *
+   * A timer is the wrong instrument for an undo whose entire job is to catch a
+   * mistake you have not noticed yet — it expires exactly when it is needed. So
+   * there is none. The offer stands until it is used, replaced by the next removal,
+   * or dismissed, and it says which item it will undo so a stale one is ignorable
+   * rather than confusing.
+   */
   const [undoable, setUndoable] = useState<{
     id: Id;
     name: string;
@@ -232,7 +231,10 @@ export function ListScreen({
   const live = useMemo(() => activeEntries(entries), [entries]);
   // Stand-ins included, so an entry whose vara was merged or deleted away is a
   // tile you can tap off rather than a row nothing can draw. See `tileVaror`.
-  const byId = useMemo(() => tileVaror(catalog, live), [catalog, live]);
+  const { byId, standIns } = useMemo(
+    () => tileVaror(catalog, live),
+    [catalog, live],
+  );
   const onListIds = useMemo(
     () => new Set(live.map((e) => e.catalogItemId)),
     [live],
@@ -267,7 +269,14 @@ export function ListScreen({
     // be recorded; in a shop you are recording an event. That asymmetry is the
     // whole reason the mode exists, and it is what makes the purchase history
     // trustworthy enough to build statistics and fridge inference on.
-    remove(item.id, item.name, mode === "buy");
+    //
+    // A stand-in is the exception, and it is not a mode question. Its vara is
+    // tombstoned, so a purchase would be credited to a word nobody uses — and
+    // accepted rather than rejected, because deletes here are soft. Worse, the
+    // merge's server-side re-pointing has already run, so nothing will ever move
+    // that credit to the survivor. Tapping a stand-in is repair work, and repair
+    // is not shopping.
+    remove(item.id, item.name, mode === "buy" && !standIns.has(item.id));
   }
 
   /**
@@ -948,10 +957,19 @@ export function ListScreen({
             setRemovingRecipe({ additionId: id, title, candidates: orphans });
           }}
           // A navigation, so the sheet does not need closing — the page goes.
-          onOpenVara={() =>
-            router.push(
-              `/varor?list=${encodeURIComponent(list.id)}&vara=${encodeURIComponent(openItem.id)}`,
-            )
+          //
+          // Absent for a stand-in: `/varor` resolves `?vara=` by looking the id
+          // up among the varor it holds, and a tombstoned one is not there — so
+          // the link landed on a screen of everything with nothing open and
+          // nothing said. A button whose only outcome is a dead end is worse
+          // than no button, which is the same rule `onMove` already follows.
+          onOpenVara={
+            standIns.has(openItem.id)
+              ? undefined
+              : () =>
+                  router.push(
+                    `/varor?list=${encodeURIComponent(list.id)}&vara=${encodeURIComponent(openItem.id)}`,
+                  )
           }
           onMove={
             // Offered only when there is somewhere to move TO. With one list the

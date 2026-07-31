@@ -355,7 +355,7 @@ describe("mergeVaraOps", () => {
       },
     });
 
-    const ops = mergeVaraOps(state, "kycklingbrostfile", "kycklingbrost", []);
+    const ops = mergeVaraOps(state, LIST, "kycklingbrostfile", "kycklingbrost", []);
 
     expect(KIND(ops)).toEqual([
       "add_item",
@@ -402,7 +402,7 @@ describe("mergeVaraOps", () => {
       },
     });
 
-    const ops = mergeVaraOps(state, "vitloksklyfta", "vitlok", []);
+    const ops = mergeVaraOps(state, LIST, "vitloksklyfta", "vitlok", []);
 
     expect(KIND(ops)).toEqual(["remove_item", "merge_catalog_items"]);
     expect(ops[0]).toMatchObject({ catalogItemId: "vitloksklyfta" });
@@ -418,7 +418,7 @@ describe("mergeVaraOps", () => {
       },
     });
 
-    const ops = mergeVaraOps(state, "kottfars", "notfars", []);
+    const ops = mergeVaraOps(state, LIST, "kottfars", "notfars", []);
 
     expect(KIND(ops)).toEqual([
       "add_item",
@@ -444,7 +444,7 @@ describe("mergeVaraOps", () => {
       },
     });
 
-    const ops = mergeVaraOps(state, "gradde", "matlagningsgradde", []);
+    const ops = mergeVaraOps(state, LIST, "gradde", "matlagningsgradde", []);
     expect(KIND(ops)).toEqual(["add_item", "remove_item", "merge_catalog_items"]);
   });
 
@@ -455,17 +455,17 @@ describe("mergeVaraOps", () => {
       products: { p1: product("p1", "Något", "a") },
     });
 
-    const ops = mergeVaraOps(state, "a", "b", ["p1"]);
+    const ops = mergeVaraOps(state, LIST, "a", "b", ["p1"]);
     expect(KIND(ops)).toEqual(["update_product", "merge_catalog_items"]);
     expect(ops[0]).toMatchObject({ productId: "p1", patch: { catalogItemId: "b" } });
   });
 
   it("says nothing at all about a vara it has never heard of, or a merge into itself", () => {
     const state = stateWith({ catalog: { a: item("a") } });
-    expect(mergeVaraOps(state, "gone", "a", [])).toEqual([]);
+    expect(mergeVaraOps(state, LIST, "gone", "a", [])).toEqual([]);
     // Merging a word into itself would tombstone the survivor and alias the word
     // to a row that no longer exists — the one input that must produce nothing.
-    expect(mergeVaraOps(state, "a", "a", [])).toEqual([]);
+    expect(mergeVaraOps(state, LIST, "a", "a", [])).toEqual([]);
   });
 });
 
@@ -501,7 +501,7 @@ describe("merging a vara that a recipe put on the list", () => {
     const live = Object.values(state.entries).filter(
       (e) => e.listId === LIST && e.removedAt === null,
     );
-    return [...tileVaror(Object.values(state.catalog), live).values()]
+    return [...tileVaror(Object.values(state.catalog), live).byId.values()]
       .filter((c) => live.some((e) => e.catalogItemId === c.id))
       .map((c) => c.name)
       .sort();
@@ -529,7 +529,7 @@ describe("merging a vara that a recipe put on the list", () => {
 
     // The merge, dispatched exactly as the screen dispatches it: one op per
     // draft, each with a strictly later clock (see `nextOpTimestamp`).
-    const drafts = mergeVaraOps(state, "kycklingbrostfile", "kycklingbrost", []);
+    const drafts = mergeVaraOps(state, LIST, "kycklingbrostfile", "kycklingbrost", []);
     state = applyOps(
       state,
       drafts.map(
@@ -549,5 +549,62 @@ describe("merging a vara that a recipe put on the list", () => {
     // the survivor. One tile, not two.
     state = applyOps(state, RECIPE_OPS("second", 20));
     expect(tiles(state)).toEqual(["kycklingbröst"]);
+  });
+});
+
+/**
+ * A merge re-points the shopping on the list you are looking at, and only that
+ * one — because that is the only list the store holds.
+ *
+ * The snapshot selects `list_entries` by `list_id`, the catch-up query filters
+ * ops the same way, and `applySnapshot` rebuilds from `emptyState()`. The one
+ * exception is `move_item`, which is delivered household-wide on purpose so the
+ * SOURCE device hears about it — and the reducer writes the destination entry
+ * into every listening store. That leaves a live entry for another list sitting
+ * in state with nothing to ever update it.
+ */
+describe("mergeVaraOps and other lists", () => {
+  const OTHER = "ica";
+
+  function entryOn(listId: string, catalogItemId: string): ListEntry {
+    return {
+      id: entryId(listId, catalogItemId),
+      listId,
+      catalogItemId,
+      createdAt: at(0),
+      createdBy: "anders",
+      removedAt: null,
+      priority: "normal",
+      updatedAt: at(0),
+      updatedBy: "anders",
+    };
+  }
+
+  it("says nothing about an entry belonging to a list it is not bound to", () => {
+    // Before the filter this emitted `add_item` and `set_amount` against the
+    // stale Ica row — so an item a partner had already bought on Ica reappeared
+    // on their list, with a quantity, for no reason they could see.
+    const state = stateWith({
+      catalog: { vitloksklyfta: item("vitloksklyfta"), vitlok: item("vitlok") },
+      entries: {
+        [entryId(LIST, "vitloksklyfta")]: entryOn(LIST, "vitloksklyfta"),
+        [entryId(OTHER, "vitloksklyfta")]: entryOn(OTHER, "vitloksklyfta"),
+      },
+    });
+
+    const ops = mergeVaraOps(state, LIST, "vitloksklyfta", "vitlok", []);
+
+    // Every list-scoped op names the bound list and no other.
+    const touched = new Set(
+      ops
+        .filter((o): o is Extract<typeof o, { listId: string }> => "listId" in o)
+        .map((o) => o.listId),
+    );
+    expect([...touched]).toEqual([LIST]);
+    expect(ops.map((o) => o.kind)).toEqual([
+      "add_item",
+      "remove_item",
+      "merge_catalog_items",
+    ]);
   });
 });

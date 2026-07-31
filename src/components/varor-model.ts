@@ -252,6 +252,7 @@ export type OpDraft = DistributiveOmit<Op, "clientOpId" | "actor" | "at">;
  */
 export function mergeVaraOps(
   state: SyncState,
+  listId: Id,
   fromId: Id,
   toId: Id,
   productIds: Id[],
@@ -268,6 +269,27 @@ export function mergeVaraOps(
   const contributions = Object.values(state.contributions);
   for (const entry of Object.values(state.entries)) {
     if (entry.catalogItemId !== fromId || entry.removedAt !== null) continue;
+    // THIS list only, and the restriction is deliberate rather than a shortcut.
+    //
+    // The store holds one list: the snapshot selects `list_entries` by
+    // `list_id`, the catch-up query filters ops the same way, and
+    // `applySnapshot` rebuilds from `emptyState()`. So iterating every entry
+    // reads as "every list" and is really "the open one" — with one exception,
+    // and the exception is why this filter exists rather than being implied.
+    //
+    // `move_item` is delivered household-wide on purpose (`opListId` returns
+    // null so the SOURCE device hears about it), and the reducer writes the
+    // destination entry into every listening store. A client on Hemköp therefore
+    // holds a live entry belonging to Ica which nothing on Ica's stream will ever
+    // update. Merging without this filter emitted `add_item` and `set_amount`
+    // against that stale row: an item a partner had already bought reappeared on
+    // their list, with a quantity, for no reason visible to them.
+    //
+    // What this cannot do is re-point the OTHER list's shopping — that entry is
+    // not here to move. It keeps the orphan the reducer always allowed, which
+    // `tileVaror` now draws as a stand-in, so it is visible and one tap clears
+    // it. Stated in DECISIONS.md as a known edge rather than implied by silence.
+    if (entry.listId !== listId) continue;
 
     const standing = state.entries[entryId(entry.listId, toId)];
     // The survivor already has a tile on this list, and that tile wins.

@@ -568,7 +568,7 @@ test("merging a vara that is on the list moves the shopping to the survivor", as
   // screen is. It used to promise the item would disappear off the list, which
   // was true of the tile and not of the row underneath it.
   await sheet.getByRole("button", { name: "Slå samman med annan vara" }).click();
-  await expect(sheet.getByText(/Mängden följer med/)).toBeVisible();
+  await expect(sheet.getByText(/flyttas över till varan du väljer/)).toBeVisible();
 
   await sheet.getByLabel("Sök vara att slå samman med").fill(keptName);
   await sheet.getByRole("button", { name: new RegExp(keptName) }).click();

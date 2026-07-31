@@ -347,7 +347,7 @@ export function VarorClient({
      * cannot tie with the moves that have to precede it.
      */
     mergeVaror: (fromId, toId, productIds) => {
-      for (const op of mergeVaraOps(state, fromId, toId, productIds)) {
+      for (const op of mergeVaraOps(state, listId, fromId, toId, productIds)) {
         dispatch(op);
       }
     },
