@@ -1797,3 +1797,134 @@ column, because a dash looked like a parsed value. And the entry sheet's two
 foot buttons were equal-weight side by side, separated by a hairline, which is
 how "Ta bort" gets tapped by someone reaching for "Ändra mängd"; they are
 stacked now, with only the destructive one coloured.
+
+## Två sorter av samma vara
+
+Reported from real use, and worth quoting because the report contains its own
+diagnosis: *"I have blåbär mogna on the list. Now I want to add also blåbär. I
+get a question about if it is mogna?, I press no. What I mean is that I want both
+mogna blåbär and blåbär in the list. I end up with just blåbär — the mogna
+version disappeared. This is just bad and/or bug?"*
+
+Both. It is a bug in the sense that data the household entered was destroyed with
+no warning, and it is bad in the deeper sense that **the app had no way to
+represent what was being asked for**. A list entry's id is
+`(listId, catalogItemId)`, so one vara appears at most once per list, and a sort
+("mogna") lives on that entry's manual contribution. "Blueberries" and "ripe
+blueberries" therefore could not coexist. `DuplicateAskSheet` offered two
+answers, and the second one — "Nej, vanlig blåbär" — could only clear the
+qualifier, because clearing it was the only thing the model could do.
+
+The answer was already written down. `Contribution.modifier`'s own comment said
+it: *"when the household genuinely wants ripe mango tracked as its own thing with
+its own cadence, that is the registry's split"*. What was missing was any way to
+reach that split from where the question actually comes up. So the sheet now has
+three answers, and the middle one is the split — reached from the add bar, and
+from the entry sheet's "Gör «mogna» till en egen vara" for the same realisation
+arrived at later.
+
+### What travels, and what does not
+
+Only the **manual** ask moves to the new vara: its amount and its urgency. A
+recipe's share stays on the original and has to — the recipe asked for blåbär,
+not for the ripe ones, and moving its contribution would make its own breakdown a
+lie. Same line `move_item` already draws, for the same reason.
+
+The plan lives in `splitSortOps` (`src/components/list-model.ts`), pure and
+ordered, next to `mergeVaraOps` and for the same reason: the cases worth arguing
+about do not reproduce reliably in a browser. One of them is load-bearing and
+invisible in a list of ops — **the original's manual contribution is cleared
+BEFORE the entry is removed**. `remove_item` tombstones the entry and leaves
+contributions exactly where they are, so emitting the removal first means
+re-adding plain blåbär next month resurrects "2 kg mogna" on it: the very ghost
+this change exists to remove, reintroduced by the fix for it. There is a test
+that re-adds and asserts the entry comes back empty.
+
+### Hiding, which is the other half
+
+Splitting is now one gesture from three screens, which makes the catalog easy to
+grow — and a catalog that only grows makes every later search worse. "Mogna
+blåbär" was worth a vara in March and is clutter in July, and the app cannot know
+which.
+
+So `CatalogItem.hidden`, with its own last-write-wins clock
+(`drizzle/0006_hidden_varor.sql`, `CATALOG_FIELDS` gains a fifth entry).
+Deliberately **not** the soft delete sitting next to it: `deleted_at` means "we
+do not buy this", is refused while the vara is on a list or carries products, and
+turns a live tile into a stand-in. Hiding makes no claim about the thing at all,
+so it has no blockers and no side effects, and `/varor` still lists it with a
+"dold" chip and a switch to undo.
+
+The migration is hand-written for one reason, and it is the clock rather than the
+flag: `drizzle-kit` would default `hidden_updated_at` to `now()`, stamping every
+vara in the catalog with the deploy's timestamp — so a genuine "dölj den här"
+made on a phone that was offline yesterday would arrive OLDER than a fact nobody
+ever asserted, and lose. It is backfilled from the row clock instead, and
+`upgrade-path.test.ts` asserts exactly that.
+
+Search **demotes** hidden varor rather than dropping them, and that is what keeps
+hiding from being a one-way door. Filtering would mean typing the exact name of
+something you hid returns nothing, the add bar offers to CREATE it, and the
+household ends up with a second vara under the same word while the first one's
+purchase history is stranded. Picking a hidden row un-hides it — reaching for a
+vara by name is asking for it back.
+
+## Three smaller things from the same report
+
+**"Broccoli tillagd", when broccoli was already on the list.** The add bar's
+confirmation strip built its label as `${name} tillagd` unconditionally, so the
+most common no-op in the app — searching for something already listed and
+pressing it — reported a success that had not happened, on the same strip that
+carries undo. A confirmation you cannot distinguish from a no-op teaches people
+to stop reading it. It now says what actually changed ("mängd 2 l", "sort
+mogna", "visas igen") or "står redan på listan" with no Ångra, plus the way out
+of the dead end: hold the row for a second sort.
+
+**"Behövs till → Tillagd".** Reported as literally incomprehensible, and it was:
+a heading promising a recipe, above a row that named no recipe, on every ordinary
+item on the list. The section now appears only when there is genuinely a
+breakdown — two contributions, or a recipe — and reads "Därför står den här",
+with sources named rather than acts ("Du la till den", "Skannad i butiken").
+
+**Long-press did not exist in search results.** It opened the details sheet from
+a catalog tile and from "Vanligast", and did nothing on a search row two pixels
+below them. That is the one surface where it matters most: anything already on
+the list is filtered out of the well and the frequent grid, so typing is the ONLY
+way back to it — and "I already have broccoli, I want the frozen ones too" was
+therefore unreachable by construction. The gesture moved into `useLongPress`
+rather than being copied.
+
+## Enter finishes a sheet
+
+Every field in every sheet committed on Enter and blurred, which left the
+keyboard able to fill a sheet in and not to submit it — you reached for the mouse
+for the last step of every one. `useFocusTrap` now takes an optional primary
+action, so Enter with no field holding it does the affirmative thing: type "12",
+Tab, type "fryst", Enter, Enter.
+
+It is in the focus trap rather than in each sheet because that is the only place
+that knows where focus went after the blur — which is `<body>`, outside the
+dialog. Treating body as "inside" is what makes type-Enter-Enter work at all.
+
+One measured bug on the way, and it is the reason the contract is explicit: the
+trap listens on `window`, so it runs AFTER React has bubbled the event through
+the sheet — by which time the field has already committed and blurred. A single
+Enter therefore did both jobs, and the second Enter the user was about to press
+would have done something else entirely. Fields now `preventDefault` to claim the
+keypress and the trap skips an already-handled Enter.
+
+Given only to sheets that ask one question with one answer. A sheet that is a
+menu of equals — the entry breakdown, the vara sheet, the three-way sort question
+— gets nothing, because Enter picking one of five buttons for you is how a
+keypress ends up removing something.
+
+## A test that had been silently skipping itself
+
+`upgrade-path.test.ts` returns early when nothing is pending since
+`DEPLOYED_THROUGH`, which was every run between 0005 shipping and 0006 landing.
+When it finally ran again it failed on its own fixture: the vara insert omitted
+the four `*_updated_by` columns 0003 had made NOT NULL, the purchase omitted
+`client_op_id`, and the barcode was still written in its pre-0005 shape — a
+database state 0005 had restructured away. The fixture had never been moved when
+the constant was bumped. Fixed, and it now guards the 0006 backfill it was
+skipped past.

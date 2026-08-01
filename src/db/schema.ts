@@ -65,6 +65,18 @@ export const catalogItems = pgTable(
     isCustom: boolean("is_custom").notNull().default(false),
     // Staples a recipe should not put on your list: salt, mjöl, olja.
     hasAtHome: boolean("has_at_home").notNull().default(false),
+    /*
+     * Kept, but withheld from search, the catalog well and "Vanligast".
+     *
+     * Not a second soft delete. `deleted_at` below means "we do not buy this"
+     * and is refused while the vara is on a list or carries products; this makes
+     * no claim about the thing at all, so it is always available and always
+     * reversible. It exists because splitting "mogna blåbär" off as its own vara
+     * is the supported way to track two kinds apart, and a catalog that only
+     * grows makes every later search worse — the household has to be able to put
+     * a one-off back out of the way without destroying its history.
+     */
+    hidden: boolean("hidden").notNull().default(false),
     // Drive recency/frequency ordering of the catalog. Derived from purchases,
     // never from an op's patch — see the reducer's update_catalog_item.
     useCount: integer("use_count").notNull().default(0),
@@ -124,6 +136,10 @@ export const catalogItems = pgTable(
       .notNull()
       .defaultNow(),
     homeUpdatedBy: text("home_updated_by").notNull(),
+    hiddenUpdatedAt: timestamp("hidden_updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    hiddenUpdatedBy: text("hidden_updated_by").notNull(),
     /*
      * "Last touched by anyone", not a conflict-resolution clock.
      *

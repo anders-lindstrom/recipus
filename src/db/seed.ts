@@ -94,11 +94,15 @@ export async function upsertSeedCatalogItem(item: {
       categoryUpdatedBy: SEED_ACTOR,
       iconUpdatedBy: SEED_ACTOR,
       homeUpdatedBy: SEED_ACTOR,
+      hiddenUpdatedBy: SEED_ACTOR,
     })
     .onConflictDoUpdate({
       target: catalogItems.id,
       // Name, category and icon are ours to correct in a later seed. Usage
-      // counts and the has_at_home flag belong to the household.
+      // counts, the has_at_home flag and whether the household has put this one
+      // out of the way are theirs — and `hidden` in particular must survive a
+      // deploy, or every seeded vara anyone has tidied away reappears in search
+      // the next time the container boots.
       set: {
         name: item.name,
         nameNorm: normalizeName(item.name),

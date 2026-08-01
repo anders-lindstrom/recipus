@@ -29,6 +29,8 @@ export interface CatalogClockRow {
   iconUpdatedBy: string;
   homeUpdatedAt: Date;
   homeUpdatedBy: string;
+  hiddenUpdatedAt: Date;
+  hiddenUpdatedBy: string;
 }
 
 export function catalogFieldClocks(
@@ -42,6 +44,10 @@ export function catalogFieldClocks(
     ],
     ["icon", { at: row.iconUpdatedAt.toISOString(), by: row.iconUpdatedBy }],
     ["home", { at: row.homeUpdatedAt.toISOString(), by: row.homeUpdatedBy }],
+    [
+      "hidden",
+      { at: row.hiddenUpdatedAt.toISOString(), by: row.hiddenUpdatedBy },
+    ],
   ];
 }
 
@@ -63,6 +69,7 @@ export function catalogClockColumns(
   const category = metaOf("category");
   const icon = metaOf("icon");
   const home = metaOf("home");
+  const hidden = metaOf("hidden");
   return {
     nameUpdatedAt: new Date(name.at),
     nameUpdatedBy: name.by,
@@ -72,6 +79,8 @@ export function catalogClockColumns(
     iconUpdatedBy: icon.by,
     homeUpdatedAt: new Date(home.at),
     homeUpdatedBy: home.by,
+    hiddenUpdatedAt: new Date(hidden.at),
+    hiddenUpdatedBy: hidden.by,
   };
 }
 

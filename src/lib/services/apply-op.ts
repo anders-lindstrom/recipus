@@ -375,6 +375,7 @@ async function loadStateSlice(
       iconRef: row.iconRef,
       isCustom: row.isCustom,
       hasAtHome: row.hasAtHome,
+      hidden: row.hidden,
       useCount: row.useCount,
       lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     };
@@ -645,6 +646,7 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
       iconRef: item.iconRef,
       isCustom: item.isCustom,
       hasAtHome: item.hasAtHome,
+      hidden: item.hidden,
       useCount: item.useCount,
       lastUsedAt: item.lastUsedAt ? new Date(item.lastUsedAt) : null,
       deletedAt: null,
@@ -661,6 +663,7 @@ async function writeCatalogItem(tx: Tx, id: Id, next: SyncState): Promise<void> 
         iconRef: item.iconRef,
         isCustom: item.isCustom,
         hasAtHome: item.hasAtHome,
+        hidden: item.hidden,
         // Cleared, so a `create_catalog_item` newer than the retirement actually
         // brings the vara back rather than writing its fields into a row that
         // stays invisible. Soft deletes are only reversible if something reverses

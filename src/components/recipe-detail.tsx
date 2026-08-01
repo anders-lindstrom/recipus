@@ -312,6 +312,7 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
             iconRef: "1F4E6",
             isCustom: true,
             hasAtHome: false,
+            hidden: false,
             useCount: 0,
             lastUsedAt: null,
           },

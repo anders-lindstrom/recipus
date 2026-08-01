@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
 import type { Priority } from "@/lib/domain";
+import { useLongPress } from "@/lib/client/use-long-press";
 import { cn } from "@/lib/utils";
 import { ItemIcon } from "./icon";
 import { UiIcon } from "./ui-icon";
@@ -49,11 +49,6 @@ export interface ItemTileProps {
   onLongPress?: () => void;
 }
 
-// Long-press is the escape hatch for everything rare: amounts, notes, moving an
-// item, and removing without recording a purchase. 500ms is long enough not to
-// fire while scrolling a grid, short enough not to feel broken.
-const LONG_PRESS_MS = 500;
-
 export function ItemTile({
   name,
   iconRef,
@@ -69,37 +64,10 @@ export function ItemTile({
   onTap,
   onLongPress,
 }: ItemTileProps) {
-  // Refs, not render-locals: tapping a tile re-renders it, and a plain `let`
-  // would put the pointerup handler in a different closure from the pointerdown
-  // that started the timer — leaving a stray timer that fires a phantom
-  // long-press after the user has already moved on.
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressed = useRef(false);
-  // Drives the press-in affordance. Without it, holding a tile looks identical
-  // to a tap that hasn't registered, so people let go at 400ms and conclude the
-  // gesture doesn't exist — which is how a long-press-only feature stays
-  // undiscovered forever.
-  const [holding, setHolding] = useState(false);
-
-  const cancel = useCallback(() => {
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = null;
-    setHolding(false);
-  }, []);
-
-  const start = useCallback(() => {
-    if (!onLongPress) return;
-    longPressed.current = false;
-    setHolding(true);
-    timer.current = setTimeout(() => {
-      longPressed.current = true;
-      setHolding(false);
-      // Haptic confirmation matters here: without it a long-press feels like a
-      // tap that didn't register. Absent on iOS Safari — hence the optional call.
-      navigator.vibrate?.(12);
-      onLongPress();
-    }, LONG_PRESS_MS);
-  }, [onLongPress]);
+  // The gesture lives in `useLongPress` now — the add bar's search rows need the
+  // identical 500ms hold, and a second copy of a timer this fiddly is a second
+  // copy of every bug it has already had.
+  const { handlers, holding } = useLongPress(onTap, onLongPress);
 
   return (
     <button
@@ -125,60 +93,18 @@ export function ItemTile({
         pending && "opacity-55",
         animateIn && "animate-tile-in",
       )}
-      onClick={() => {
-        // The long-press already acted; the click that follows must not also
-        // toggle the item.
-        if (longPressed.current) {
-          longPressed.current = false;
-          return;
-        }
-        onTap();
-      }}
-      onPointerDown={start}
-      onPointerUp={cancel}
-      onPointerCancel={cancel}
-      onPointerLeave={cancel}
       /*
-       * The second tier had NO keyboard route at all, and that is a Level A
-       * failure rather than a rough edge.
+       * Tap, hold, right-click and the two keyboard conventions, all from
+       * `useLongPress`.
        *
-       * Amount, sort, priority, moving a vara and — the one the README calls
-       * load-bearing — "ta bort, köpte inte" all live behind a 500ms hold bound
-       * to pointer events only. Enter and Space activate the button, which
-       * *removes the item and records a purchase*, so the keyboard could reach
-       * the destructive half of this tile and not the corrective half. Audited
-       * with Enter, Space, ContextMenu, Shift+F10 and Alt+Enter on a focused
-       * tile: zero dialogs opened. WCAG 2.1.1 Keyboard, Level A.
-       *
-       * Both platform conventions for "more about this", so it works on a
-       * keyboard that has the menu key and on one that does not. `aria-haspopup`
-       * below is what makes it discoverable rather than merely present — without
-       * it the tier is announced nowhere at all.
+       * The keyboard half is the one worth naming: amount, sort, priority,
+       * moving a vara and — the one the README calls load-bearing — "ta bort,
+       * köpte inte" all live behind the hold, while Enter and Space activate
+       * this button and *remove the item, recording a purchase*. Without
+       * ContextMenu and Shift+F10 the keyboard reaches the destructive half of
+       * this tile and not the corrective half. WCAG 2.1.1 Keyboard, Level A.
        */
-      onKeyDown={(e) => {
-        if (!onLongPress) return;
-        if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
-        e.preventDefault();
-        cancel();
-        onLongPress();
-      }}
-      /*
-       * Right-click opens it too, and used to be swallowed outright.
-       *
-       * `preventDefault` is still needed — it is what stops a touch long-press
-       * raising the browser's own menu over the sheet the hold just opened — but
-       * suppressing the gesture and then offering nothing in its place left the
-       * most conventional "more options" affordance on a desktop pointing at
-       * nothing. The guard is for the touch case, where the 500ms timer has
-       * already fired by the time the platform synthesizes this.
-       */
-      onContextMenu={(e) => {
-        e.preventDefault();
-        if (!onLongPress || longPressed.current) return;
-        longPressed.current = true;
-        cancel();
-        onLongPress();
-      }}
+      {...handlers}
     >
       {fromRecipe && (
         <span

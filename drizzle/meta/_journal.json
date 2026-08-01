@@ -43,6 +43,13 @@
       "when": 1785517200000,
       "tag": "0005_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785603600000,
+      "tag": "0006_hidden_varor",
+      "breakpoints": true
     }
   ]
 }

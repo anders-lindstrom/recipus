@@ -72,18 +72,38 @@ export interface EntrySheetProps {
    * all of them.
    */
   onOpenVara?: () => void;
+  /**
+   * Turn the sort on this ask into a vara of its own.
+   *
+   * The same split the add bar offers when the two kinds collide, reachable from
+   * the item itself — because the household does not only realise "these are two
+   * different things" at the moment of typing the second one. Offered only when
+   * there is a sort to split; the caller withholds it for a stand-in, whose vara
+   * is tombstoned and has no aisle or icon to inherit.
+   */
+  onSplitModifier?: () => void;
   /** Removes without recording a purchase — a change of mind, not a shop. */
   onRemoveWithoutBuying: () => void;
 }
 
+/**
+ * Who asked for this, in words that say so on their own.
+ *
+ * The manual row read "Tillagd", which under a heading reading "Behövs till"
+ * produced the line "BEHÖVS TILL → Tillagd" on every ordinary item on the list.
+ * Reported as literally incomprehensible, and fairly: "needed for" wants the
+ * name of a recipe, "tillagd" is not one, and nothing on screen connected the
+ * two. Naming the source rather than the act fixes the row; the section only
+ * appearing when there is something to break down fixes the rest — see below.
+ */
 function sourceLabel(c: EntryView["contributions"][number]): string {
   if (c.sourceKind === "recipe") {
     const title = c.recipeTitle ?? "Recept";
     return c.scaleFactor ? `${title} ×${c.scaleFactor}` : title;
   }
-  if (c.sourceKind === "scan") return "Skannad";
-  if (c.sourceKind === "suggestion") return "Föreslagen";
-  return "Tillagd";
+  if (c.sourceKind === "scan") return "Skannad i butiken";
+  if (c.sourceKind === "suggestion") return "Föreslagen av appen";
+  return "Du la till den";
 }
 
 export function EntrySheet({
@@ -98,12 +118,15 @@ export function EntrySheet({
   onRemoveRecipe,
   onMove,
   onOpenVara,
+  onSplitModifier,
   onRemoveWithoutBuying,
 }: EntrySheetProps) {
   const manual = view.contributions.find((c) => c.sourceKind === "manual");
   const recipeSources = view.contributions.filter(
     (c) => c.sourceKind === "recipe" && c.recipeAdditionId,
   );
+  // Something to break down, rather than one row restating the obvious.
+  const breakdown = view.contributions.length > 1 || view.hasRecipeSource;
 
   return (
     <Sheet
@@ -129,11 +152,19 @@ export function EntrySheet({
 
       {/* Below the controls, because it answers "why does it say 11 dl?" — a
           question you ask after seeing the total, not before reaching for the
-          field. Keeping it above would push the fields under the keyboard. */}
-      {view.contributions.length > 0 && (
+          field. Keeping it above would push the fields under the keyboard.
+
+          Shown only when there is genuinely a breakdown: two or more reasons, or
+          a recipe. The overwhelmingly common entry has exactly one manual
+          contribution, and for that one this section drew a heading and a single
+          row that between them said "this is here because you put it here" — a
+          whole block of chrome restating the fact that the sheet is open, in
+          vocabulary ("Behövs till") that promised a recipe and then did not name
+          one. */}
+      {breakdown && (
         <div className="px-4 pt-3 pb-1">
           <div className="mb-1 text-overline text-ink-faint uppercase">
-            Behövs till
+            Därför står den här
           </div>
           {/* Hairlines between rows and nowhere else — the divider is there
               to separate two things, not to draw a box around each one. */}
@@ -184,6 +215,18 @@ export function EntrySheet({
             Ta bort {c.recipeTitle ?? "receptet"}
           </SheetButton>
         ))}
+
+        {/* Above "flytta" and the registry link, because it is about the thing
+            on the screen rather than about where it lives — and because the
+            sort it names is one field up, still under your eyes. */}
+        {onSplitModifier && view.modifier && (
+          <SheetButton
+            onClick={onSplitModifier}
+            icon={<UiIcon name="plus" size={16} />}
+          >
+            Gör &ldquo;{view.modifier}&rdquo; till en egen vara
+          </SheetButton>
+        )}
 
         {onMove && (
           <SheetButton

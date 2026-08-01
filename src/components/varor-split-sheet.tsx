@@ -82,7 +82,13 @@ export function VarorSplitSheet({
         }`;
 
   return (
-    <Sheet title={`Dela upp ${vara.item.name}`} onClose={onClose}>
+    <Sheet
+      title={`Dela upp ${vara.item.name}`}
+      onClose={onClose}
+      // Type the new name, Enter to leave the field, Enter again to split. The
+      // product ticks in between are buttons, which own their own Enter.
+      onPrimary={() => nameOk && onSplit(trimmed, [...moving])}
+    >
       <div className="px-4 pb-3">
         <p className="text-body text-ink-soft">
           <span className="font-semibold text-ink">{vara.item.name}</span> blir

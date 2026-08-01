@@ -42,6 +42,7 @@ describe("state store", () => {
       iconRef: "1F95B",
       isCustom: false,
       hasAtHome: false,
+      hidden: false,
       useCount: 0,
       lastUsedAt: null,
     };

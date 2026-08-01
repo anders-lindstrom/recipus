@@ -56,7 +56,13 @@ export function RecipeRemovalSheet({
   }
 
   return (
-    <Sheet title={`Ta bort ${recipeTitle}?`} onClose={onCancel}>
+    <Sheet
+      title={`Ta bort ${recipeTitle}?`}
+      onClose={onCancel}
+      // The affirmative answer to the question in the title. Escape is the other
+      // one, and it is the one that leaves the list alone.
+      onPrimary={() => onConfirm(removing.map((c) => c.id))}
+    >
       <div className="px-4 pb-1">
         <p className="text-body text-ink-soft">
           {candidates.length === 1

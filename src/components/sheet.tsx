@@ -24,6 +24,15 @@ export interface SheetProps {
   /** Sits opposite the title — a total, a count. Needs `showTitle`. */
   trailing?: React.ReactNode;
   onClose: () => void;
+  /**
+   * The one affirmative thing this sheet is for, fired by Enter.
+   *
+   * Give it only to a sheet that asks a question with a single answer — "Lägg
+   * till", "Spara", "Skapa båda". A sheet that is a menu of equals leaves it
+   * off, because Enter picking one of five buttons for you is how a keypress
+   * ends up removing something. See `useFocusTrap`.
+   */
+  onPrimary?: () => void;
   children: React.ReactNode;
   className?: string;
 }
@@ -33,18 +42,26 @@ export function Sheet({
   showTitle = true,
   trailing,
   onClose,
+  onPrimary,
   children,
   className,
 }: SheetProps) {
   /**
-   * Focus in, Tab held inside, Escape out, focus back to the trigger.
+   * Focus in, Tab held inside, Escape out, Enter through, focus back to the
+   * trigger.
    *
    * Escape used to live here on its own — a sheet you cannot dismiss from the
    * keyboard is a trap on the desktop side of a PWA, where there is no back
    * gesture to fall back on. It moved into the trap because trapping Tab is
    * what turns it from a courtesy into the only way out; see useFocusTrap.
+   *
+   * Enter joined it there for the mirror-image reason. Every field in these
+   * sheets commits and blurs on Enter, which left the keyboard able to fill a
+   * sheet in and not to submit it — you had to reach for the mouse for the last
+   * step of every single one. The trap is where that has to live, because it is
+   * the only thing that knows where focus actually went after the blur.
    */
-  const dialogRef = useFocusTrap<HTMLDivElement>(onClose);
+  const dialogRef = useFocusTrap<HTMLDivElement>(onClose, onPrimary);
 
   /**
    * Has a gesture actually STARTED inside this sheet yet?

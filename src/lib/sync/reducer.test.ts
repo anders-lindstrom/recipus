@@ -43,6 +43,7 @@ function item(id: string): CatalogItem {
     iconRef: "1F95B",
     isCustom: false,
     hasAtHome: false,
+    hidden: false,
     useCount: 0,
     lastUsedAt: null,
   };
@@ -1463,6 +1464,63 @@ describe("catalog field clocks", () => {
     ]);
     expect(state.catalog[CREAM].name).toBe("vispgrädde");
     expect(state.catalog[CREAM].categoryId).toBe("frukt-gront");
+  });
+
+  /**
+   * Hiding is its own fact, on its own clock.
+   *
+   * It sits next to `hasAtHome` in the row and means something completely
+   * different — "keep this out of my way" against "we always have some" — so
+   * sharing a clock would let one person putting a vara back into search drag
+   * the other's staple flag along with it. Same argument as the rename/re-filing
+   * pair above, and the reason `CATALOG_FIELDS` grew a fifth entry rather than
+   * `hidden` riding on `home`.
+   */
+  it("does not let hiding shadow a later staple flag", () => {
+    const state = applyOps(emptyState(), [
+      { ...base("anders", 0), kind: "create_catalog_item", item: item(CREAM) },
+      {
+        ...base("maria", 9),
+        kind: "update_catalog_item",
+        itemId: CREAM,
+        patch: { hidden: true },
+      },
+      {
+        ...base("anders", 5),
+        kind: "update_catalog_item",
+        itemId: CREAM,
+        patch: { hasAtHome: true },
+      },
+    ]);
+    expect(state.catalog[CREAM].hidden).toBe(true);
+    expect(state.catalog[CREAM].hasAtHome).toBe(true);
+  });
+
+  /**
+   * Hiding and un-hiding converge on the later write, whatever the arrival
+   * order — the ordinary last-write-wins guarantee, asserted for this field
+   * because a hidden vara is invisible almost everywhere and a divergence here
+   * would show up as "it is on my phone and not on hers" rather than as an
+   * error.
+   */
+  it("settles concurrent hide and un-hide on the later one", () => {
+    const hide: Op = {
+      ...base("anders", 5),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { hidden: true },
+    };
+    const show: Op = {
+      ...base("maria", 9),
+      kind: "update_catalog_item",
+      itemId: CREAM,
+      patch: { hidden: false },
+    };
+
+    for (const order of permutations([hide, show])) {
+      const state = applyOps(emptyState(), [create, ...order]);
+      expect(state.catalog[CREAM].hidden).toBe(false);
+    }
   });
 
   /**

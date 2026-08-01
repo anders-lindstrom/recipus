@@ -218,6 +218,19 @@ export function rankMatches(
   return scored
     .sort(
       (a, b) =>
+        /*
+         * Hidden varor sort BELOW everything, whatever they matched on.
+         *
+         * Demoted rather than dropped, and the difference is what keeps hiding
+         * from being a trap. Filtering them out here would mean typing the exact
+         * name of a vara you hid last month returns nothing and offers to create
+         * it again — a second vara with the same word, and the first one's
+         * purchase history stranded on the one you can no longer reach. Sorting
+         * them last means the household never trips over them by accident and
+         * can always still find one on purpose; the add bar draws them as
+         * "dold" and taking one puts it straight back.
+         */
+        Number(a.item.hidden) - Number(b.item.hidden) ||
         a.score - b.score ||
         a.distance - b.distance ||
         b.item.useCount - a.item.useCount ||

@@ -100,6 +100,25 @@ export interface CatalogItem {
    * when a recipe is added to a list, one tap to include anyway.
    */
   hasAtHome: boolean;
+  /**
+   * Kept, but out of the way — not offered by search, the catalog well or the
+   * add bar's "Vanligast" panel.
+   *
+   * This is what makes a household's own kinds safe to invent. Splitting "mogna
+   * blåbär" off as its own vara is the supported answer to wanting two kinds
+   * tracked apart, and the whole point of it is that the vara persists and can
+   * be picked again next month. But the app cannot know whether a sort typed
+   * once was a taxonomy decision or a one-off, and a catalog that only ever
+   * grows makes the next search worse — so there has to be a way to nudge one
+   * out of the way afterwards.
+   *
+   * Deliberately NOT the soft delete `deletedAt` already provides. That one
+   * means "we do not buy this": it is blocked while the vara sits on a list or
+   * carries products, and it turns a live tile into a stand-in. Hiding makes no
+   * claim about the thing at all — the purchases, products and recipe matches
+   * all stay, and `/varor` still lists it so it can come straight back.
+   */
+  hidden: boolean;
   /** Drives recency/frequency ordering of the catalog. */
   useCount: number;
   lastUsedAt: string | null;

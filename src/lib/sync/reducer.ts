@@ -85,12 +85,13 @@ export const entryPriorityKey = (id: Id): MetaKey => `entry:${id}:priority`;
  * update rather than a conflict — last-write-wins has nothing useful to say
  * about it.
  */
-export type CatalogField = "name" | "category" | "icon" | "home";
+export type CatalogField = "name" | "category" | "icon" | "home" | "hidden";
 export const CATALOG_FIELDS: readonly CatalogField[] = [
   "name",
   "category",
   "icon",
   "home",
+  "hidden",
 ];
 export const catalogFieldKey = (id: Id, field: CatalogField): MetaKey =>
   `catalog:${id}:${field}`;
@@ -386,6 +387,12 @@ function catalogFieldPatch(
       return update.hasAtHome !== undefined
         ? { hasAtHome: update.hasAtHome }
         : null;
+    // Its own clock rather than a ride on `home`, for the reason every split in
+    // this file has: "we always have this" and "keep this out of my way" are
+    // two opinions, and sharing a clock would let one person unhiding a vara
+    // silently drag the other's staple flag back with it.
+    case "hidden":
+      return update.hidden !== undefined ? { hidden: update.hidden } : null;
   }
 }
 

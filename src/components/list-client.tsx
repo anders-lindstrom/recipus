@@ -22,6 +22,7 @@ import {
 import type { ListSnapshot } from "@/lib/services/list-data";
 import { parseAmount } from "@/lib/units";
 import { normalizeName, slugify } from "@/lib/utils";
+import { splitSortOps, newVaraLike } from "./list-model";
 import { ListScreen } from "./list-screen";
 import { ListSwitcher } from "./list-switcher";
 import { Scanner, type ScanOutcome } from "./scanner";
@@ -295,6 +296,46 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     );
   }
 
+  /**
+   * The vara behind a typed name, creating it only if there is not one already.
+   *
+   * The guard is the point. Ids are `slugify(name)`, so "Blåbär mogna" typed
+   * twice is one id — and `create_catalog_item` REPLACES the row wholesale when
+   * it wins on clock. Re-creating an existing vara would therefore reset its
+   * aisle, its icon and its hidden flag to whatever this call happened to infer,
+   * silently undoing a re-filing somebody did on /varor. The case is not
+   * hypothetical: hidden varor sort last in search rather than vanishing, but a
+   * six-result cap can still push one off the end, and then "create it" is
+   * exactly what the add bar offers for a word that already exists.
+   *
+   * So an existing vara is reused, and un-hidden if it was hidden — typing a
+   * name is the household asking for that thing, which is the same signal
+   * picking it out of search is.
+   */
+  function ensureVara(name: string, likeItem?: CatalogItem): Id | null {
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    const id = slugify(trimmed);
+
+    const existing = state.catalog[id];
+    if (existing) {
+      if (existing.hidden) {
+        dispatch({
+          kind: "update_catalog_item",
+          itemId: id,
+          patch: { hidden: false },
+        });
+      }
+      return id;
+    }
+
+    dispatch({
+      kind: "create_catalog_item",
+      item: newVaraLike(id, trimmed, likeItem),
+    });
+    return id;
+  }
+
   const actions = {
     addItem: (catalogItemId: Id, amountText?: string, undoesClientOpId?: string) => {
       dispatch({ kind: "add_item", listId, catalogItemId, undoesClientOpId });
@@ -334,25 +375,64 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
      * which is the honest answer for a word the app has never seen.
      */
     createItem: (name: string, amountText: string, likeItem?: CatalogItem) => {
-      const trimmed = name.trim();
-      if (!trimmed) return;
-      const id = slugify(trimmed);
-      dispatch({
-        kind: "create_catalog_item",
-        item: {
-          id,
-          name: trimmed,
-          nameNorm: normalizeName(trimmed),
-          categoryId: likeItem?.categoryId ?? "ovrigt",
-          iconRef: likeItem?.iconRef ?? "1F4E6",
-          isCustom: true,
-          hasAtHome: false,
-          useCount: 0,
-          lastUsedAt: null,
-        },
-      });
-      actions.addItem(id, amountText);
+      const id = ensureVara(name, likeItem);
+      if (id) actions.addItem(id, amountText);
     },
+    /**
+     * Two kinds of one thing, made into two varor.
+     *
+     * The whole plan lives in `splitSortOps` — pure, ordered, and tested —
+     * because the cases worth arguing about (a recipe still wanting the plain
+     * kind, a name that is already a vara, clearing the original's ask BEFORE
+     * removing it) are ones that fail silently rather than loudly. Same division
+     * of labour as `mergeVaror` on the registry screen.
+     */
+    splitSort: (
+      baseItemId: Id,
+      newName: string,
+      options: { keepPlain: boolean; plainAmountText?: string },
+    ) => {
+      for (const op of splitSortOps(state, listId, baseItemId, newName, options)) {
+        dispatch(op);
+      }
+    },
+    /**
+     * A vara created beside another one and put on the list with a draft's
+     * details — the add-details sheet's "egen vara".
+     *
+     * Not a split: nothing is being moved off an existing ask, so there is
+     * nothing to tidy afterwards and no ordering to get wrong. The amount and
+     * priority come from the sheet rather than from the store.
+     */
+    createVaraLike: (params: {
+      name: string;
+      likeItem: CatalogItem;
+      amount: Amount | null;
+      priority: Priority;
+    }): Id | null => {
+      const id = ensureVara(params.name, params.likeItem);
+      if (!id) return null;
+      actions.addItem(id);
+      if (params.amount) actions.setAmount(id, params.amount);
+      if (params.priority !== "normal") actions.setPriority(id, params.priority);
+      return id;
+    },
+    /**
+     * Out of search, the catalog well and "Vanligast" — and nothing else.
+     *
+     * Its own field with its own clock rather than the soft delete next to it:
+     * `delete_catalog_item` means "we do not buy this", is refused while the vara
+     * is on a list or carries products, and turns a live tile into a stand-in.
+     * This makes no claim about the thing at all, so it needs no blockers and is
+     * reversible from `/varor` — or simply by typing the name, which is what
+     * makes it safe to reach for.
+     */
+    setHidden: (catalogItemId: Id, hidden: boolean) =>
+      dispatch({
+        kind: "update_catalog_item",
+        itemId: catalogItemId,
+        patch: { hidden },
+      }),
     removeRecipe: (recipeAdditionId: Id) =>
       dispatch({ kind: "remove_recipe", listId, recipeAdditionId }),
     /**
@@ -455,6 +535,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
           iconRef: "1F4E6",
           isCustom: true,
           hasAtHome: false,
+          hidden: false,
           useCount: 0,
           lastUsedAt: null,
         },

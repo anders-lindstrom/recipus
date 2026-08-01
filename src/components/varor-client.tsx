@@ -217,6 +217,7 @@ export function VarorClient({
           iconRef: "1F4E6",
           isCustom: true,
           hasAtHome: false,
+          hidden: false,
           useCount: 0,
           lastUsedAt: null,
         },
@@ -287,6 +288,22 @@ export function VarorClient({
         patch: { iconRef },
       }),
 
+    /**
+     * Out of search and the catalog well, keeping everything behind it.
+     *
+     * Its own field with its own clock — see `CatalogItem.hidden`. Deliberately
+     * NOT `delete_catalog_item`: that one means "we do not buy this", is refused
+     * while the vara is on a list or carries products, and turns a live tile
+     * into a stand-in. This makes no claim about the thing, so it has no
+     * blockers and no side effects.
+     */
+    setHidden: (varaId: Id, hidden: boolean) =>
+      dispatch({
+        kind: "update_catalog_item",
+        itemId: varaId,
+        patch: { hidden },
+      }),
+
     setHasAtHome: (varaId: Id, hasAtHome: boolean) =>
       dispatch({
         kind: "update_catalog_item",
@@ -323,6 +340,7 @@ export function VarorClient({
           iconRef: source.iconRef,
           isCustom: true,
           hasAtHome: false,
+          hidden: false,
           useCount: 0,
           lastUsedAt: null,
         },

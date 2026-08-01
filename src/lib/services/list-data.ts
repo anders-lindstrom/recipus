@@ -346,6 +346,7 @@ export async function loadListSnapshot(
       iconRef: c.iconRef,
       isCustom: c.isCustom,
       hasAtHome: c.hasAtHome,
+      hidden: c.hidden,
       useCount: c.useCount,
       lastUsedAt: c.lastUsedAt?.toISOString() ?? null,
     }));

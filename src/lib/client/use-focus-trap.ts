@@ -52,12 +52,52 @@ function focusableWithin(root: HTMLElement): HTMLElement[] {
 }
 
 /**
+ * Controls that own Enter themselves.
+ *
+ * A button's Enter activates it, a select's opens it, and a field's belongs to
+ * whatever that field decided — `DetailFields` commits and blurs, the rename
+ * sheet saves. Firing the sheet's primary action on top of any of those would
+ * mean one keypress doing two things.
+ *
+ * A textarea is here for the opposite reason to the rest: Enter inserts a
+ * newline, which is the entire point of a textarea, so it must never submit.
+ */
+const OWNS_ENTER = new Set(["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"]);
+
+/**
+ * Should this Enter fire the sheet's primary action?
+ *
+ * The interesting case is the one that reads as a bug otherwise: type "1 kg",
+ * press Enter, the field commits and blurs — and focus lands on `<body>`,
+ * OUTSIDE the dialog. The second Enter, the one meant to say "yes, add it", then
+ * arrives from nowhere in particular. Treating body as "inside" is what makes
+ * type-Enter-Enter work, and it is safe because a modal is on screen: nothing
+ * else on the page can be the intended target of a keypress while `aria-modal`
+ * is claiming the document.
+ */
+function enterHitsPrimary(container: HTMLElement, active: Element | null): boolean {
+  if (!active || active === document.body) return true;
+  if (!container.contains(active)) return false;
+  return !OWNS_ENTER.has(active.tagName);
+}
+
+/**
  * Attach the returned ref to the element carrying `role="dialog"`. It needs
  * `tabIndex={-1}` so it can hold focus itself when the sheet has no field of
  * its own to offer.
  */
 export function useFocusTrap<T extends HTMLElement>(
   onClose: () => void,
+  /**
+   * The sheet's one affirmative action, fired by Enter when no field is holding
+   * it.
+   *
+   * Optional, and absent means Enter does nothing — right for a sheet that is a
+   * menu of equals (the entry breakdown, the vara sheet) rather than one
+   * question with one answer. Guessing which of five buttons is "the" one is how
+   * Enter ends up removing something.
+   */
+  onPrimary?: () => void,
 ): RefObject<T | null> {
   const ref = useRef<T>(null);
 
@@ -108,6 +148,39 @@ export function useFocusTrap<T extends HTMLElement>(
         onClose();
         return;
       }
+
+      if (e.key === "Enter") {
+        const container = ref.current;
+        if (!container || !onPrimary) return;
+        /*
+         * A field that handled this Enter has already said so.
+         *
+         * This listener is on `window`, so it runs AFTER React has finished
+         * bubbling the event through the sheet — by which time a field's own
+         * handler has typically committed its value and blurred. Focus is then
+         * on `<body>`, which the check below reads as "no field is holding
+         * Enter", and the sheet submits on the very keypress that was meant only
+         * to leave the field. Measured: typing "3 st" and pressing Enter once
+         * both committed the amount AND added the item, so the second Enter the
+         * user was about to press would have done something else entirely.
+         *
+         * `preventDefault` is the fields' way of claiming the keypress, and this
+         * is the other half of that contract.
+         */
+        if (e.defaultPrevented) return;
+        // `isComposing` is not a nicety on a Swedish phone with a prediction
+        // bar: Enter is how an IME accepts the candidate it is offering, and
+        // submitting the sheet on that keystroke would commit a half-typed word
+        // and close over it.
+        if (e.isComposing) return;
+        // A modified Enter is somebody else's shortcut, not this one.
+        if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+        if (!enterHitsPrimary(container, document.activeElement)) return;
+        e.preventDefault();
+        onPrimary();
+        return;
+      }
+
       if (e.key !== "Tab") return;
 
       const container = ref.current;
@@ -147,7 +220,7 @@ export function useFocusTrap<T extends HTMLElement>(
     // the sheet closes over them.
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, onPrimary]);
 
   return ref;
 }

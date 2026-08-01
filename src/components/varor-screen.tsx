@@ -60,6 +60,14 @@ export interface VarorScreenActions {
   /** Staples, excluded by default when a recipe is added to a list. */
   setHasAtHome: (varaId: Id, hasAtHome: boolean) => void;
   setVaraIcon: (varaId: Id, iconRef: string) => void;
+  /**
+   * Out of search, the catalog well and "Vanligast" — and nothing else.
+   *
+   * This screen is where hiding stops being one-way. Nothing else lists a hidden
+   * vara, so without a mark here and a way to reverse it the gesture would be a
+   * delete wearing a gentler word.
+   */
+  setHidden: (varaId: Id, hidden: boolean) => void;
   /** Creates `newName`, then moves exactly `productIds` onto it. The source stays. */
   splitVara: (varaId: Id, newName: string, productIds: Id[]) => void;
   /** Moves the products across, then tombstones `fromId` and keeps its word as an alias. */
@@ -453,6 +461,7 @@ export function VarorScreen({
             actions.setHasAtHome(openVara.item.id, hasAtHome)
           }
           onSetIcon={(iconRef) => actions.setVaraIcon(openVara.item.id, iconRef)}
+          onSetHidden={(hidden) => actions.setHidden(openVara.item.id, hidden)}
           onSplit={() => setSheet({ kind: "split", id: openVara.item.id })}
           onMerge={() => setSheet({ kind: "merge", id: openVara.item.id })}
           onDelete={() => {
@@ -574,6 +583,18 @@ function VaraRows({
                   </span>
                 )}
               </span>
+
+              {/* Hidden varor are listed here exactly like any other, marked
+                  rather than filtered or gathered into a section of their own.
+                  This screen is the household's whole vocabulary — that is what
+                  it says it is at the top — and a word missing from it, or
+                  exiled to the bottom, is a word nobody will think to look for
+                  when they want it back. */}
+              {vara.item.hidden && (
+                <span className="flex-none rounded-full bg-surface-sunken px-2.5 py-1 text-caption font-semibold text-ink-faint">
+                  dold
+                </span>
+              )}
 
               {/* The only green on this screen, and it means exactly what green
                   means everywhere else in the app: this is on the list. */}

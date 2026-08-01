@@ -23,6 +23,19 @@ import { deletionBlockers, productSubtitle, type VaraView } from "./varor-model"
  * absent entirely while it would do something surprising. A taxonomy screen that
  * can silently take an item off today's shopping list, or leave products pointing
  * at a word that no longer exists, is a screen people stop opening.
+ *
+ * The two SWITCHES are deliberately not among them, because neither is something
+ * you do to the vara — they are states it is in. "Har alltid hemma" and "Dold"
+ * both describe how the rest of the app should treat it, and drawing them as
+ * commands would read as instructions ("go and buy some", "delete this").
+ *
+ * "Dold" in particular has to stay visibly distinct from "Ta bort" one row
+ * below it, because they are the pair people confuse: deleting says *we do not
+ * buy this* and is refused while the vara is on a list or carries products;
+ * hiding says nothing about the thing at all, has no blockers, and is undone by
+ * flipping the same switch back. Hiding is what a household's own invented kinds
+ * need — "mogna blåbär" was worth a vara in March and is clutter in July — and
+ * it must never be reached for by someone who meant the other one.
  */
 
 export interface VarorItemSheetProps {
@@ -54,6 +67,8 @@ export interface VarorItemSheetProps {
   onSetHasAtHome: (hasAtHome: boolean) => void;
   /** A codepoint ref ("1F35E"), already converted from whatever was typed. */
   onSetIcon: (iconRef: string) => void;
+  /** Out of search and the catalog well. Reversible from the same switch. */
+  onSetHidden: (hidden: boolean) => void;
   onSplit: () => void;
   onMerge: () => void;
   onDelete: () => void;
@@ -66,6 +81,66 @@ export interface VarorItemSheetProps {
   onClose: () => void;
 }
 
+/**
+ * A state with two values, drawn as a switch.
+ *
+ * Two of them now, and the second is why this is a component rather than two
+ * copies: they sit next to each other, they are the only controls in this sheet
+ * that are not commands, and if they ever stop looking identical one of them
+ * starts reading as a button. Both are also one row above "Ta bort" — the
+ * control they must never be mistaken for.
+ */
+function SwitchRow({
+  label,
+  icon,
+  checked,
+  hint,
+  onToggle,
+}: {
+  label: string;
+  icon: "check" | "clear";
+  checked: boolean;
+  /** One line under the label, for a state whose consequence is not obvious. */
+  hint?: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onToggle}
+      className="flex w-full items-center justify-between gap-2 rounded-control bg-surface px-3 py-3 text-body font-semibold text-ink"
+    >
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        <UiIcon name={icon} size={16} />
+        <span className="min-w-0 flex-1 text-left">
+          {label}
+          {hint && (
+            <span className="block text-caption font-normal text-ink-faint">
+              {hint}
+            </span>
+          )}
+        </span>
+      </span>
+      <span
+        aria-hidden
+        className={cn(
+          "h-6 w-10 flex-none rounded-full p-0.5 transition-colors duration-150",
+          checked ? "bg-brand" : "bg-line-strong",
+        )}
+      >
+        <span
+          className={cn(
+            "block h-5 w-5 rounded-full bg-surface transition-transform duration-150",
+            checked && "translate-x-4",
+          )}
+        />
+      </span>
+    </button>
+  );
+}
+
 export function VarorItemSheet({
   vara,
   categoryName,
@@ -75,6 +150,7 @@ export function VarorItemSheet({
   onRecategorize,
   onSetHasAtHome,
   onSetIcon,
+  onSetHidden,
   onSplit,
   onMerge,
   onDelete,
@@ -123,7 +199,13 @@ export function VarorItemSheet({
 
   if (renaming) {
     return (
-      <Sheet title={`Byt namn på ${vara.item.name}`} onClose={onClose}>
+      <Sheet
+        title={`Byt namn på ${vara.item.name}`}
+        onClose={onClose}
+        // The field commits on Enter itself; this catches the Enter that arrives
+        // after a blur, so the keyboard never has to hand back to the mouse.
+        onPrimary={commitRename}
+      >
         <div className="px-4 pb-4">
           <label
             htmlFor="vara-name"
@@ -137,7 +219,11 @@ export function VarorItemSheet({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") commitRename();
+              if (e.key !== "Enter") return;
+              // Claims the keypress, so the sheet's own Enter handler does not
+              // also fire on it. See `useFocusTrap`.
+              e.preventDefault();
+              commitRename();
             }}
             inputMode="text"
             autoComplete="off"
@@ -179,7 +265,11 @@ export function VarorItemSheet({
     const picked = emojiToCodepoint(iconDraft);
     const category = categories.find((c) => c.id === vara.item.categoryId);
     return (
-      <Sheet title={`Ikon för ${vara.item.name}`} onClose={onClose}>
+      <Sheet
+        title={`Ikon för ${vara.item.name}`}
+        onClose={onClose}
+        onPrimary={() => picked && commitIcon(picked)}
+      >
         <div className="px-4 pb-4">
           <label
             htmlFor="vara-icon"
@@ -202,7 +292,9 @@ export function VarorItemSheet({
               value={iconDraft}
               onChange={(e) => setIconDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && picked) commitIcon(picked);
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                if (picked) commitIcon(picked);
               }}
               placeholder="🍞"
               autoComplete="off"
@@ -450,32 +542,31 @@ export function VarorItemSheet({
             alltid hemma" as a command would read as an instruction to go and
             buy some. Nothing else in the app could set this, which meant the
             recipe sheet's staple exclusion had no way to ever be true. */}
-        <button
-          type="button"
-          role="switch"
-          aria-checked={vara.item.hasAtHome}
-          onClick={() => onSetHasAtHome(!vara.item.hasAtHome)}
-          className="flex w-full items-center justify-between gap-2 rounded-control bg-surface px-3 py-3 text-body font-semibold text-ink"
-        >
-          <span className="flex items-center gap-2">
-            <UiIcon name="check" size={16} />
-            Har alltid hemma
-          </span>
-          <span
-            aria-hidden
-            className={cn(
-              "h-6 w-10 flex-none rounded-full p-0.5 transition-colors duration-150",
-              vara.item.hasAtHome ? "bg-brand" : "bg-line-strong",
-            )}
-          >
-            <span
-              className={cn(
-                "block h-5 w-5 rounded-full bg-surface transition-transform duration-150",
-                vara.item.hasAtHome && "translate-x-4",
-              )}
-            />
-          </span>
-        </button>
+        <SwitchRow
+          label="Har alltid hemma"
+          icon="check"
+          checked={vara.item.hasAtHome}
+          onToggle={() => onSetHasAtHome(!vara.item.hasAtHome)}
+        />
+
+        {/* The other half of being able to invent varor freely.
+            Splitting "mogna blåbär" off as its own thing is now one tap from
+            three different screens, which is right — and it means the catalog
+            grows with kinds that were true once. This is how one goes back out
+            of the way without taking its purchases, its products or its recipe
+            matches with it. Above "Ta bort" and untinted, because it is the
+            gentle one and has to be the one people reach for first. */}
+        <SwitchRow
+          label="Dold i sök och katalog"
+          icon="clear"
+          checked={vara.item.hidden}
+          hint={
+            vara.item.hidden
+              ? "Syns bara här. Sök på namnet för att lägga till den ändå."
+              : undefined
+          }
+          onToggle={() => onSetHidden(!vara.item.hidden)}
+        />
 
         <SheetButton onClick={onSplit} icon={<UiIcon name="plus" size={16} />}>
           Dela upp

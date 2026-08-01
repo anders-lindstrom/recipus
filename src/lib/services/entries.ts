@@ -245,6 +245,7 @@ function standIn(catalogItemId: Id): CatalogItem {
     iconRef: "1F4E6",
     isCustom: true,
     hasAtHome: false,
+    hidden: false,
     useCount: 0,
     lastUsedAt: null,
   };

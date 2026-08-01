@@ -105,35 +105,64 @@ describe("upgrading a populated database", () => {
 
     await apply(deployed);
 
-    // Representative of what production actually holds, and chosen for what the
-    // pending migrations touch: a confirmed barcode with a mapping (0005 has to
-    // promote it into a product), a purchase (0005 makes its catalog_item_id
-    // nullable under a CHECK), and an entry with a contribution (0003 and 0004
-    // backfill NOT NULL clock columns onto both).
+    // Representative of what production actually holds AT THE DEPLOYED
+    // CHECKPOINT — which is the part that has to move when `DEPLOYED_THROUGH`
+    // does, and did not. The barcode was still written in its pre-0005 shape
+    // (`catalog_item_id`, `product_name`, `brand`), so the fixture described a
+    // database 0005 had already restructured away. Rewritten here as what a
+    // household at 0005 genuinely has: a product carrying the name, brand and
+    // mapping, and a barcode pointing at it.
+    //
+    // The rows are still chosen for what they prove across the gap: the vara and
+    // its clocks (0006 adds a fifth), the barcode → product → vara chain, a
+    // purchase, and an entry with a contribution.
+    //
+    // The vara's four field clocks are named explicitly, and they have to be:
+    // 0003 tightened all four `*_updated_by` columns to NOT NULL and gave a
+    // DEFAULT to only the `*_updated_at` half, so a row inserted at the 0005
+    // checkpoint without them is rejected. The fixture predates that and went
+    // unnoticed because this test skips itself whenever nothing is pending —
+    // which was every run between 0005 shipping and 0006 landing. They are set
+    // to a time and an actor of their own rather than borrowed from the row
+    // clock, so a backfill that silently reaches for `now()` instead is
+    // detectable below.
     await scratch.unsafe(`
       INSERT INTO categories (id, name, icon, position)
         VALUES ('mejeri', 'Mejeri', '1F95B', 1);
-      INSERT INTO catalog_items (id, name, name_norm, category_id, icon_ref, is_custom, updated_by)
-        VALUES ('mjolk', 'Mjölk', 'mjolk', 'mejeri', '1F95B', false, 'anders');
+      INSERT INTO catalog_items (
+        id, name, name_norm, category_id, icon_ref, is_custom,
+        name_updated_at, name_updated_by,
+        category_updated_at, category_updated_by,
+        icon_updated_at, icon_updated_by,
+        home_updated_at, home_updated_by,
+        updated_at, updated_by)
+        VALUES ('mjolk', 'Mjölk', 'mjolk', 'mejeri', '1F95B', false,
+          '2026-01-02T10:00:00Z', 'anders',
+          '2026-01-02T10:00:00Z', 'anders',
+          '2026-01-02T10:00:00Z', 'anders',
+          '2026-01-02T10:00:00Z', 'anders',
+          '2026-01-02T10:00:00Z', 'anders');
       INSERT INTO lists (id, name, icon, position, category_order, updated_by)
         VALUES ('hemkop', 'Hemköp', '1F6D2', 0, '[]'::jsonb, 'anders');
       INSERT INTO list_entries (id, list_id, catalog_item_id, created_by, updated_by)
         VALUES ('hemkop:mjolk', 'hemkop', 'mjolk', 'anders', 'anders');
       INSERT INTO contributions (id, entry_id, source_kind, recipe_addition_id, amount_value, amount_unit, note, updated_by)
         VALUES ('hemkop:mjolk#manual', 'hemkop:mjolk', 'manual', NULL, 2, 'l', 'helst ekologisk', 'anders');
-      INSERT INTO purchases (id, catalog_item_id, list_id, actor)
-        VALUES ('p1', 'mjolk', 'hemkop', 'anders');
-      INSERT INTO barcodes (ean, catalog_item_id, product_name, brand, image_url, source)
-        VALUES ('7310865004703', 'mjolk', 'Arla Standardmjölk 1,5 l', 'Arla', NULL, 'off');
+      INSERT INTO purchases (id, catalog_item_id, list_id, actor, client_op_id)
+        VALUES ('p1', 'mjolk', 'hemkop', 'anders', 'op-1');
+      INSERT INTO products (id, name, brand, catalog_item_id, created_by, updated_by, item_updated_at, item_updated_by)
+        VALUES ('prod:7310865004703', 'Arla Standardmjölk 1,5 l', 'Arla', 'mjolk', 'anders', 'anders', '2026-01-02T10:00:00Z', 'anders');
+      INSERT INTO barcodes (ean, product_id, source, created_by, updated_by)
+        VALUES ('7310865004703', 'prod:7310865004703', 'off', 'anders', 'anders');
     `).simple();
 
     await apply(pending);
 
-    // The barcode is the whole point. It must still resolve to a product, that
-    // product must carry the name and brand the old columns held, and the
-    // household's mapping to "mjölk" must have come with it — losing any of the
-    // three means every barcode they have ever confirmed has to be re-answered
-    // in a shop.
+    // The barcode chain, asserted whatever the pending migrations are. Nothing
+    // since 0005 touches these tables, so this now guards against a future
+    // migration quietly breaking the ean → product → vara path rather than
+    // proving 0005's promotion — losing it means every barcode the household has
+    // ever confirmed has to be re-answered in a shop.
     const [barcode] = await scratch`
       SELECT b.ean, p.name, p.brand, p.catalog_item_id
       FROM barcodes b JOIN products p ON p.id = b.product_id
@@ -166,6 +195,24 @@ describe("upgrading a populated database", () => {
       SELECT priority FROM list_entries WHERE id = 'hemkop:mjolk'
     `;
     expect(entry.priority).toBe("normal");
+
+    // 0006's backfill, and the reason it is hand-written.
+    //
+    // `hidden` false is the easy half — nothing could have hidden a vara before
+    // the column existed. The clock is the half worth a test: a generated
+    // migration would have defaulted it to `now()`, which would stamp every vara
+    // in the catalog with the deploy's timestamp and make a genuine "dölj den
+    // här" from a phone that was offline yesterday LOSE to a fact nobody ever
+    // asserted. It has to carry the row's own clock instead, actor included.
+    const [vara] = await scratch`
+      SELECT hidden, hidden_updated_at, hidden_updated_by
+      FROM catalog_items WHERE id = 'mjolk'
+    `;
+    expect(vara.hidden).toBe(false);
+    expect(vara.hidden_updated_by).toBe("anders");
+    expect(new Date(vara.hidden_updated_at).toISOString()).toBe(
+      "2026-01-02T10:00:00.000Z",
+    );
   }, 60_000);
 
   /**

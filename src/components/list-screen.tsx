@@ -41,6 +41,7 @@ import {
   DuplicateAskSheet,
   type DuplicateAsk,
 } from "./duplicate-ask-sheet";
+import { SplitSortSheet } from "./split-sort-sheet";
 import {
   RecipeRemovalSheet,
   type RecipeRemovalCandidate,
@@ -94,6 +95,32 @@ export interface ListScreenActions {
     amountText: string,
     likeItem?: CatalogItem,
   ) => void;
+  /**
+   * Two kinds of one thing, made into two varor: the sort moves onto `newName`
+   * carrying the manual ask, and the original is tidied.
+   *
+   * `keepPlain` says whether anybody wants the plain kind — true from the add
+   * bar, where somebody has just asked for it, false from the entry sheet, where
+   * the gesture means "this was always the ripe ones". The whole ordered plan is
+   * `splitSortOps`, which is pure and tested.
+   */
+  splitSort: (
+    baseItemId: Id,
+    newName: string,
+    options: { keepPlain: boolean; plainAmountText?: string },
+  ) => void;
+  /**
+   * A vara created beside another one and put on the list with these details.
+   * Not a split — nothing is moving off an existing ask.
+   */
+  createVaraLike: (params: {
+    name: string;
+    likeItem: CatalogItem;
+    amount: Amount | null;
+    priority: Priority;
+  }) => Id | null;
+  /** Out of search and the catalog well, keeping every purchase behind it. */
+  setHidden: (catalogItemId: Id, hidden: boolean) => void;
   removeRecipe: (recipeAdditionId: Id) => void;
   /**
    * Relocates an item to another list, carrying its priority and manual
@@ -194,6 +221,22 @@ export function ListScreen({
    * there is nothing left to tell them apart from anything else on the list.
    */
   const [duplicateAsk, setDuplicateAsk] = useState<DuplicateAsk | null>(null);
+  /**
+   * A sort on its way to becoming a vara, waiting to be named.
+   *
+   * `keepPlain` is the one thing that differs between the two routes here, and
+   * it is not cosmetic. From the add bar, somebody has just asked for the plain
+   * kind, so the original entry stays and becomes that ask. From the entry
+   * sheet, nobody has — the whole gesture is "this was always the ripe ones" —
+   * so the original comes off the list unless a recipe still wants it.
+   */
+  const [splitting, setSplitting] = useState<{
+    itemId: Id;
+    modifier: string;
+    keepPlain: boolean;
+    /** What the add bar had typed for the plain kind. Empty otherwise. */
+    amountText: string;
+  } | null>(null);
   const [removingRecipe, setRemovingRecipe] = useState<{
     additionId: Id;
     title: string;
@@ -304,6 +347,23 @@ export function ListScreen({
     setUndoable({ id, name, clientOpId, bought });
   }
 
+  /**
+   * Hand the split to the store, once the second kind has a name.
+   *
+   * All this decides is which of the two shapes it is; the plan itself —
+   * including the ordering that stops a removed entry keeping its old sort — is
+   * `splitSortOps`, where it can be asserted rather than eyeballed.
+   */
+  function splitSort(name: string) {
+    if (!splitting) return;
+    actions.splitSort(splitting.itemId, name, {
+      keepPlain: splitting.keepPlain,
+      plainAmountText: splitting.amountText,
+    });
+    setSplitting(null);
+    setOpenEntry(null);
+  }
+
   function undoLastBuy() {
     if (!undoable) return;
     // Two halves, and the second one used to be missing: put the item back, and
@@ -368,7 +428,13 @@ export function ListScreen({
       groupByCategory(
         // Anything already on the list is shown above; repeating it below is
         // just a second place to tap the same thing.
-        catalog.filter((c) => !onListIds.has(c.id)),
+        //
+        // Hidden varor are out of the well entirely, which is most of what
+        // hiding is FOR: the well is 341 tiles you scroll past on the way to
+        // something, and a household's own one-off kinds accumulate there faster
+        // than anywhere else. They stay reachable by typing the name — see
+        // `rankMatches`, which demotes rather than drops.
+        catalog.filter((c) => !c.hidden && !onListIds.has(c.id)),
         (c) => c.categoryId,
         list.categoryOrder,
       ),
@@ -419,6 +485,14 @@ export function ListScreen({
   const movingItem = moving ? byId.get(moving) : undefined;
   const movingView = moving ? views.get(moving) : undefined;
   const addingItem = addingDetails ? byId.get(addingDetails) : undefined;
+  const splitItem = splitting ? byId.get(splitting.itemId) : undefined;
+  const splitViewHasRecipe = splitting
+    ? Boolean(views.get(splitting.itemId)?.hasRecipeSource)
+    : false;
+
+  /** The aisle a vara is filed in, for the sheets that say where things land. */
+  const aisleOf = (item: CatalogItem) =>
+    categoryName.get(item.categoryId) ?? "Övrigt";
 
   return (
     <div className="min-h-dvh pb-28">
@@ -652,6 +726,7 @@ export function ListScreen({
           }}
           onCreate={actions.createItem}
           onLongPressItem={setAddingDetails}
+          onUnhide={(id) => actions.setHidden(id, false)}
           categoryNames={categoryName}
         />
 
@@ -919,11 +994,38 @@ export function ListScreen({
             actions.addItem(duplicateAsk.itemId, duplicateAsk.amountText);
             setDuplicateAsk(null);
           }}
+          onSplit={() => {
+            setSplitting({
+              itemId: duplicateAsk.itemId,
+              modifier: duplicateAsk.existingModifier,
+              // The plain kind is exactly what was just asked for, so it stays.
+              keepPlain: true,
+              amountText: duplicateAsk.amountText,
+            });
+            setDuplicateAsk(null);
+          }}
           onClearModifier={() => {
             actions.addItem(duplicateAsk.itemId, duplicateAsk.amountText);
             actions.setModifier(duplicateAsk.itemId, null);
             setDuplicateAsk(null);
           }}
+        />
+      )}
+
+      {splitting && splitItem && (
+        <SplitSortSheet
+          baseName={splitItem.name}
+          modifier={splitting.modifier}
+          aisleName={categoryName.get(splitItem.categoryId) ?? "Övrigt"}
+          note={
+            splitting.keepPlain
+              ? `${splitItem.name} blir kvar på listan som den vanliga sorten.`
+              : splitViewHasRecipe
+                ? `${splitItem.name} står kvar, eftersom ett recept vill ha den.`
+                : `${splitItem.name} tas bort från listan — ingen har bett om den vanliga sorten.`
+          }
+          onConfirm={splitSort}
+          onClose={() => setSplitting(null)}
         />
       )}
 
@@ -988,6 +1090,23 @@ export function ListScreen({
                     `/varor?list=${encodeURIComponent(list.id)}&vara=${encodeURIComponent(openItem.id)}`,
                   )
           }
+          // Withheld for a stand-in, like the two above and for the same reason:
+          // its vara is tombstoned, so there is no aisle and no icon for a new
+          // one to inherit and the split would file the household's own kind in
+          // Övrigt with a box on it.
+          onSplitModifier={
+            standIns.has(openItem.id)
+              ? undefined
+              : () =>
+                  setSplitting({
+                    itemId: openItem.id,
+                    modifier: openView.modifier ?? "",
+                    // Nobody has asked for the plain kind here — the gesture
+                    // says "this was always the ripe ones".
+                    keepPlain: false,
+                    amountText: "",
+                  })
+          }
           onMove={
             // Offered only when there is somewhere to move TO. With one list the
             // picker would open empty, which reads as a broken button.
@@ -1026,7 +1145,25 @@ export function ListScreen({
           key={addingItem.id}
           item={addingItem}
           alreadyOnList={onListIds.has(addingItem.id)}
+          aisleName={aisleOf(addingItem)}
           onClose={() => setAddingDetails(null)}
+          // Straight through: this sheet has already collected the name, and
+          // there is nothing on the original to tidy — a vara reached from the
+          // catalog or from search either is not on the list, or is and stays
+          // exactly as it was. The plain kind was never in question here.
+          onAddAsOwnVara={({ name, amount, priority }) => {
+            actions.createVaraLike({
+              name,
+              likeItem: addingItem,
+              amount,
+              priority,
+            });
+            setAddingDetails(null);
+          }}
+          onHide={() => {
+            actions.setHidden(addingItem.id, true);
+            setAddingDetails(null);
+          }}
           onAdd={({ amount, modifier, priority }) => {
             // One act, in the order the reducer expects: the entry has to exist
             // before anything can be written against it. Each field is its own

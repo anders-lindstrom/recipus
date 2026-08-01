@@ -18,6 +18,7 @@ function item(name: string, useCount = 0): CatalogItem {
     iconRef: "1F4E6",
     isCustom: false,
     hasAtHome: false,
+    hidden: false,
     useCount,
     lastUsedAt: null,
   };
@@ -32,6 +33,42 @@ const CATALOG = [
   item("räkor", 8),
   item("smör", 20),
 ];
+
+describe("rankMatches with hidden varor", () => {
+  /**
+   * Hidden means "keep it out of my way", not "pretend it does not exist".
+   *
+   * Demoting rather than dropping is what keeps hiding from being a one-way
+   * door: filtering here would mean typing the exact name of a vara you hid last
+   * month returns nothing, the add bar offers to CREATE it, and the household
+   * ends up with a second vara under the same word while the first one's
+   * purchase history is stranded on the one they can no longer reach.
+   */
+  const WITH_HIDDEN = [
+    ...CATALOG,
+    { ...item("mjölkchoklad", 30), hidden: true },
+  ];
+
+  it("sorts a hidden vara below every visible match", () => {
+    const names = rankMatches(WITH_HIDDEN, "mjölk").map((i) => i.name);
+    expect(names).toContain("mjölkchoklad");
+    expect(names[names.length - 1]).toBe("mjölkchoklad");
+  });
+
+  it("demotes a hidden EXACT match below a visible partial one", () => {
+    // Even the strongest possible match loses to any visible one — the point is
+    // that the household never trips over a hidden vara by accident.
+    const catalog = [item("mjölkchoklad", 1), { ...item("mjölk", 40), hidden: true }];
+    expect(rankMatches(catalog, "mjölk")[0].name).toBe("mjölkchoklad");
+  });
+
+  it("still finds a hidden vara when nothing else matches", () => {
+    const catalog = [{ ...item("saffran", 3), hidden: true }];
+    // The way back. Typing the name is how you ask for it again, and the add bar
+    // un-hides whatever you pick.
+    expect(rankMatches(catalog, "saffran").map((i) => i.name)).toEqual(["saffran"]);
+  });
+});
 
 describe("rankMatches", () => {
   it("puts a prefix match above a substring match", () => {

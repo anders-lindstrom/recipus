@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import type { CatalogItem, Id } from "@/lib/domain";
+import { useLongPress } from "@/lib/client/use-long-press";
 import { resolvePair, resolveQuery } from "@/lib/services/search";
 import { cn, normalizeName } from "@/lib/utils";
 import { ItemIcon } from "./icon";
@@ -70,10 +71,79 @@ export interface AddBarProps {
    * Hold a vara in the panel to give it details before it goes on. Same gesture
    * and same sheet as the catalog well, because a grid of varor should behave
    * like a grid of varor wherever it is drawn.
+   *
+   * It reaches the SEARCH RESULTS as well as the frequent grid now, and that was
+   * the gap: holding a tile in "Vanligast" opened the details sheet, holding a
+   * row two pixels below it did nothing at all. So the one errand that needs the
+   * sheet most — "broccoli is already on the list and I want the frozen ones
+   * too", which is only reachable by typing, since anything on the list is
+   * filtered out of the well and the frequent grid — was the one errand with no
+   * way in.
    */
   onLongPressItem: (itemId: Id) => void;
+  /** Puts a hidden vara back in search. Called when one is picked. */
+  onUnhide: (itemId: Id) => void;
   /** Aisle names by id, so the create row can say where the vara will land. */
   categoryNames: Map<Id, string>;
+}
+
+/**
+ * One search result.
+ *
+ * Its own component purely so it can hold a long-press timer — hooks cannot live
+ * in the `.map()` that draws these, and the gesture needs per-row state.
+ */
+function MatchRow({
+  item,
+  modifier,
+  already,
+  onPick,
+  onLongPress,
+}: {
+  item: CatalogItem;
+  modifier: string;
+  already: boolean;
+  onPick: () => void;
+  onLongPress: () => void;
+}) {
+  const { handlers, holding } = useLongPress(onPick, onLongPress);
+  return (
+    <li>
+      <button
+        type="button"
+        aria-haspopup="dialog"
+        className={cn(
+          "flex w-full items-center gap-3 px-3 py-2.5 text-left",
+          "border-b border-line last:border-b-0",
+          holding ? "bg-brand-tint" : "active:bg-brand-tint",
+        )}
+        {...handlers}
+      >
+        <ItemIcon iconRef={item.iconRef} className="text-xl" />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="text-body font-semibold text-ink">{item.name}</span>
+          {/* Rendered exactly as the tile will render it — italic, under the
+              name — so what you are about to get is what you are looking at. */}
+          {modifier && (
+            <span className="text-caption text-ink-faint italic">
+              {modifier}
+            </span>
+          )}
+        </span>
+        {/* Only one of the two ever shows: a hidden vara is by construction not
+            on the list, since going on the list is what brings it back. */}
+        {item.hidden ? (
+          <span className="flex-none rounded-full bg-surface-sunken px-2 py-0.5 text-caption font-semibold text-ink-faint">
+            dold
+          </span>
+        ) : already ? (
+          <span className="flex-none text-caption font-semibold text-brand">
+            på listan
+          </span>
+        ) : null}
+      </button>
+    </li>
+  );
 }
 
 /**
@@ -94,7 +164,17 @@ function UndoAdd({ ids, onUndo }: { ids: Id[]; onUndo: (ids: Id[]) => void }) {
   );
 }
 
-/** What the last tap put on the list, so the panel can say so. */
+/**
+ * What the last tap actually did, so the panel can say THAT.
+ *
+ * `label` is the whole sentence rather than a name with " tillagd" stapled on,
+ * and that is the fix rather than a refactor. Every tap said "X tillagd",
+ * including the extremely common one that added nothing at all: searching for
+ * something already on the list and pressing it reported "broccoli tillagd"
+ * when broccoli had been there all along. A confirmation that cannot tell you
+ * apart from a no-op is worse than silence — it teaches you to stop reading it,
+ * on the one strip that also carries undo.
+ */
 interface JustAdded {
   label: string;
   /**
@@ -104,8 +184,20 @@ interface JustAdded {
    * catalog entry behind, and a half-undo that looks like a whole one is worse
    * than none. It is one tap to remove from the tile, which is honest about
    * what it does.
+   *
+   * Also null when nothing happened, which is the case the label above exists
+   * for: an "Ångra" that would undo a no-op is a button that removes something
+   * you did not just add.
    */
   undo: Id[] | null;
+  /**
+   * Say that a second kind is possible, on the one occasion it is the answer.
+   *
+   * Only when the tap changed nothing because the vara was already there —
+   * which is exactly the moment someone wants the frozen broccoli as well as
+   * the fresh, and the moment the app used to claim it had just added one.
+   */
+  hint?: boolean;
 }
 
 export function AddBar({
@@ -116,6 +208,7 @@ export function AddBar({
   onCreate,
   onUndoAdd,
   onLongPressItem,
+  onUnhide,
   categoryNames,
 }: AddBarProps) {
   const [raw, setRaw] = useState("");
@@ -152,7 +245,11 @@ export function AddBar({
     opened.current = true;
     setFrequent(
       catalog
-        .filter((c) => c.useCount > 0 && !onListItemIds.has(c.id))
+        // Hidden ones are excluded outright here, unlike in search: this panel
+        // is an offer the app makes unprompted, and offering back something the
+        // household has deliberately put away is the whole thing hiding exists
+        // to stop. Typing its name still finds it — see `rankMatches`.
+        .filter((c) => c.useCount > 0 && !c.hidden && !onListItemIds.has(c.id))
         // `useCount` counts shops, not taps — it is incremented by a purchase
         // and nothing else — so this really is "what you buy", not "what you
         // last fiddled with". A household with no shops behind it has no
@@ -190,13 +287,34 @@ export function AddBar({
 
   function pick(item: CatalogItem) {
     const wasOnList = onListItemIds.has(item.id);
+    // Reaching a hidden vara through search is the household asking for it
+    // back, so it comes back. Hiding is a tidying gesture and must never be the
+    // thing standing between someone and a vara they have just typed the name
+    // of; the alternative is a tile that goes on the list and stays unfindable.
+    const wasHidden = item.hidden;
+    if (wasHidden) onUnhide(item.id);
     onPick(item.id, amountText, modifier);
+
+    const said = [
+      wasOnList ? null : "tillagd",
+      wasHidden ? "visas igen" : null,
+      // Named rather than implied: these are the two things a tap on something
+      // already listed genuinely changes, and saying which one stops the strip
+      // from reading as a lie the moment nothing else happened.
+      wasOnList && amountText ? `mängd ${amountText}` : null,
+      wasOnList && modifier ? `sort ${modifier}` : null,
+    ].filter((s): s is string => s !== null);
+
+    const changed = said.length > 0;
     reset({
-      label: modifier ? `${item.name}, ${modifier}` : item.name,
+      label: changed
+        ? `${item.name} — ${said.join(", ")}`
+        : `${item.name} står redan på listan`,
       // Undo has to mean "put it back as it was". If the vara was already on
       // the list, this tap changed an amount or a sort rather than adding
       // anything, and removing it would delete something that was there first.
       undo: wasOnList ? null : [item.id],
+      hint: !changed,
     });
   }
 
@@ -204,7 +322,10 @@ export function AddBar({
     const fresh = [first, second].filter((i) => !onListItemIds.has(i.id));
     onPickMany([first.id, second.id]);
     reset({
-      label: `${first.name} och ${second.name}`,
+      label:
+        fresh.length > 0
+          ? `${first.name} och ${second.name} tillagda`
+          : `${first.name} och ${second.name} står redan på listan`,
       undo: fresh.length > 0 ? fresh.map((i) => i.id) : null,
     });
   }
@@ -221,7 +342,7 @@ export function AddBar({
 
   function create() {
     onCreate(name, amountText, createLike);
-    reset({ label: `${name} — ny vara`, undo: null });
+    reset({ label: `${name} — ny vara, tillagd`, undo: null });
   }
 
   /**
@@ -309,20 +430,46 @@ export function AddBar({
               last one took. This says so without a toast, and without leaving
               the field. */}
           {justAdded && (
-            <div className="flex items-center gap-2 border-b border-line bg-brand-tint px-3 py-2 text-caption text-brand-ink">
-              <UiIcon name="check" size={14} className="flex-none" />
-              <span className="min-w-0 flex-1 truncate font-semibold">
-                {justAdded.label} tillagd
-              </span>
-              {justAdded.undo !== null && (
-                <UndoAdd
-                  ids={justAdded.undo}
-                  onUndo={(ids) => {
-                    onUndoAdd(ids);
-                    setJustAdded(null);
-                    input.current?.focus();
-                  }}
+            <div
+              className={cn(
+                "border-b border-line px-3 py-2 text-caption",
+                // Green means "something is on the list" everywhere else in this
+                // app, so a tap that changed nothing must not be drawn in it.
+                justAdded.hint
+                  ? "bg-surface-sunken text-ink-soft"
+                  : "bg-brand-tint text-brand-ink",
+              )}
+            >
+              <div className="flex items-center gap-2">
+                {/* A tick is a claim that something happened. The one case
+                    that reaches this strip having done nothing gets the tile's
+                    own "already on the list" mark instead. */}
+                <UiIcon
+                  name={justAdded.hint ? "toList" : "check"}
+                  size={14}
+                  className="flex-none"
                 />
+                <span className="min-w-0 flex-1 truncate font-semibold">
+                  {justAdded.label}
+                </span>
+                {justAdded.undo !== null && (
+                  <UndoAdd
+                    ids={justAdded.undo}
+                    onUndo={(ids) => {
+                      onUndoAdd(ids);
+                      setJustAdded(null);
+                      input.current?.focus();
+                    }}
+                  />
+                )}
+              </div>
+              {/* The way out of the dead end, said where the dead end is. Before
+                  this, the app claimed it had added a second broccoli and there
+                  was nowhere to go from there. */}
+              {justAdded.hint && (
+                <p className="mt-0.5 pl-[22px] text-ink-faint">
+                  Håll in raden för att lägga till en annan sort.
+                </p>
               )}
             </div>
           )}
@@ -393,41 +540,16 @@ export function AddBar({
                 </li>
               )}
 
-              {matches.map((item) => {
-                const already = onListItemIds.has(item.id);
-                return (
-                  <li key={item.id}>
-                    <button
-                      type="button"
-                          onClick={() => pick(item)}
-                      className={cn(
-                        "flex w-full items-center gap-3 px-3 py-2.5 text-left",
-                        "border-b border-line last:border-b-0 active:bg-brand-tint",
-                      )}
-                    >
-                      <ItemIcon iconRef={item.iconRef} className="text-xl" />
-                      <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="text-body font-semibold text-ink">
-                          {item.name}
-                        </span>
-                        {/* Rendered exactly as the tile will render it —
-                            italic, under the name — so what you are about to
-                            get is what you are looking at. */}
-                        {modifier && (
-                          <span className="text-caption text-ink-faint italic">
-                            {modifier}
-                          </span>
-                        )}
-                      </span>
-                      {already && (
-                        <span className="flex-none text-caption font-semibold text-brand">
-                          på listan
-                        </span>
-                      )}
-                    </button>
-                  </li>
-                );
-              })}
+              {matches.map((item) => (
+                <MatchRow
+                  key={item.id}
+                  item={item}
+                  modifier={modifier}
+                  already={onListItemIds.has(item.id)}
+                  onPick={() => pick(item)}
+                  onLongPress={() => onLongPressItem(item.id)}
+                />
+              ))}
 
               {canCreate && (
                 <li>

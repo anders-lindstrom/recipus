@@ -44,6 +44,7 @@ beforeAll(async () => {
       categoryUpdatedBy: "test-dismiss",
       iconUpdatedBy: "test-dismiss",
       homeUpdatedBy: "test-dismiss",
+      hiddenUpdatedBy: "test-dismiss",
       updatedBy: "test-dismiss",
     })),
   );

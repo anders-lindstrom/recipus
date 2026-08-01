@@ -41,7 +41,7 @@ förblir tom, även om du kör `pnpm db:seed` igen. Vill du ha dem tillbaka loka
 ta bort raden i `lists` och seeda om.
 
 ```bash
-pnpm test                     # 626 tester — motorerna är testdrivna
+pnpm test                     # 645 tester — motorerna är testdrivna
 pnpm tsc --noEmit
 pnpm lint
 pnpm test:e2e                 # Playwright, egen lista per test

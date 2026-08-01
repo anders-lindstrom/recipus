@@ -31,6 +31,19 @@ export interface DetailFieldsProps {
   onAmountChange: (amount: Amount | null) => void;
   modifier: string | null;
   onModifierChange: (modifier: string | null) => void;
+  /**
+   * Every keystroke, for a caller that has to REACT to the sort rather than
+   * store it.
+   *
+   * Separate from `onModifierChange` because they answer different questions.
+   * That one is "this is the value now", and it deliberately waits for blur or
+   * Enter so the entry sheet does not dispatch an op per letter. This one is
+   * only ever read to decide what to draw: the add-details sheet reveals its
+   * "sort or egen vara?" choice the moment there is a sort at all, and gating
+   * that on blur meant typing "fryst" and watching nothing happen until you
+   * happened to tap elsewhere.
+   */
+  onModifierInput?: (modifier: string) => void;
   /** Which field takes the caret when the sheet opens, if any. */
   autoFocus?: "amount" | "modifier";
 }
@@ -40,6 +53,7 @@ export function DetailFields({
   onAmountChange,
   modifier,
   onModifierChange,
+  onModifierInput,
   autoFocus,
 }: DetailFieldsProps) {
   const [amountDraft, setAmountDraft] = useState(
@@ -76,10 +90,14 @@ export function DetailFields({
             onChange={(e) => setAmountDraft(e.target.value)}
             onBlur={commitAmount}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                commitAmount();
-                e.currentTarget.blur();
-              }
+              if (e.key !== "Enter") return;
+              // Claims the keypress. Without it the sheet's own Enter handler —
+              // which listens on `window`, so it runs after this — sees focus
+              // already on `<body>` and submits the whole sheet on the keystroke
+              // that was only meant to leave the field. See `useFocusTrap`.
+              e.preventDefault();
+              commitAmount();
+              e.currentTarget.blur();
             }}
             placeholder="2 dl"
             inputMode="text"
@@ -101,13 +119,17 @@ export function DetailFields({
           <input
             value={modifierDraft}
             autoFocus={autoFocus === "modifier"}
-            onChange={(e) => setModifierDraft(e.target.value)}
+            onChange={(e) => {
+              setModifierDraft(e.target.value);
+              onModifierInput?.(e.target.value);
+            }}
             onBlur={commitModifier}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                commitModifier();
-                e.currentTarget.blur();
-              }
+              if (e.key !== "Enter") return;
+              // Claims the keypress — see the amount field above.
+              e.preventDefault();
+              commitModifier();
+              e.currentTarget.blur();
             }}
             placeholder="mogna"
             inputMode="text"
