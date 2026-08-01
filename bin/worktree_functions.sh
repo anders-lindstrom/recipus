@@ -32,8 +32,12 @@ function load_worktree_config() {
 
 # Get the repository name from the git root directory
 function get_repo_name() {
-    # Always get the main repository name, even when in a worktree
-    local main_repo_path=$(git worktree list 2>/dev/null | head -1 | awk '{print $1}')
+    # Always get the main repository name, even when in a worktree.
+    # --porcelain puts the path alone on its line; `git worktree list` columns
+    # are space-separated, so a repo under a path containing a space resolved to
+    # a truncated prefix and every worktree path built from it was wrong.
+    local main_repo_path=$(git worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree /{sub(/^worktree /,""); print; exit}')
     if [[ -n "$main_repo_path" ]]; then
         basename "$main_repo_path"
     else
@@ -89,9 +93,12 @@ function get_work_name_from_path() {
         return 0
     fi
 
-    # flat: <repo>-<work>
-    if [[ "$worktree_name" =~ ^${repo_name}-(.+)$ ]]; then
-        echo "${BASH_REMATCH[1]}"
+    # flat: <repo>-<work>. The repo name is interpolated into a regex, so a dot
+    # in it would match any character and a bracket or paren would make the
+    # pattern invalid — compare the prefix literally instead.
+    local flat_prefix="${repo_name}-"
+    if [[ "$worktree_name" == "$flat_prefix"* ]]; then
+        echo "${worktree_name#"$flat_prefix"}"
         return 0
     fi
 
@@ -100,7 +107,8 @@ function get_work_name_from_path() {
 
 # Get the main repository path from any worktree
 function get_main_repo_path() {
-    git worktree list | head -1 | awk '{print $1}'
+    git worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree /{sub(/^worktree /,""); print; exit}'
 }
 
 # Check if a branch exists (locally or on origin)
