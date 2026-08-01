@@ -41,10 +41,14 @@ förblir tom, även om du kör `pnpm db:seed` igen. Vill du ha dem tillbaka loka
 ta bort raden i `lists` och seeda om.
 
 ```bash
-pnpm test                     # 361 tester — motorerna är testdrivna
+pnpm test                     # 626 tester — motorerna är testdrivna
 pnpm tsc --noEmit
 pnpm lint
 pnpm test:e2e                 # Playwright, egen lista per test
+
+# Ikonspriten är gitignorad, så CI kör alltid utan den. Vill du se vad CI ser —
+# systememoji i stället för OpenMoji, vilket ändrar tiles textinnehåll — flytta
+# undan public/icons/openmoji-sprite.svg och kör om.
 ```
 
 ## Struktur
@@ -57,7 +61,7 @@ src/lib/sync/         op-typer och reduceraren — körs på BÅDA sidor
 src/lib/recipes/      URL-import via JSON-LD, LLM som reserv
 src/lib/barcode/      EAN-validering och Open Food Facts
 src/lib/services/     delad affärslogik (läsvägar, op-tillämpning på servern)
-src/lib/client/       IndexedDB, utkorg, SSE  (ej klar — se DECISIONS.md)
+src/lib/client/       IndexedDB, utkorg, SSE, streckkodsuppslag utan nät
 src/db/               drizzle-schema, migrationer, seed-data
 src/components/       brickor, sökrad, avdelningsrad, receptblad, skanner
 src/app/globals.css   designtokens: färg, typskala, radier, rörelse
@@ -73,6 +77,11 @@ utan att något felmeddelande syns.
 **En vara finns högst en gång per lista.** Muffinsreceptet och pastasåsen som
 båda vill ha grädde ger *två bidrag*, inte två brickor — annars går du förbi
 mejerihyllan två gånger och köper hälften av vad du behövde.
+
+**En skanning svarar från telefonen först.** Den lokala EAN-kartan ligger i
+`SyncState.barcodes`, så en streckkod ni redan svarat på hamnar på listan utan
+nät. En okänd streckkod *skrivs* innan något slås upp — annars tappas den i
+butiken, och i köpläge är en tappad skanning ett förlorat köp.
 
 **Att bocka av betyder köpt.** Långtryck ger "ta bort — köpte inte", som
 medvetet inte skriver någon köphistorik. Utan den skillnaden lär sig

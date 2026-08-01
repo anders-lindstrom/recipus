@@ -1,4 +1,397 @@
-# Varor says what it is, 2026-07-31 — read this first
+# The scan works in a shop now, 2026-08-01 — read this first
+
+Anders asked for a walkthrough of this log against what he actually wanted from
+Recipus. Four things came out of it, and the first one was that the log was
+wrong about the second.
+
+**This file was in the wrong order and now is not.** Six of the newest entries —
+every one of them from real shop use — had been appended at the BOTTOM, below the
+2026-07-29 material, while the file opened with "read this first". Four separate
+entries claimed that phrase. They are chronological now, newest first, and only
+the top one makes the claim. Nothing was rewritten; the sections were moved.
+
+## The deploy had been red for four hours
+
+Eleven commits were sitting on `master` undeployed, so the phone in the shop was
+still running the settings-screen build and still had every bug the 07-31
+entries below say were fixed — the merge that loses the shopping, the press that
+acts through the sheet, the undo that expires before you notice.
+
+The cause is worth more than the fix. Two e2e tests read `textContent` to
+identify an aisle chip and a tile. `ItemIcon` falls back to the **system emoji as
+a real text node** whenever the OpenMoji sprite is missing, and it is always
+missing in CI: the sprite is gitignored and only `pnpm icons:build` writes it,
+which the e2e job does not run. So the assertions read `Bröd` on a laptop and
+`🍞Bröd` on the runner. Green locally, red on the only machine that deploys.
+
+`accessibleText` in the fixtures drops `aria-hidden` subtrees before reading, the
+way the browser itself does when computing an accessible name — so those tests
+now assert the string a screen reader gets rather than the artwork beside it.
+**Verified by moving the sprite aside and running the whole suite that way**,
+which is the only honest way to check a CI-only failure and takes ten seconds.
+
+Worth keeping as a habit: this suite's e2e assertions run against a rendering
+the developer never sees.
+
+## Three things were built, unwired, and documented as done
+
+The scan path is the headline, and finding it took reading comments rather than
+code. Every piece of an offline scan already existed and each one carried a
+comment describing the job it was not doing:
+
+- `SyncState.barcodes` — *"the local EAN map the design doc promised (and which
+  never existed) is simply `barcodes` below"*. Hydrated on every load. Read by
+  nothing.
+- `create_product` / `link_barcode` — *"unknown barcodes are created in a shop,
+  offline… only the outbox can fix that"*. Dispatched by nothing.
+- `autoMapProductName`, threshold argued down to 0.8 against real product names.
+  Zero callers.
+- `PUT /api/barcode/{ean}` — *"after this, scanning it resolves instantly and
+  offline from the local map"*. Nothing resolved from the local map.
+
+`handleScan` was a bare `fetch`, server-first. Offline every scan died in a
+catch, **including a barcode the household had already answered for**. In buy
+mode that is a lost purchase, which is precisely the failure the
+registry-in-the-op-log decision was taken to prevent.
+
+**The ordering is the whole feature.** An unknown barcode is now *written* —
+`create_product` then `link_barcode`, through the outbox — **before** anything is
+fetched. Fetch-then-write is what dropped the scan; write-then-fetch cannot. The
+lookup that follows is bounded at 2.5s, the same budget and the same argument as
+the service worker's navigations: offline, a fetch fails on connection setup in
+milliseconds, so the timeout only bites on a flaky signal.
+
+`resolveScan` is pure and answers from state alone. A confident name auto-maps at
+0.8 and the scan completes with no question asked; anything less opens
+`/varor`'s own place sheet, so a placement made at a till and one made at the
+kitchen table are the same event on every other device.
+
+**It also closes the phantom purchase written down the night before.** A product
+pointing at a merged-away vara used to fall back to the name "Varan" and record a
+purchase against the tombstone. It now takes the same route as an unplaced
+product and asks. The note below guessed the fix would be to *refuse* the scan;
+having built it, refusing is worse — it leaves somebody at a till holding an item
+the app will not take. Asking turns a dead end into the one action that repairs
+it, and it cannot invent a purchase either way.
+
+## "The one flow this repo cannot test" was half true
+
+That claim, made twice below, rests on headless Chromium having no camera. True
+of the decoder and false of everything downstream: **with no camera the scanner
+falls back to a barcode field**, and every line that decides what a scan MEANS
+sits after that field. Four e2e tests now cover an unknown code scanned offline,
+a known one resolving with the server dead, a placement completing a buy, and a
+dismissal recording nothing.
+
+One of them asserts the **Postgres row** rather than the outbox draining, and
+that distinction is worth carrying to the next test: a refused op is retried a
+bounded number of times and then dropped, which empties the outbox in exactly the
+same way success does. "The outbox is empty" is not "the server accepted it".
+
+What is still untested is `createDetector` and the frame loop — a much smaller
+and much more honest gap than "the scanner is untestable".
+
+## Live sharing had never been tested at all
+
+The design doc asks for "two browser contexts editing one list to prove live
+sharing works". It did not exist, which left the one feature the decision table
+calls *"the feature that makes Bring worth using"* as the only headline feature
+with no end-to-end proof. The reducer's convergence is tested to exhaustion and
+none of that says the stream is attached, that the fan-out picks the right
+listeners, or that a client applies what arrives.
+
+A second `BrowserContext`, not a second tab — separate IndexedDB, so it is two
+devices rather than one talking to itself through a shared store. Both
+directions, because "my optimistic write, later confirmed" and "somebody else's
+write, arriving cold" are different paths from either client's side. The stream
+is the only thing that can carry it: there is no `setInterval` in the client, and
+catch-up runs on reconnect and `visibilitychange`, neither of which an idle
+visible page fires.
+
+## `/statistik`, and the debt it admits to
+
+The roster decision was taken a week ago — derive it from `autheliaUser`, which
+is already on every op and every purchase row — and the screen that was its only
+consumer was never built. `users` is still not read, deliberately: a second
+roster can disagree with the first, and a missing row would read as "this person
+bought nothing".
+
+Every count attributes through `effectiveCatalogItemId`. That is the entire risk
+in the module: a scan writes `{null, product}` and no vara, so a query reading
+`purchases.catalog_item_id` returns a **believable** number that silently omits
+every purchase made with the camera. The DB test pins exactly that shape — three
+purchases of one vara, two taps and one scan — because the wrong answer is two
+and two looks fine.
+
+No charts, no spend, no consumption rates: the spec's own out-of-scope list. A
+bar chart of four numbers is decoration, and this app has never known a price.
+
+The unplaced-purchase count is on the screen rather than quietly dropped. The
+spec calls the review queue "the thing that makes the numbers true rather than
+cosmetic tidying", and the screen showing the numbers is where that is worth an
+interruption.
+
+Reached from settings, not a fourth header icon. This log has been round that
+loop once already: the fix for "nobody can find the registry" was not "advertise
+everything everywhere".
+
+## Small
+
+`displayName` capitalises the Authelia username — Anders's call, and he did not
+much care which way. The assumption that a username is a first name is stated in
+one pure function, which is the point of it being one; `svc-backup` becomes
+`Svc-backup`, which is wrong and harmless.
+
+## Left undone
+
+- **The catalog seed.** `gröt` is still absent (only `grötris` and
+  `grötpulver`). Deferred on purpose: Anders wants a separate pass over seeding,
+  probably importing from Bring.
+- **A merge still re-points the open list only**, and `deletionBlockers` still
+  reads the same partial state — both unchanged from the entry below.
+- **The undo strip still holds only the most recent removal.**
+- **The wire-schema test still covers `move_item` and the registry ops only.**
+- **`sourceKind: "scan"` is still never produced**, so the entry sheet's
+  "Skannad" label stays dead — and the scan path now has an obvious place to
+  produce it, if it is ever worth the op field.
+
+---
+
+# One phantom-purchase path left open, deliberately, 2026-07-31
+
+The stand-in guard sits in `list-screen`'s `remove`, which every removal on that
+screen goes through. **The scanner does not go through it.** `handleScan` in
+`list-client.tsx` calls `actions.removeItem(catalogItemId, true)` directly, and it
+does not care whether `state.catalog[catalogItemId]` exists — it falls back to the
+name "Varan" and carries on. So scanning a barcode whose product still points at a
+tombstoned vara records a purchase against that tombstone, exactly as tapping one
+used to.
+
+**It is hard to reach and it is not impossible.** A merge re-points every product
+on the losing vara (`mergeVaraOps` is handed `openVara.products`), and a delete is
+refused outright while any product still hangs off the word — so both ordinary
+routes close it. What is left is a product mapped to that vara from another device
+during the merge, or one that arrived after the sheet read its list. Narrow, and
+the same shape as the bug that reached production, which is why it is written down
+rather than left to be rediscovered.
+
+**Not fixed here, and the reason is the reason to be careful about it.** The
+scanner is the one flow this repo cannot test: there is no camera in headless
+Chromium, so `pnpm test:e2e` never exercises the happy path at all. Changing the
+buy branch means shipping an unverifiable change to the flow where a mistake costs
+a real purchase in a real shop. The honest fix is probably to refuse the scan when
+the vara is unknown rather than to silently downgrade it to a removal — a scan
+that cannot say what it bought should say so — but that is a decision about what
+happens in front of a till, and it wants a person who can hold a phone.
+
+---
+
+# What the merge review found, 2026-07-31
+
+The merge work above was reviewed adversarially before anyone shipped on it, and
+four defects came back. All four had the same shape, which is the useful part:
+**the ops were right and what the device knew when it built them was not.** The
+convergence claim — only pre-existing op kinds, so nothing new races anything —
+survived every attack, including two devices merging in opposite directions, a
+long-offline `add_item` landing after the tombstone, and the server's re-pointing
+racing the client's. Worth separating those two things when reading this code:
+the op log is sound; the plan is only as good as the state the planner can see.
+
+Three of the four are fixed in the commit above. Two limits are left standing on
+purpose, and they are here rather than buried in a comment because both can
+surprise somebody.
+
+**A merge re-points the open list only.** The store holds one list — the snapshot
+selects `list_entries` by `list_id`, catch-up filters ops the same way, and
+`applySnapshot` rebuilds from empty — so a vara sitting on Hemköp *and* Ica has
+only its Hemköp entry within reach when you merge from `/varor?list=hemkop`. Ica
+keeps the orphan. That is no worse than the state the reducer has always allowed
+and it is now visible: it draws as a stand-in tile and one tap clears it. Fixing
+it properly means either loading every list's entries into the client, or moving
+the re-pointing server-side — and the latter is exactly the row-rewriting the
+merge case forbids, so it is not a small change and it is not obviously right.
+
+The same blind spot pre-dates the merge work and is worth knowing: `deletionBlockers`
+reads the same partial `state.entries`, so **"Ta bort" is offered for a vara that
+is live on another list.**
+
+**A merge's `set_amount` can lose a concurrent quantity.** The rule "if the
+survivor is already on the list, its own tile wins" is true only of tiles the
+merging device has already seen. A partner adding `vitlök 3 st` from a phone with
+no signal, seconds before you merge `vitlöksklyfta` into `vitlök`, loses their 3
+st to the merge's `set_amount` on a strictly later clock. Both devices settle on
+the same number, so this is a lost update rather than a divergence — the same
+class of trade `move_item` already makes and documents, and for the same reason:
+the alternative is a read-modify-write that cannot be order-independent.
+
+**And one process note.** The bag glyph was reported shipped, and had been added
+to `ui-icon.tsx` and used in zero files — in the same entry whose whole subject
+was a decision written and not implemented. It is invisible to lint, because an
+unused entry in an icon map is not an unused variable, and invisible to the
+tests. Screenshots caught it. This is the third time in this log that the
+intended end state got written down as the shipped state; if there is one habit
+worth taking from tonight, it is `grep` for the thing you claim to have wired.
+
+---
+
+# The shop's layout became the household's to state, 2026-07-31
+
+`lists.category_order` has been per-list since the first migration — Hemköp and
+Bauhaus share the household's vocabulary and nothing about their layout — and
+nothing in the app could ever change it. Every list walked in seed order. That
+falls hardest on exactly the varor a household invents, because the add bar files
+anything new under Övrigt and Övrigt sorts last: taking the supported path put
+your own words at the wrong end of the shop, permanently.
+
+**Two settings that look alike and are not**, which is why they are labelled
+apart. The *order* is a fact about a shop, so it stays on the list, rides the
+`update_list` op that already existed, and reaches every phone — one person
+getting it right is worth having. The *view* — aisle headings or one long grid —
+is a fact about a person, so it is device-local like the shop mode, because
+syncing it would let one member of the household silently restyle the other's
+screen mid-shop.
+
+**No migration, no new op kind, no reducer change.** That was the point of
+splitting it that way: the sync core is where a regression is least visible and
+most expensive, and this feature did not need to touch it.
+
+**Flat is not unordered.** The grouped view got its sequence from
+`groupByCategory` and the flat view had no aisle sort at all, so turning headings
+off used to leave the tiles in whatever order the entry map produced. Both views
+now sort by walking order first and urgency second — urgency rises *within* an
+aisle and never out of it, which is the rule the priority sort already followed
+for the reason that not walking back across the shop beats every other signal.
+
+**Up and down buttons, not a drag handle.** Dragging inside a sheet that itself
+scrolls vertically is a fight on a touchscreen, and it has no keyboard equivalent
+at all — which is the same hole the long-press tier had until this week.
+
+**A bug fell out of it.** The list screen read `snapshot.list` and nothing else,
+which was fine while a list's only editable fact was its name. Re-ordering the
+aisles did nothing visible until a reload, and a partner's re-order arriving over
+SSE was applied to the store and never drawn. It reads the store now, and falls
+back to the snapshot only for the first paint and the offline shell.
+
+---
+
+# Undo stopped expiring, 2026-07-31
+
+An in-store audit found the app doing the one thing `use-mode.ts` promises it
+cannot: *"you under-record purchases, you never invent one."*
+
+**A mis-tap in buy mode wrote a purchase that never happened, permanently.** Tick
+something from a later aisle — which is what mid-shop looks like — and the only
+"Ångra" rendered **702px above the viewport**, most of a screen out of sight, and
+was gone after eight seconds. So the shopper does the obvious thing and finds the
+item in the catalog and taps it back on. That restores the item and not the truth:
+`add_item` only retracts a purchase when handed `undoesClientOpId`, which only
+`undoLastBuy` ever passes. The row stands and the cadence engine learns from it.
+
+**So there is no timer.** A timer on an undo whose entire job is to catch a
+mistake you have not noticed yet expires exactly when it is needed. The offer
+stands until it is used, replaced by the next removal, or dismissed — and it names
+the item, so a stale one is ignorable rather than confusing.
+
+**It is in the thumb arc, and it is not the toast that was removed.** That one sat
+bottom-centre *on top of* the entry sheet's own buttons, so the confirmation for
+tap three covered the control you wanted for tap four. This sits at z-30, under
+every sheet's z-50 backdrop, where it cannot cover a control in the one situation
+that mattered; and it clears the scan button rather than layering under it,
+because a 44px target half-covered by a 56px circle is a 44px target you miss.
+
+**Rejected: making a catalog re-add retract the purchase.** It is what people
+actually do, and the audit suggested it — but it cannot tell "I mis-tapped" from
+"I need another one", and inventing a retraction is the same class of error as
+inventing a purchase. **Known residual:** the strip holds only the most recent
+removal, so a mis-tap noticed five taps later is still unreachable.
+
+---
+
+# The press was acting on what it opened, 2026-07-31
+
+Also reported from production, and described as *"long pressing something,
+changing something, then pressing out of the dialog modifies the thing behind it
+— marking something bought while I just wanted to get out of the popover."*
+
+**A touchscreen hit-tests the click a touch synthesizes at the finger's position
+when it LIFTS**, not where it went down. Every sheet in this app is opened by a
+500ms hold, so by the time the finger comes up the sheet has mounted underneath
+it — and the press delivers one final click into a surface that did not exist when
+it began, aimed at whatever control now happens to sit under that thumb. Where it
+landed was pure geometry: near the top of the page it hit the backdrop, so the
+entry sheet opened and shut inside its own opening gesture; lower down it hit the
+action row, so the gesture meant to *open* the breakdown quietly took the item off
+the list.
+
+**This is only reproducible with real touch events**, which is why the suite never
+caught it. `page.mouse` dispatches its click to the nearest common ancestor of
+where the button went down and came up, which after a sheet opens is a container
+that does nothing. Every long-press test in the suite used the mouse. There is a
+`longPressTile` helper in the fixtures now and a note saying why.
+
+**A sheet ignores pointer input until it has seen a `pointerdown` of its own.** A
+latch rather than a time window: the stray click is by construction the only one
+that can reach a freshly-mounted sheet with no pointerdown in front of it, and a
+window would have been a guess about how long a thumb takes to lift. Dismissal
+also now requires the click to be on the backdrop *itself*, so dragging a finger
+while reading the breakdown and releasing outside no longer throws you out.
+
+---
+
+# A merge left the shopping behind, 2026-07-31
+
+Reported from a real shop: a recipe from ICA put *kycklingbröstfilé* on the list,
+it was merged into plain *kycklingbröst*, and the meat vanished. Adding the recipe
+again produced "a new line of the other one", and the two went double.
+
+**One fault, two symptoms.** `merge_catalog_items` refuses to rewrite entry rows,
+and that refusal is right — a merge that rewrote rows does not converge, which the
+reducer argues at length and a test pins down. But nothing else moved them either.
+The products were re-pointed by the sheet, and purchases, recipe ingredients and
+aliases by a server-side effect; the list entry was the one thing with no owner.
+So it stayed live on a vara the catalog no longer had, and the screen can only
+draw an entry it can look up. The row therefore neither stayed nor went: live,
+undrawable, unreachable by any gesture, and beyond pruning too, because pruning
+collects entries by `removed_at` and an orphan has none. Re-adding the recipe then
+resolved to the survivor — the server had re-pointed `recipe_ingredients` — and
+built a second entry beside the invisible one.
+
+**The design comment said "visible, manually fixable". It was neither**, and that
+gap between what was written and what shipped is the whole lesson here. It is the
+second time on this screen: the bag glyph above was decided and not shipped for
+months.
+
+**The fix re-points the shopping the same way the products were.** `mergeVaraOps`
+is pure and lives beside the rest of the registry model so the arguable cases can
+be asserted rather than clicked through. It uses only op kinds that already exist,
+which is what keeps convergence untouched and lets a phone on an older build
+understand every op it receives. Three calls in it are worth disagreeing with:
+
+*What travels is what the tile was showing* — the merged total, the sort, the
+urgency — and **not** the provenance. The amount arrives as a manual contribution,
+so "Behövs till: Vitlöksstekt kyckling" is lost. A contribution is keyed to a
+recipe addition and rehoming one would drag a recipe's own bookkeeping across;
+`move_item` already makes exactly this trade and says so.
+
+*If the survivor is already on the list, its own tile wins* and the loser's entry
+is simply removed. Summing them would be the intuitive answer and `set_amount`
+cannot express it — it names an amount, it cannot ask for one more — and
+overwriting a number somebody is looking at is worse than leaving it alone.
+
+*Two unit families carry nothing.* "2 dl" and "3 st" cannot be summed honestly, so
+rather than picking one and calling it the answer, the survivor gets no amount.
+
+**`tileVaror` is the net under all of it.** Orphans stay legitimate — the reducer
+deliberately allows a long-offline `add_item` to land after a merge — so a live
+entry whose vara is missing now renders a stand-in tile instead of a hole. Its
+name is the entry's own id with the hyphens opened out, because the row that knew
+the pretty spelling is precisely what is gone. It looks odd on purpose. One tap
+removes it, which is all it is for, and it is what finally makes the orphans
+already sitting in production reachable.
+
+---
+
+# Varor says what it is, 2026-07-31
 
 Three hundred and forty-six things, drawn with the same art and carrying the
 same names, appear on two screens and do opposite things. On the list they are
@@ -53,7 +446,9 @@ another file in flight and wants the bag for the same reason the other two do.
 
 ---
 
-# Settings and "what is actually running", 2026-07-31 — read this first
+---
+
+# Settings and "what is actually running", 2026-07-31
 
 The household's initials sat in the header as the one thing you could not press,
 and the screen that answers "which build is this phone running" did not exist.
@@ -102,7 +497,9 @@ should be with no CI stamp, and the tip toggle round-tripped localStorage.
 
 ---
 
-# Fewer taps, 2026-07-31 (later) — read this first
+---
+
+# Fewer taps, 2026-07-31 (later)
 
 Anders used the previous session's work and came back with four complaints, all
 of them about the same thing: the app knew what he wanted and made him say it
@@ -188,6 +585,8 @@ banan", "banan mogen", "banan mogen 3 st", "3 st mogen banan", "banan 3 st
 mogen" and "3 mogna bananer" all resolve identically. Creating "mogen banan"
 wrote `frukt-gront` and icon `1F34C` to the database, not `ovrigt` and a box,
 and both bananas sit on the list as separate tiles.
+
+---
 
 ---
 
@@ -371,7 +770,9 @@ pass over the seed list for other everyday Swedish staples missing the same way.
 
 ---
 
-# Away session, 2026-07-30 (evening) — read this first
+---
+
+# Away session, 2026-07-30 (evening)
 
 Anders answered every open decision and then went out for a few hours. Nothing is
 waiting on him except the two items at the end of this section.
@@ -464,7 +865,9 @@ field?**
 
 ---
 
-# Hardening session, 2026-07-30 — read this first
+---
+
+# Hardening session, 2026-07-30
 
 The registry gate is done, priority and modifiers are built, `move_item` is
 fixed, retention is wired at 30 days, and the two loose ends from the away
@@ -666,6 +1069,8 @@ create — a registry import, a merge, a repair path — fails loudly there.
 
 ---
 
+---
+
 # Away session, 2026-07-30
 
 Anders asked for four features to be specified, then built. Four parallel design
@@ -847,6 +1252,8 @@ phone silently merges the two tiles and then writes amounts to the wrong one.
 
 ---
 
+---
+
 # Plan-mode scanning only ever adds, 2026-07-30
 
 You asked whether a scan in plan mode puts the item on the list. It did — but
@@ -876,6 +1283,8 @@ Verified in the real UI against the real database, all four cells: plan/not-list
 → `mjölk tillagd`, 0 purchases. Plan/already-listed → `finns redan på listan`,
 still on the list, 0 purchases. Buy/listed → `mjölk köpt`, off the list, 1
 purchase. Buy/not-listed → `tillagd och köpt`, 1 purchase.
+
+---
 
 ---
 
@@ -1109,6 +1518,8 @@ data once (DevTools → Application → Storage) and it will not recur.
 
 ---
 
+---
+
 # Deploy preparation
 
 Everything needed to ship to the beelink now exists: `Dockerfile`,
@@ -1188,6 +1599,8 @@ symbol, which makes the fallback the builder always claimed to have.
 5. **The first container must be created by hand.** Watchtower updates
    containers, it never creates them — the first CI trigger will log
    `scanned=0 updated=0`, which looks like a broken token and is not.
+
+---
 
 # UI redesign
 
@@ -1384,225 +1797,3 @@ column, because a dash looked like a parsed value. And the entry sheet's two
 foot buttons were equal-weight side by side, separated by a hairline, which is
 how "Ta bort" gets tapped by someone reaching for "Ändra mängd"; they are
 stacked now, with only the destructive one coloured.
-
-# A merge left the shopping behind, 2026-07-31
-
-Reported from a real shop: a recipe from ICA put *kycklingbröstfilé* on the list,
-it was merged into plain *kycklingbröst*, and the meat vanished. Adding the recipe
-again produced "a new line of the other one", and the two went double.
-
-**One fault, two symptoms.** `merge_catalog_items` refuses to rewrite entry rows,
-and that refusal is right — a merge that rewrote rows does not converge, which the
-reducer argues at length and a test pins down. But nothing else moved them either.
-The products were re-pointed by the sheet, and purchases, recipe ingredients and
-aliases by a server-side effect; the list entry was the one thing with no owner.
-So it stayed live on a vara the catalog no longer had, and the screen can only
-draw an entry it can look up. The row therefore neither stayed nor went: live,
-undrawable, unreachable by any gesture, and beyond pruning too, because pruning
-collects entries by `removed_at` and an orphan has none. Re-adding the recipe then
-resolved to the survivor — the server had re-pointed `recipe_ingredients` — and
-built a second entry beside the invisible one.
-
-**The design comment said "visible, manually fixable". It was neither**, and that
-gap between what was written and what shipped is the whole lesson here. It is the
-second time on this screen: the bag glyph above was decided and not shipped for
-months.
-
-**The fix re-points the shopping the same way the products were.** `mergeVaraOps`
-is pure and lives beside the rest of the registry model so the arguable cases can
-be asserted rather than clicked through. It uses only op kinds that already exist,
-which is what keeps convergence untouched and lets a phone on an older build
-understand every op it receives. Three calls in it are worth disagreeing with:
-
-*What travels is what the tile was showing* — the merged total, the sort, the
-urgency — and **not** the provenance. The amount arrives as a manual contribution,
-so "Behövs till: Vitlöksstekt kyckling" is lost. A contribution is keyed to a
-recipe addition and rehoming one would drag a recipe's own bookkeeping across;
-`move_item` already makes exactly this trade and says so.
-
-*If the survivor is already on the list, its own tile wins* and the loser's entry
-is simply removed. Summing them would be the intuitive answer and `set_amount`
-cannot express it — it names an amount, it cannot ask for one more — and
-overwriting a number somebody is looking at is worse than leaving it alone.
-
-*Two unit families carry nothing.* "2 dl" and "3 st" cannot be summed honestly, so
-rather than picking one and calling it the answer, the survivor gets no amount.
-
-**`tileVaror` is the net under all of it.** Orphans stay legitimate — the reducer
-deliberately allows a long-offline `add_item` to land after a merge — so a live
-entry whose vara is missing now renders a stand-in tile instead of a hole. Its
-name is the entry's own id with the hyphens opened out, because the row that knew
-the pretty spelling is precisely what is gone. It looks odd on purpose. One tap
-removes it, which is all it is for, and it is what finally makes the orphans
-already sitting in production reachable.
-
-# The press was acting on what it opened, 2026-07-31
-
-Also reported from production, and described as *"long pressing something,
-changing something, then pressing out of the dialog modifies the thing behind it
-— marking something bought while I just wanted to get out of the popover."*
-
-**A touchscreen hit-tests the click a touch synthesizes at the finger's position
-when it LIFTS**, not where it went down. Every sheet in this app is opened by a
-500ms hold, so by the time the finger comes up the sheet has mounted underneath
-it — and the press delivers one final click into a surface that did not exist when
-it began, aimed at whatever control now happens to sit under that thumb. Where it
-landed was pure geometry: near the top of the page it hit the backdrop, so the
-entry sheet opened and shut inside its own opening gesture; lower down it hit the
-action row, so the gesture meant to *open* the breakdown quietly took the item off
-the list.
-
-**This is only reproducible with real touch events**, which is why the suite never
-caught it. `page.mouse` dispatches its click to the nearest common ancestor of
-where the button went down and came up, which after a sheet opens is a container
-that does nothing. Every long-press test in the suite used the mouse. There is a
-`longPressTile` helper in the fixtures now and a note saying why.
-
-**A sheet ignores pointer input until it has seen a `pointerdown` of its own.** A
-latch rather than a time window: the stray click is by construction the only one
-that can reach a freshly-mounted sheet with no pointerdown in front of it, and a
-window would have been a guess about how long a thumb takes to lift. Dismissal
-also now requires the click to be on the backdrop *itself*, so dragging a finger
-while reading the breakdown and releasing outside no longer throws you out.
-
-# Undo stopped expiring, 2026-07-31
-
-An in-store audit found the app doing the one thing `use-mode.ts` promises it
-cannot: *"you under-record purchases, you never invent one."*
-
-**A mis-tap in buy mode wrote a purchase that never happened, permanently.** Tick
-something from a later aisle — which is what mid-shop looks like — and the only
-"Ångra" rendered **702px above the viewport**, most of a screen out of sight, and
-was gone after eight seconds. So the shopper does the obvious thing and finds the
-item in the catalog and taps it back on. That restores the item and not the truth:
-`add_item` only retracts a purchase when handed `undoesClientOpId`, which only
-`undoLastBuy` ever passes. The row stands and the cadence engine learns from it.
-
-**So there is no timer.** A timer on an undo whose entire job is to catch a
-mistake you have not noticed yet expires exactly when it is needed. The offer
-stands until it is used, replaced by the next removal, or dismissed — and it names
-the item, so a stale one is ignorable rather than confusing.
-
-**It is in the thumb arc, and it is not the toast that was removed.** That one sat
-bottom-centre *on top of* the entry sheet's own buttons, so the confirmation for
-tap three covered the control you wanted for tap four. This sits at z-30, under
-every sheet's z-50 backdrop, where it cannot cover a control in the one situation
-that mattered; and it clears the scan button rather than layering under it,
-because a 44px target half-covered by a 56px circle is a 44px target you miss.
-
-**Rejected: making a catalog re-add retract the purchase.** It is what people
-actually do, and the audit suggested it — but it cannot tell "I mis-tapped" from
-"I need another one", and inventing a retraction is the same class of error as
-inventing a purchase. **Known residual:** the strip holds only the most recent
-removal, so a mis-tap noticed five taps later is still unreachable.
-
-# The shop's layout became the household's to state, 2026-07-31
-
-`lists.category_order` has been per-list since the first migration — Hemköp and
-Bauhaus share the household's vocabulary and nothing about their layout — and
-nothing in the app could ever change it. Every list walked in seed order. That
-falls hardest on exactly the varor a household invents, because the add bar files
-anything new under Övrigt and Övrigt sorts last: taking the supported path put
-your own words at the wrong end of the shop, permanently.
-
-**Two settings that look alike and are not**, which is why they are labelled
-apart. The *order* is a fact about a shop, so it stays on the list, rides the
-`update_list` op that already existed, and reaches every phone — one person
-getting it right is worth having. The *view* — aisle headings or one long grid —
-is a fact about a person, so it is device-local like the shop mode, because
-syncing it would let one member of the household silently restyle the other's
-screen mid-shop.
-
-**No migration, no new op kind, no reducer change.** That was the point of
-splitting it that way: the sync core is where a regression is least visible and
-most expensive, and this feature did not need to touch it.
-
-**Flat is not unordered.** The grouped view got its sequence from
-`groupByCategory` and the flat view had no aisle sort at all, so turning headings
-off used to leave the tiles in whatever order the entry map produced. Both views
-now sort by walking order first and urgency second — urgency rises *within* an
-aisle and never out of it, which is the rule the priority sort already followed
-for the reason that not walking back across the shop beats every other signal.
-
-**Up and down buttons, not a drag handle.** Dragging inside a sheet that itself
-scrolls vertically is a fight on a touchscreen, and it has no keyboard equivalent
-at all — which is the same hole the long-press tier had until this week.
-
-**A bug fell out of it.** The list screen read `snapshot.list` and nothing else,
-which was fine while a list's only editable fact was its name. Re-ordering the
-aisles did nothing visible until a reload, and a partner's re-order arriving over
-SSE was applied to the store and never drawn. It reads the store now, and falls
-back to the snapshot only for the first paint and the offline shell.
-
-# What the merge review found, 2026-07-31
-
-The merge work above was reviewed adversarially before anyone shipped on it, and
-four defects came back. All four had the same shape, which is the useful part:
-**the ops were right and what the device knew when it built them was not.** The
-convergence claim — only pre-existing op kinds, so nothing new races anything —
-survived every attack, including two devices merging in opposite directions, a
-long-offline `add_item` landing after the tombstone, and the server's re-pointing
-racing the client's. Worth separating those two things when reading this code:
-the op log is sound; the plan is only as good as the state the planner can see.
-
-Three of the four are fixed in the commit above. Two limits are left standing on
-purpose, and they are here rather than buried in a comment because both can
-surprise somebody.
-
-**A merge re-points the open list only.** The store holds one list — the snapshot
-selects `list_entries` by `list_id`, catch-up filters ops the same way, and
-`applySnapshot` rebuilds from empty — so a vara sitting on Hemköp *and* Ica has
-only its Hemköp entry within reach when you merge from `/varor?list=hemkop`. Ica
-keeps the orphan. That is no worse than the state the reducer has always allowed
-and it is now visible: it draws as a stand-in tile and one tap clears it. Fixing
-it properly means either loading every list's entries into the client, or moving
-the re-pointing server-side — and the latter is exactly the row-rewriting the
-merge case forbids, so it is not a small change and it is not obviously right.
-
-The same blind spot pre-dates the merge work and is worth knowing: `deletionBlockers`
-reads the same partial `state.entries`, so **"Ta bort" is offered for a vara that
-is live on another list.**
-
-**A merge's `set_amount` can lose a concurrent quantity.** The rule "if the
-survivor is already on the list, its own tile wins" is true only of tiles the
-merging device has already seen. A partner adding `vitlök 3 st` from a phone with
-no signal, seconds before you merge `vitlöksklyfta` into `vitlök`, loses their 3
-st to the merge's `set_amount` on a strictly later clock. Both devices settle on
-the same number, so this is a lost update rather than a divergence — the same
-class of trade `move_item` already makes and documents, and for the same reason:
-the alternative is a read-modify-write that cannot be order-independent.
-
-**And one process note.** The bag glyph was reported shipped, and had been added
-to `ui-icon.tsx` and used in zero files — in the same entry whose whole subject
-was a decision written and not implemented. It is invisible to lint, because an
-unused entry in an icon map is not an unused variable, and invisible to the
-tests. Screenshots caught it. This is the third time in this log that the
-intended end state got written down as the shipped state; if there is one habit
-worth taking from tonight, it is `grep` for the thing you claim to have wired.
-
-# One phantom-purchase path left open, deliberately, 2026-07-31
-
-The stand-in guard sits in `list-screen`'s `remove`, which every removal on that
-screen goes through. **The scanner does not go through it.** `handleScan` in
-`list-client.tsx` calls `actions.removeItem(catalogItemId, true)` directly, and it
-does not care whether `state.catalog[catalogItemId]` exists — it falls back to the
-name "Varan" and carries on. So scanning a barcode whose product still points at a
-tombstoned vara records a purchase against that tombstone, exactly as tapping one
-used to.
-
-**It is hard to reach and it is not impossible.** A merge re-points every product
-on the losing vara (`mergeVaraOps` is handed `openVara.products`), and a delete is
-refused outright while any product still hangs off the word — so both ordinary
-routes close it. What is left is a product mapped to that vara from another device
-during the merge, or one that arrived after the sheet read its list. Narrow, and
-the same shape as the bug that reached production, which is why it is written down
-rather than left to be rediscovered.
-
-**Not fixed here, and the reason is the reason to be careful about it.** The
-scanner is the one flow this repo cannot test: there is no camera in headless
-Chromium, so `pnpm test:e2e` never exercises the happy path at all. Changing the
-buy branch means shipping an unverifiable change to the flow where a mistake costs
-a real purchase in a real shop. The honest fix is probably to refuse the scan when
-the vara is unknown rather than to silently downgrade it to a removal — a scan
-that cannot say what it bought should say so — but that is a decision about what
-happens in front of a till, and it wants a person who can hold a phone.
