@@ -505,6 +505,11 @@ export function AddBar({
                         pick(item);
                       }}
                       onLongPress={() => onLongPressItem(item.id)}
+                      // The hold really does open AddDetailsSheet, so this tile
+                      // is one of the three that may claim it. `ItemTile` stopped
+                      // inferring the claim from `onLongPress` existing, because
+                      // the suggestion tile's hold dismisses rather than opens.
+                      longPressOpensDialog
                     />
                   );
                 })}
