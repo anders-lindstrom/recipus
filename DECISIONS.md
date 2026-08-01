@@ -1928,3 +1928,46 @@ the four `*_updated_by` columns 0003 had made NOT NULL, the purchase omitted
 database state 0005 had restructured away. The fixture had never been moved when
 the constant was bumped. Fixed, and it now guards the 0006 backfill it was
 skipped past.
+
+## An audit's findings, triaged
+
+A read-only sweep of the screens the sort work did not touch. Three of six
+findings survived checking; the other three are recorded here because the
+reasons they were rejected are the interesting part.
+
+**Taken: `role="alert"` was missing from two copies of one pattern.**
+`recipe-import.tsx` wraps its failure card in an always-mounted live region,
+with a comment explaining that a flip from "loading" to "error" is otherwise
+completely silent — nothing is focused, so nothing announces. That exact
+loading/error/ready block was then copied into `recipe-list.tsx` and
+`recipe-detail.tsx` without it. A bug class this codebase had already found and
+fixed once, unfixed in both copies.
+
+**Taken: "Har alltid hemma" never said what it does.** Its only effect is on a
+screen it does not mention — a recipe leaves the vara off the list by default —
+and the label reads as a note to self. Now carries a line saying so, using the
+`hint` the "Dold" switch beside it introduced. Same complaint as "Behövs till →
+Tillagd", one screen over.
+
+**Rejected: "give the merge sheet Enter-to-pick-top-match, like its siblings".**
+The inconsistency is real and the fix is backwards. `varor-place-sheet` can
+afford Enter because placing a product is reversible and says so in its own
+comment; merging tombstones a vara, re-points its products and carries its
+shopping across, and its rows commit on a single tap with **no confirmation
+step**. Binding that to a keystroke is precisely what the sheets' Enter contract
+exists to prevent — "a menu of equals gets no primary, because Enter picking one
+of five buttons for you is how a keypress ends up removing something". Merge
+keeps Escape and nothing else.
+
+**Rejected: "recipe import creates varor with no review".** It does not.
+`recipe-detail.tsx` computes `pendingCreates` but dispatches nothing; the sheet
+draws each unmatched ingredient as a row badged NY VARA, every row can be
+switched off, and `handleConfirm` filters the creates to `usedIds` — so
+excluding a row creates no vara at all. The review is there and is per
+ingredient.
+
+**Rejected: "fold `recipe-add-sheet` into `<Sheet>`".** The shared contract is
+`useFocusTrap`, and both full-bleed modals use it — that is the seam. `Sheet` is
+a bottom sheet carrying the hard-won latch that ignores the stray click a
+long-press synthesizes, and giving it a full-bleed mode would mean maintaining
+that fix through a branch that never needs it.

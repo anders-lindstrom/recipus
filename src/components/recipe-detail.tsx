@@ -365,22 +365,28 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
 
       {status === "loading" && <DetailSkeleton />}
 
-      {status === "error" && (
-        <div className="px-6 py-16 text-center">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-danger-tint text-danger">
-            <UiIcon name="warning" size={26} />
+      {/* Always mounted, holding a card that is not — see the identical note in
+          `recipe-list.tsx`. The flip from skeleton to error announces nothing
+          otherwise, and this screen is often reached from a shared link, so the
+          failure can be the first thing the app ever says to someone. */}
+      <div role="alert">
+        {status === "error" && (
+          <div className="px-6 py-16 text-center">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-danger-tint text-danger">
+              <UiIcon name="warning" size={26} />
+            </div>
+            <p className="mt-4 text-body font-semibold text-ink">{error}</p>
+            <button
+              type="button"
+              onClick={retry}
+              className="mt-4 inline-flex items-center gap-2 rounded-full border border-line-strong px-4 py-2.5 text-body-sm font-semibold text-ink"
+            >
+              <UiIcon name="retry" size={15} />
+              Försök igen
+            </button>
           </div>
-          <p className="mt-4 text-body font-semibold text-ink">{error}</p>
-          <button
-            type="button"
-            onClick={retry}
-            className="mt-4 inline-flex items-center gap-2 rounded-full border border-line-strong px-4 py-2.5 text-body-sm font-semibold text-ink"
-          >
-            <UiIcon name="retry" size={15} />
-            Försök igen
-          </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {status === "ready" && recipe && (
         <>

@@ -166,22 +166,36 @@ export function RecipeList() {
         </div>
       )}
 
-      {status === "error" && (
-        <div className="px-6 py-16 text-center">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-danger-tint text-danger">
-            <UiIcon name="warning" size={26} />
+      {/* A live region that is always mounted, holding a card that is not.
+          The same treatment `recipe-import.tsx` already gives its failure, and
+          for the same reason: a flip from the loading skeleton to this card is
+          completely silent to a screen reader — nothing is focused, and nothing
+          announces. The region has to exist BEFORE the text does, because a
+          live region inserted together with its own content is a coin flip
+          across screen readers. `role="alert"` rather than a polite region
+          because the person is standing there waiting for this exact answer.
+
+          It was fixed once, on the import screen, and the identical
+          loading/error/ready block was then copied here and into
+          `recipe-detail.tsx` without it. */}
+      <div role="alert">
+        {status === "error" && (
+          <div className="px-6 py-16 text-center">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-danger-tint text-danger">
+              <UiIcon name="warning" size={26} />
+            </div>
+            <p className="mt-4 text-body font-semibold text-ink">{error}</p>
+            <button
+              type="button"
+              onClick={retry}
+              className="mt-4 inline-flex items-center gap-2 rounded-full border border-line-strong px-4 py-2.5 text-body-sm font-semibold text-ink"
+            >
+              <UiIcon name="retry" size={15} />
+              Försök igen
+            </button>
           </div>
-          <p className="mt-4 text-body font-semibold text-ink">{error}</p>
-          <button
-            type="button"
-            onClick={retry}
-            className="mt-4 inline-flex items-center gap-2 rounded-full border border-line-strong px-4 py-2.5 text-body-sm font-semibold text-ink"
-          >
-            <UiIcon name="retry" size={15} />
-            Försök igen
-          </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {status === "ready" && recipes.length === 0 && (
         <div className="px-6 py-16 text-center">

@@ -546,6 +546,11 @@ export function VarorItemSheet({
           label="Har alltid hemma"
           icon="check"
           checked={vara.item.hasAtHome}
+          // What it actually DOES, which nothing said. The name reads as a note
+          // to self — and its only effect is somewhere else entirely, on a
+          // screen this one does not mention: a recipe leaves it off the list by
+          // default. Same complaint as "Behövs till → Tillagd", one screen over.
+          hint="Recept hoppar över den när de läggs till."
           onToggle={() => onSetHasAtHome(!vara.item.hasAtHome)}
         />
 
