@@ -25,8 +25,21 @@ const HIDDEN = `test-hidden-hidden-${RUN}`;
 const NOW = new Date("2026-08-01T12:00:00.000Z");
 const DAY = 24 * 60 * 60 * 1000;
 
-/** Eight purchases seven days apart, the last six days ago: confidently due. */
-const OFFSETS = [55, 48, 41, 34, 27, 20, 13, 6];
+/**
+ * Four purchases seven days apart, the last six days ago: overdue 6/7 = 0.86
+ * against the 0.85 threshold, confidence 0.43 against the 0.30 floor.
+ *
+ * Four rather than a comfortable eight, and deliberately the minimum that can
+ * be suggested at all — `statistics.test.ts` asserts against a top-12 list over
+ * the whole household, so every purchase a test leaves in the shared database
+ * competes with somebody else's fixture. An earlier version of this file used
+ * eight and made that suite fail about one run in five.
+ *
+ * (Three purchases would not do: 2 intervals gives countFactor 2/7 = 0.2857,
+ * under the confidence floor. `MIN_PURCHASES = 3` is unreachable — see the
+ * report.)
+ */
+const OFFSETS = [27, 20, 13, 6];
 
 function catalogRow(id: string, hidden: boolean) {
   return {
