@@ -186,8 +186,8 @@ interface Scored {
 export function rankMatches(
   catalog: CatalogItem[],
   query: string,
-  limit = MAX_SUGGESTIONS,
-  now: Date = new Date(),
+  limit: number,
+  now: Date,
 ): CatalogItem[] {
   const q = normalizeName(query);
   if (!q) return [];
@@ -246,11 +246,15 @@ export function rankMatches(
          * household that switched from lättmjölk to mellanmjölk went on being
          * offered lättmjölk first for the life of the install.
          *
-         * `useCount` survives as the tie-break rather than being replaced,
-         * because `catalogOrderScore` returns 0 for every vara with no
-         * `lastUsedAt` — which is the whole seeded catalog until something is
-         * bought. Without the fallback a fresh install would rank on nothing but
-         * the name.
+         * `useCount` survives as the tie-break, and it fires in exactly one
+         * situation rather than generally: `catalogOrderScore` returns 0 only
+         * when `lastUsedAt` is null, and the two columns are written together
+         * everywhere (`apply-op.ts`, `seed.ts`) with purchases never pruned — so
+         * `useCount > 0` implies a non-null `lastUsedAt`. The scores are
+         * therefore equal only when BOTH varor are untouched, which is the whole
+         * seeded catalog on a fresh install. That is the case this exists for;
+         * it is not a general "more-used wins" rule, and reading it as one would
+         * be wrong.
          */
         catalogOrderScore(
           b.item.useCount,
@@ -374,6 +378,18 @@ export function resolveQuery(
   catalog: CatalogItem[],
   raw: string,
   limit = MAX_SUGGESTIONS,
+  /*
+   * Defaulted, unlike `rankMatches`, and only because of who calls it.
+   *
+   * `rankMatches` takes `now` as a required argument so that adding recency to
+   * its ordering could not change a caller's behaviour without somebody typing
+   * the word — which is how two sheets were quietly re-ranked the first time.
+   * Its callers are all in this lane. These two are the add bar's entry points,
+   * owned by another lane in this pass, so the default is what keeps the
+   * signature compatible. It is the one place `now` really is now.
+   *
+   * Every test passes it explicitly, so the module stays pinnable.
+   */
   now: Date = new Date(),
 ): ResolvedQuery {
   const { name, amountText } = splitQuery(raw);

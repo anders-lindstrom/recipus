@@ -82,8 +82,13 @@ export function VarorPlaceSheet({
   // The add bar's ranking, so "mj" reaches mjölk here exactly as it does there.
   // The limit is raised because this sheet has the room and a wrong placement is
   // more expensive to discover than a wrong search suggestion.
+  //
+  // `now` is passed because that parity is the point: `rankMatches` decays old
+  // usage, and this sheet asks the same question the add bar does — which of the
+  // household's words does this belong to. The vara they have been buying
+  // lately is the better guess for a product they just scanned.
   const matches = useMemo(
-    () => (name ? rankMatches(catalog, name, 12) : resting),
+    () => (name ? rankMatches(catalog, name, 12, new Date()) : resting),
     [catalog, name, resting],
   );
 

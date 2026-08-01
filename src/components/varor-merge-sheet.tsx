@@ -55,10 +55,26 @@ export function VarorMergeSheet({
   const [query, setQuery] = useState("");
   const name = query.trim();
 
+  /*
+   * `now` is passed rather than the ranking being kept on raw use count, and it
+   * is worth saying why, because "which vara is this a duplicate of" is not
+   * obviously a recency question.
+   *
+   * It is a tie-break here and almost nothing else: you are typing the name of
+   * a specific word you want to merge into, so the match tiers do the work and
+   * this only separates varor that matched equally well. When it does separate
+   * them, the one the household still buys is the right survivor — merging into
+   * a word that has been dead for a year is the outcome nobody wants.
+   *
+   * Known and deliberately not changed in this pass: the resting list below
+   * still sorts on raw `useCount`, so the ordering model shifts slightly when
+   * you start typing. It is a tie-break in a lookup sheet, and changing a third
+   * surface without a test is exactly what this pass was pulled up for.
+   */
   const matches = useMemo(
     () =>
       name
-        ? rankMatches(candidates, name, MAX_CANDIDATES)
+        ? rankMatches(candidates, name, MAX_CANDIDATES, new Date())
         : candidates
             .slice()
             .sort(

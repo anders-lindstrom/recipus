@@ -9,6 +9,22 @@ import {
   splitQuery,
 } from "./search";
 
+/**
+ * One clock for the whole file. `rankMatches` takes `now` as a required
+ * argument so that recency could not silently re-rank a caller (it did, twice,
+ * before it was required) — the wrapper keeps that explicit without repeating
+ * the date on sixty call sites.
+ */
+const NOW = new Date("2026-08-01T12:00:00Z");
+
+function rank(
+  catalog: CatalogItem[],
+  query: string,
+  limit = 6,
+): CatalogItem[] {
+  return rankMatches(catalog, query, limit, NOW);
+}
+
 function item(
   name: string,
   useCount = 0,
@@ -54,7 +70,7 @@ describe("rankMatches with hidden varor", () => {
   ];
 
   it("sorts a hidden vara below every visible match", () => {
-    const names = rankMatches(WITH_HIDDEN, "mjölk").map((i) => i.name);
+    const names = rank(WITH_HIDDEN, "mjölk").map((i) => i.name);
     expect(names).toContain("mjölkchoklad");
     expect(names[names.length - 1]).toBe("mjölkchoklad");
   });
@@ -63,41 +79,41 @@ describe("rankMatches with hidden varor", () => {
     // Even the strongest possible match loses to any visible one — the point is
     // that the household never trips over a hidden vara by accident.
     const catalog = [item("mjölkchoklad", 1), { ...item("mjölk", 40), hidden: true }];
-    expect(rankMatches(catalog, "mjölk")[0].name).toBe("mjölkchoklad");
+    expect(rank(catalog, "mjölk")[0].name).toBe("mjölkchoklad");
   });
 
   it("still finds a hidden vara when nothing else matches", () => {
     const catalog = [{ ...item("saffran", 3), hidden: true }];
     // The way back. Typing the name is how you ask for it again, and the add bar
     // un-hides whatever you pick.
-    expect(rankMatches(catalog, "saffran").map((i) => i.name)).toEqual(["saffran"]);
+    expect(rank(catalog, "saffran").map((i) => i.name)).toEqual(["saffran"]);
   });
 });
 
 describe("rankMatches", () => {
   it("puts a prefix match above a substring match", () => {
     // Typing "mj" means mjölk, not havremjölk.
-    expect(rankMatches(CATALOG, "mj")[0].name).toBe("mjölk");
+    expect(rank(CATALOG, "mj")[0].name).toBe("mjölk");
   });
 
   it("matches the start of a later word", () => {
     // "lök" has to find "gul lök" — nobody types the adjective first.
-    const names = rankMatches(CATALOG, "lök").map((i) => i.name);
+    const names = rank(CATALOG, "lök").map((i) => i.name);
     expect(names).toContain("gul lök");
   });
 
   it("ignores Swedish diacritics in both directions", () => {
     // Reaching for ä while walking through a shop is not happening.
-    expect(rankMatches(CATALOG, "rakor")[0].name).toBe("räkor");
-    expect(rankMatches(CATALOG, "räkor")[0].name).toBe("räkor");
+    expect(rank(CATALOG, "rakor")[0].name).toBe("räkor");
+    expect(rank(CATALOG, "räkor")[0].name).toBe("räkor");
   });
 
   it("is case insensitive", () => {
-    expect(rankMatches(CATALOG, "SMÖR")[0].name).toBe("smör");
+    expect(rank(CATALOG, "SMÖR")[0].name).toBe("smör");
   });
 
   it("breaks ties on how often you actually buy the thing", () => {
-    const names = rankMatches(CATALOG, "mjölk").map((i) => i.name);
+    const names = rank(CATALOG, "mjölk").map((i) => i.name);
     // All three contain "mjölk"; the exact match wins, then usage decides.
     expect(names[0]).toBe("mjölk");
     expect(names.indexOf("havremjölk")).toBeLessThan(
@@ -115,7 +131,6 @@ describe("rankMatches", () => {
    * lättmjölk first for as long as the app lived.
    */
   describe("recency", () => {
-    const NOW = new Date("2026-08-01T12:00:00Z");
     const daysAgo = (n: number) =>
       new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
 
@@ -124,7 +139,7 @@ describe("rankMatches", () => {
         item("mjölk lätt", 40, daysAgo(200)),
         item("mjölk mellan", 8, daysAgo(3)),
       ];
-      expect(rankMatches(catalog, "mjölk", 6, NOW).map((i) => i.name)).toEqual([
+      expect(rank(catalog, "mjölk", 6).map((i) => i.name)).toEqual([
         "mjölk mellan",
         "mjölk lätt",
       ]);
@@ -135,7 +150,7 @@ describe("rankMatches", () => {
         item("mjölk lätt", 3, daysAgo(5)),
         item("mjölk mellan", 30, daysAgo(5)),
       ];
-      expect(rankMatches(catalog, "mjölk", 6, NOW)[0].name).toBe("mjölk mellan");
+      expect(rank(catalog, "mjölk", 6)[0].name).toBe("mjölk mellan");
     });
 
     it("falls back to raw use count for varor that have never been used", () => {
@@ -143,7 +158,7 @@ describe("rankMatches", () => {
       // bought, and every score is then 0 — the ordering must not collapse to
       // alphabetical on a fresh install.
       const catalog = [item("mjölk lätt", 2), item("mjölk mellan", 30)];
-      expect(rankMatches(catalog, "mjölk", 6, NOW)[0].name).toBe("mjölk mellan");
+      expect(rank(catalog, "mjölk", 6)[0].name).toBe("mjölk mellan");
     });
 
     it("never lets recency outrank a better literal match", () => {
@@ -153,21 +168,21 @@ describe("rankMatches", () => {
         item("havremjölk", 50, daysAgo(0)),
         item("mjölk", 1, daysAgo(30)),
       ];
-      expect(rankMatches(catalog, "mj", 6, NOW)[0].name).toBe("mjölk");
+      expect(rank(catalog, "mj", 6)[0].name).toBe("mjölk");
     });
   });
 
   it("returns nothing for an empty query", () => {
-    expect(rankMatches(CATALOG, "")).toEqual([]);
-    expect(rankMatches(CATALOG, "   ")).toEqual([]);
+    expect(rank(CATALOG, "")).toEqual([]);
+    expect(rank(CATALOG, "   ")).toEqual([]);
   });
 
   it("returns nothing when there is genuinely no match", () => {
-    expect(rankMatches(CATALOG, "zzzz")).toEqual([]);
+    expect(rank(CATALOG, "zzzz")).toEqual([]);
   });
 
   it("respects the limit", () => {
-    expect(rankMatches(CATALOG, "m", 2)).toHaveLength(2);
+    expect(rank(CATALOG, "m", 2)).toHaveLength(2);
   });
 });
 
@@ -263,11 +278,11 @@ describe("rankMatches, inflected queries", () => {
   it("reaches the singular from the plural people actually type", () => {
     // Every other tier asks whether the catalog name contains the query, so
     // "tomater" used to find both jars of tomatoes and never the vegetable.
-    expect(rankMatches(VEG, "tomater")[0].name).toBe("tomat");
+    expect(rank(VEG, "tomater")[0].name).toBe("tomat");
   });
 
   it("still offers the jars, just below the thing itself", () => {
-    const names = rankMatches(VEG, "tomater").map((i) => i.name);
+    const names = rank(VEG, "tomater").map((i) => i.name);
     expect(names).toContain("krossade tomater");
     expect(names.indexOf("tomat")).toBeLessThan(
       names.indexOf("krossade tomater"),
@@ -276,8 +291,8 @@ describe("rankMatches, inflected queries", () => {
 
   it("does not treat a compound as an inflection of its own first half", () => {
     // "ostbågar" is a thing you are about to create, not a way of saying ost.
-    expect(rankMatches(VEG, "ostbågar").map((i) => i.name)).not.toContain("ost");
-    expect(rankMatches(VEG, "mjölkchoklad").map((i) => i.name)).not.toContain(
+    expect(rank(VEG, "ostbågar").map((i) => i.name)).not.toContain("ost");
+    expect(rank(VEG, "mjölkchoklad").map((i) => i.name)).not.toContain(
       "mjölk",
     );
   });
@@ -290,7 +305,7 @@ describe("rankMatches, inflected queries", () => {
     // Flour is still reachable from "mjölk" — one edit apart, so the fuzzy tier
     // has it — but it now sits below a genuine substring match instead of above
     // one, which is the whole distinction being pinned here.
-    const names = rankMatches(
+    const names = rank(
       [item("mjöl", 3), item("mjölk", 40), item("havremjölk", 5)],
       "mjölk",
     ).map((i) => i.name);
@@ -301,9 +316,9 @@ describe("rankMatches, inflected queries", () => {
 
   it("accepts the endings that are real", () => {
     const catalog = [item("banan"), item("ägg"), item("äpple")];
-    expect(rankMatches(catalog, "bananer")[0].name).toBe("banan");
-    expect(rankMatches(catalog, "ägget")[0].name).toBe("ägg");
-    expect(rankMatches(catalog, "äpplen")[0].name).toBe("äpple");
+    expect(rank(catalog, "bananer")[0].name).toBe("banan");
+    expect(rank(catalog, "ägget")[0].name).toBe("ägg");
+    expect(rank(catalog, "äpplen")[0].name).toBe("äpple");
   });
 });
 
@@ -338,35 +353,35 @@ const BREAKFAST = [
 
 describe("rankMatches, typos", () => {
   it("finds gröt from grät", () => {
-    expect(rankMatches(BREAKFAST, "grät")[0].name).toBe("gröt");
+    expect(rank(BREAKFAST, "grät")[0].name).toBe("gröt");
   });
 
   it("finds mjölk from a dropped letter", () => {
-    expect(rankMatches(BREAKFAST, "mjök")[0].name).toBe("mjölk");
+    expect(rank(BREAKFAST, "mjök")[0].name).toBe("mjölk");
   });
 
   it("finds a multi-word vara from a fumbled single word", () => {
     // Distance from the whole name is six; from its last word it is one, which
     // is the only reason the registry's multi-word varor stay reachable.
-    expect(rankMatches(BREAKFAST, "sinka").map((i) => i.name)).toContain(
+    expect(rank(BREAKFAST, "sinka").map((i) => i.name)).toContain(
       "kokt skinka",
     );
   });
 
   it("never outranks something that matched literally", () => {
     // "gryn" is exact; "gröt" is one edit away. Exactness wins, always.
-    const names = rankMatches(BREAKFAST, "gryn").map((i) => i.name);
+    const names = rank(BREAKFAST, "gryn").map((i) => i.name);
     expect(names[0]).toBe("gryn");
   });
 
   it("stays out of short queries entirely", () => {
     // At three characters nearly everything is one edit from everything, and
     // the tier stops carrying information.
-    expect(rankMatches(BREAKFAST, "grt")).toEqual([]);
+    expect(rank(BREAKFAST, "grt")).toEqual([]);
   });
 
   it("still refuses a query that resembles nothing", () => {
-    expect(rankMatches(BREAKFAST, "zzzzzz")).toEqual([]);
+    expect(rank(BREAKFAST, "zzzzzz")).toEqual([]);
   });
 });
 
