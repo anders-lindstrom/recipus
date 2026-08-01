@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useFocusTrap } from "@/lib/client/use-focus-trap";
 import { UiIcon } from "./ui-icon";
 
 /**
@@ -217,11 +218,35 @@ export function Scanner({
     };
   }, [handleHit]);
 
+  /**
+   * The last surface in the app that covered the page without saying so.
+   *
+   * `recipe-add-sheet` got this treatment for exactly the same reason and its
+   * comment still applies here: this is full-bleed rather than a bottom sheet,
+   * so it looks like a screen and was written like one — no role, no
+   * `aria-modal`, and, the part you notice without a screen reader, no Escape.
+   * Every other covering surface closes on it. This one holds the camera open
+   * and, in buy mode, records a purchase per scan, so being unable to get out of
+   * it from the keyboard is the worst place in the app to have that gap.
+   *
+   * No primary action: the manual-entry field is a real `<form>` with its own
+   * submit, and a second meaning for Enter on a screen whose whole job is to
+   * keep scanning would be a way to close it by accident.
+   */
+  const dialogRef = useFocusTrap<HTMLDivElement>(onClose);
+
   return (
     // The scanner is the one screen that ignores the page theme, in both
     // schemes: it is a viewfinder, and anything other than black around a
     // camera feed competes with it for the eye.
-    <div className="fixed inset-0 z-50 flex flex-col bg-black">
+    <div
+      ref={dialogRef}
+      className="fixed inset-0 z-50 flex flex-col bg-black outline-none"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Skanna streckkod"
+      tabIndex={-1}
+    >
       <div className="safe-top flex flex-none items-center gap-2 px-2 py-2 text-white">
         <span className="flex-1 pl-2 text-title">Skanna streckkod</span>
         <button
@@ -264,25 +289,29 @@ export function Scanner({
           </p>
         )}
 
-        {lastResult && (
-          <div
-            aria-live="polite"
-            className="mb-3 flex items-center gap-2 rounded-control bg-white/10 px-3 py-2.5 text-body-sm font-semibold"
-          >
-            <UiIcon name="check" size={16} className="flex-none" />
-            <span className="flex-1">{lastResult.text}</span>
-            {lastResult.undo && (
-              <button
-                type="button"
-                onClick={lastResult.undo}
-                className="flex flex-none items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-caption font-semibold"
-              >
-                <UiIcon name="undo" size={13} />
-                Ångra
-              </button>
-            )}
-          </div>
-        )}
+        {/* The region is always mounted; only its contents come and go.
+            A live region that appears WITH its first message is announced
+            unreliably — the platform has to observe a change inside a region it
+            already knows about — and this one carries the only confirmation a
+            buy-mode scan ever gets. */}
+        <div aria-live="polite">
+          {lastResult && (
+            <div className="mb-3 flex items-center gap-2 rounded-control bg-white/10 px-3 py-2.5 text-body-sm font-semibold">
+              <UiIcon name="check" size={16} className="flex-none" />
+              <span className="flex-1">{lastResult.text}</span>
+              {lastResult.undo && (
+                <button
+                  type="button"
+                  onClick={lastResult.undo}
+                  className="flex flex-none items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-caption font-semibold"
+                >
+                  <UiIcon name="undo" size={13} />
+                  Ångra
+                </button>
+              )}
+            </div>
+          )}
+        </div>
 
         {needsManual ? (
           <form

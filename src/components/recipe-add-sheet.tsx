@@ -138,8 +138,34 @@ export function RecipeAddSheet({
    * covers the page closes on Escape, and this one, the only one that can put a
    * dozen varor on a list, did not. Sharing the trap makes it behave like its
    * siblings and announce itself as what it is.
+   *
+   * Enter confirms, for the same reason it does in the smaller sheets: this is
+   * one question with one answer, and every control between here and the button
+   * is a `<button>` that owns its own Enter — so the only keypress this can
+   * catch is one nothing else wanted.
    */
-  const dialogRef = useFocusTrap<HTMLDivElement>(onCancel);
+  const dialogRef = useFocusTrap<HTMLDivElement>(onCancel, confirm);
+
+  /**
+   * Named rather than inline so the button and the keyboard cannot drift apart.
+   * They already had: the button had the whole payload built inside its
+   * `onClick`, which is exactly the shape that makes a second caller copy it.
+   */
+  function confirm() {
+    if (included.length === 0) return;
+    onConfirm(
+      factor,
+      included
+        // An unmatched ingredient still needs a catalog item; the caller creates
+        // one before dispatching, so a null id here would be a bug rather than a
+        // state to render.
+        .filter((r) => r.catalogItemId !== null)
+        .map((r) => ({
+          catalogItemId: r.catalogItemId!,
+          amount: r.scaledAmount,
+        })),
+    );
+  }
 
   return (
     <div
@@ -354,20 +380,7 @@ export function RecipeAddSheet({
         <button
           type="button"
           disabled={included.length === 0}
-          onClick={() =>
-            onConfirm(
-              factor,
-              included
-                // An unmatched ingredient still needs a catalog item; the caller
-                // creates one before dispatching, so a null id here would be a
-                // bug rather than a state to render.
-                .filter((r) => r.catalogItemId !== null)
-                .map((r) => ({
-                  catalogItemId: r.catalogItemId!,
-                  amount: r.scaledAmount,
-                })),
-            )
-          }
+          onClick={confirm}
           // The list name lives in the header two lines up, so it is left out
           // here: repeating it is what pushed this label onto a second line.
           className="flex w-full items-center justify-center gap-2 rounded-card bg-brand py-3.5 text-body font-semibold text-on-brand transition-transform duration-100 active:scale-[0.99] disabled:opacity-40"
