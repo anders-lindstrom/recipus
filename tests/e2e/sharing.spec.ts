@@ -72,3 +72,32 @@ test("an item added on one phone appears on the other without a reload", async (
     await other.close();
   }
 });
+
+/**
+ * A smoke test for `/statistik`, and deliberately only that.
+ *
+ * The counts themselves are asserted against Postgres in
+ * `src/lib/services/statistics.test.ts`, where the fixture can state exactly
+ * which purchases exist. Re-asserting numbers here would mean either seeding
+ * from the browser or reading whatever the shared dev database happens to hold,
+ * and both produce a test that fails for reasons that have nothing to do with
+ * the screen.
+ *
+ * What it does pin is the thing a unit test cannot: that the route renders at
+ * all. It is a server component doing four database queries behind an auth
+ * check, which is a shape that fails as a 500 rather than as a type error.
+ */
+test("the statistics screen renders, in both periods", async ({ page }) => {
+  await page.goto("/statistik");
+  await expect(page.getByRole("heading", { name: "Statistik" })).toBeVisible();
+
+  await page.getByRole("link", { name: "Allt" }).click();
+  await expect(page).toHaveURL(/period=allt/);
+  await expect(page.getByRole("heading", { name: "Statistik" })).toBeVisible();
+
+  // Reachable without knowing the URL — the header is full, so it lives behind
+  // the same affordance as everything else you look at once a month.
+  await page.goto("/installningar");
+  await page.getByRole("link", { name: /Statistik/ }).click();
+  await expect(page).toHaveURL(/\/statistik/);
+});

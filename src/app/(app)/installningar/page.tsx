@@ -1,6 +1,8 @@
+import Link from "next/link";
 import { headers } from "next/headers";
 import { ScreenHeader } from "@/components/screen-header";
 import { SettingsHintReset } from "@/components/settings-hint-reset";
+import { UiIcon } from "@/components/ui-icon";
 import { authenticate, AuthError } from "@/lib/auth";
 import { displayName } from "@/lib/utils";
 import { commitUrl, formatBuildTime, getBuildInfo } from "@/lib/version";
@@ -58,6 +60,20 @@ export default async function SettingsPage() {
         <SettingsHintReset />
       </Section>
 
+      {/* Not a fourth icon in the header. That bar already carries the mode
+          toggle, the household's faces, the registry and the recipes, and the
+          log has already been round this loop once — the fix for "nobody can
+          find it" was not "advertise everything everywhere". Statistics is a
+          sofa screen rather than a shop screen, and it belongs behind the same
+          affordance as everything else you look at once a month. */}
+      <Section title="Hushållet">
+        <LinkRow
+          href="/statistik"
+          label="Statistik"
+          hint="Vad ni köper, och vem som handlar"
+        />
+      </Section>
+
       <Section title="Om Recipus">
         <Row
           label="Version"
@@ -101,6 +117,36 @@ function Section({
         {children}
       </div>
     </section>
+  );
+}
+
+/** A row that goes somewhere. Same metrics as `Row`, so the list stays even. */
+function LinkRow({
+  href,
+  label,
+  hint,
+}: {
+  href: string;
+  label: string;
+  hint?: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="flex min-h-11 items-center gap-3 px-4 py-3 active:bg-surface"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-body text-ink">{label}</span>
+        {hint && (
+          <span className="block text-caption text-ink-faint">{hint}</span>
+        )}
+      </span>
+      <UiIcon
+        name="chevronDown"
+        size={16}
+        className="flex-none -rotate-90 text-ink-faint"
+      />
+    </Link>
   );
 }
 
