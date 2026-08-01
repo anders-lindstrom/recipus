@@ -73,7 +73,7 @@ test("asking for the plain kind keeps the sort you already asked for", async ({
 
   // Now ask for ordinary blueberries as well — the exact reported gesture.
   await page.getByLabel("Sök eller lägg till vara").fill("blåbär");
-  await page.getByRole("button", { name: /blåbär/ }).first().click();
+  await page.getByRole("option", { name: /blåbär/ }).first().click();
 
   // The sheet that used to offer only "keep it" or "destroy it".
   await page.getByRole("button", { name: /båda sorterna/i }).click();
@@ -96,7 +96,7 @@ test("a split-off sort is findable and addable again afterwards", async ({
 }) => {
   await addWithSort(page, "blåbär", "mogna");
   await page.getByLabel("Sök eller lägg till vara").fill("blåbär");
-  await page.getByRole("button", { name: /blåbär/ }).first().click();
+  await page.getByRole("option", { name: /blåbär/ }).first().click();
   await page.getByRole("button", { name: /båda sorterna/i }).click();
   await page.getByRole("button", { name: "Skapa", exact: true }).click();
   await expect(onListTile(page, "blåbär mogna")).toBeVisible();
@@ -119,7 +119,7 @@ test("adding something already on the list does not claim it was added", async (
   await expect(onListTile(page, "broccoli")).toBeVisible();
 
   await page.getByLabel("Sök eller lägg till vara").fill("broccoli");
-  await page.getByRole("button", { name: /broccoli/ }).first().click();
+  await page.getByRole("option", { name: /broccoli/ }).first().click();
 
   // It used to say "broccoli tillagd" — a confirmation for something that did
   // not happen, on the same strip that carries undo.
@@ -141,7 +141,7 @@ test("a search result can be held to add a second sort of it", async ({
   // grid, so typing is the ONLY way back to it — and holding a search row did
   // nothing at all until now.
   await page.getByLabel("Sök eller lägg till vara").fill("broccoli");
-  const row = page.getByRole("button", { name: /broccoli/ }).first();
+  const row = page.getByRole("option", { name: /broccoli/ }).first();
   await longPressTile(page, row);
 
   await page.getByLabel("Sort").fill("fryst");
@@ -161,7 +161,7 @@ test("a sort you regret can be hidden, and typing its name brings it back", asyn
   // catalog, so reusing that name would find the vara the previous test created
   // and the "create" row would correctly not be offered at all.
   await page.getByLabel("Sök eller lägg till vara").fill("gurka inlagd");
-  await page.getByRole("button", { name: /som egen vara/ }).click();
+  await page.getByRole("option", { name: /som egen vara/ }).click();
   await expect(onListTile(page, "gurka inlagd")).toBeVisible();
 
   // Off the list, so it is back in the catalog well where it clutters.
@@ -178,7 +178,7 @@ test("a sort you regret can be hidden, and typing its name brings it back", asyn
 
   // But NOT gone. Demoted rather than dropped, so hiding is never a trap.
   await page.getByLabel("Sök eller lägg till vara").fill("gurka inlagd");
-  const row = page.getByRole("button", { name: /gurka inlagd/ }).first();
+  const row = page.getByRole("option", { name: /gurka inlagd/ }).first();
   await expect(row).toContainText("dold");
   await row.click();
   await expect(onListTile(page, "gurka inlagd")).toBeVisible();

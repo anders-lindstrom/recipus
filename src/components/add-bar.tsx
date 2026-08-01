@@ -49,6 +49,9 @@ const FREQUENT_COUNT = 6;
  */
 const FREQUENT_HEADING_ID = "add-bar-frequent";
 
+/** Named so the field can point `aria-controls` at the choices it opens. */
+const LISTBOX_ID = "add-bar-matches";
+
 export interface AddBarProps {
   catalog: CatalogItem[];
   /** Items already on the current list, so they can be marked rather than re-added. */
@@ -109,10 +112,25 @@ function MatchRow({
 }) {
   const { handlers, holding } = useLongPress(onPick, onLongPress);
   return (
-    <li>
+    <li role="presentation">
       <button
         type="button"
-        aria-haspopup="dialog"
+        /**
+         * The row IS the choice, so it carries the option role rather than
+         * sitting inside one; `presentation` on the `li` above keeps the listbox
+         * owning its options across the list markup.
+         *
+         * This cost the row its `aria-haspopup="dialog"`, which ARIA does not
+         * define on an option — an attribute a role does not support is not a
+         * quieter claim, it is an ignored one. Taken deliberately: the claim it
+         * made was about a long-press, which a screen-reader user reaches with
+         * Shift+F10 whether or not it is advertised, whereas without the listbox
+         * these rows were announced as six unheralded buttons and could not be
+         * reached from the keyboard at all. The tile in "Vanligast" is not an
+         * option and keeps its `longPressOpensDialog` claim untouched.
+         */
+        role="option"
+        aria-selected={false}
         className={cn(
           "flex w-full items-center gap-3 px-3 py-2.5 text-left",
           "border-b border-line last:border-b-0",
@@ -411,8 +429,9 @@ export function AddBar({
   // `showSuggestions` read the query alone, so clicking anything else on the
   // page left a full-width results panel hanging over the list until you came
   // back and cleared the field. Measured — it survived `blur()` with "brö" typed.
-  const showSuggestions =
-    open && typing && (matches.length > 0 || canCreate || pair);
+  const showSuggestions = Boolean(
+    open && typing && (matches.length > 0 || canCreate || pair),
+  );
   const showFrequent = open && !typing && frequent.length > 0;
   const showPanel = showSuggestions || showFrequent || (open && justAdded);
 
@@ -487,17 +506,33 @@ export function AddBar({
           }}
           placeholder="Lägg till vara…"
           aria-label="Sök eller lägg till vara"
+          /**
+           * The field is a combobox, and saying so is what makes the results
+           * exist for a screen reader.
+           *
+           * Without this the rows appeared with nothing announcing them: the
+           * only signal that six varor had just been offered was the arrow key
+           * landing on one. `aria-controls` names the listbox rather than the
+           * whole panel, so it points at the choices and not at the
+           * confirmation strip that sits above them.
+           */
+          role="combobox"
+          aria-expanded={showSuggestions}
+          aria-controls={LISTBOX_ID}
+          aria-autocomplete="list"
           inputMode="text"
           /**
-           * "Go", not "Done".
+           * "Send", not "Done" and not "Go".
            *
            * Enter here adds the top match and leaves the field focused and
            * empty for the next vara — measured, and deliberate: adding six
            * things is one errand, not six. A return key labelled *klar* promises
-           * the keyboard is about to go away, and then it does not, on the one
-           * surface where you are meant to press it repeatedly.
+           * the keyboard is about to go away and then does not, on the one
+           * surface you are meant to press repeatedly; and *go* means take me to
+           * the target of what I typed, which is not what happens either. Send
+           * is the one that means "commit this, the field stays open".
            */
-          enterKeyHint="go"
+          enterKeyHint="send"
           autoComplete="off"
           autoCorrect="off"
           /**
@@ -543,7 +578,21 @@ export function AddBar({
           {/* The tile lands behind the keyboard, and keeping focus made that
               worse rather than better: you type on with no idea whether the
               last one took. This says so without a toast, and without leaving
-              the field. */}
+              the field.
+
+              The wrapper is a live region and is here even when there is
+              nothing to say, which is the whole reason it is a wrapper. This
+              strip is the ONLY confirmation an add gets, and focus never moves
+              on an add — so without a region a screen reader was told nothing
+              at all, on the surface whose entire purpose is the keyboard. It
+              cannot be the strip itself: a region that appears in the same
+              breath as its text is one the platform was not yet watching, and
+              the announcement that gets lost is the first, which is the only
+              one there is. Same shape the recipe screens' regions had to take.
+
+              `status`, not an assertive alert — it must not cut across the
+              letters already going into the next vara. */}
+          <div role="status" aria-live="polite">
           {justAdded && (
             <div
               className={cn(
@@ -588,6 +637,7 @@ export function AddBar({
               )}
             </div>
           )}
+          </div>
 
           {showFrequent && (
             <div
@@ -633,13 +683,18 @@ export function AddBar({
           )}
 
           {showSuggestions && (
-            // Named, so a screen reader says what the rows below the field are
-            // rather than announcing an unheralded list of buttons.
-            <ul aria-label="Sökträffar">
+            // A real listbox, named, and pointed at by the field's
+            // `aria-controls`. Arrow keys move DOM focus between its options
+            // rather than an `aria-activedescendant`, which ARIA's combobox
+            // pattern allows and which is what lets `useLongPress` keep its own
+            // Shift+F10 route to the details sheet on the focused row.
+            <ul id={LISTBOX_ID} role="listbox" aria-label="Sökträffar">
               {pair && (
-                <li>
+                <li role="presentation">
                   <button
                     type="button"
+                    role="option"
+                    aria-selected={false}
                       onClick={() => pickPair(pair)}
                     className="flex w-full items-center gap-3 border-b border-line px-3 py-2.5 text-left active:bg-brand-tint"
                   >
@@ -674,8 +729,10 @@ export function AddBar({
               ))}
 
               {canCreate && (
-                <li>
+                <li role="presentation">
                   <button
+                    role="option"
+                    aria-selected={false}
                     type="button"
                       onClick={create}
                     className="flex w-full items-center gap-3 border-t border-line px-3 py-2.5 text-left active:bg-brand-tint"

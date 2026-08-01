@@ -62,7 +62,7 @@ test("typing a quantity puts it on the tile", async ({ freshPage: page }) => {
 test("search folds Swedish diacritics", async ({ freshPage: page }) => {
   // Nobody reaches for ä while walking through a shop.
   await page.getByLabel("Sök eller lägg till vara").fill("rakor");
-  await expect(page.getByRole("button", { name: /räkor/ }).first()).toBeVisible();
+  await expect(page.getByRole("option", { name: /räkor/ }).first()).toBeVisible();
 });
 
 test("the list survives a reload, from IndexedDB", async ({ freshPage: page, listId }) => {
