@@ -11,7 +11,7 @@ import { defineConfig, devices } from "@playwright/test";
  * there by hand, and a test run that silently attached to it would be testing
  * whatever code that server happened to have loaded.
  */
-const PORT = Number(process.env.E2E_PORT ?? 3101);
+const PORT = 3101;
 
 export default defineConfig({
   testDir: "./tests/e2e",
