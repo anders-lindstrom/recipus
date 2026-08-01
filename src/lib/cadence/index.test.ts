@@ -242,13 +242,17 @@ describe("rankSuggestions", () => {
   });
 
   it("sorts by overdueScore descending", () => {
-    const now = addDays(START, 5000);
-    // Both far overdue, but "fast" (small median) racks up a higher ratio
-    // for the same absolute days-since-last.
+    // Both last bought 40 days before `now` — aligned deliberately, because
+    // this is about the ratio and not about who was bought last. 40 days is
+    // also inside the lapse floor for both, so this pins the LIVE ordering;
+    // the lapsed tail sorts the other way up and is covered in "lapsed items".
+    const now = addDays(START, 110);
+    // "fast" (small median) racks up a higher ratio for the same absolute
+    // days-since-last.
     const result = rankSuggestions(
       [
         { catalogItemId: "slow", purchases: datesFromIntervals(START, [10, 10, 10, 10, 10, 10, 10]) },
-        { catalogItemId: "fast", purchases: datesFromIntervals(START, [4, 4, 4, 4, 4, 4, 4]) },
+        { catalogItemId: "fast", purchases: datesFromIntervals(addDays(START, 42), [4, 4, 4, 4, 4, 4, 4]) },
       ],
       { now },
     );
@@ -320,55 +324,137 @@ describe("rankSuggestions", () => {
    * abandoned the higher it climbs. Every real staple ranked below a dead season.
    */
   describe("lapsed items", () => {
-    /** median 7, high confidence, last bought `daysAgo`. */
-    function weekly(catalogItemId: string, daysAgo: number, now: Date): SuggestionInput {
-      const purchases = datesFromIntervals(START, [7, 7, 7, 7, 7, 7, 7]);
-      const shift = now.getTime() - daysAgo * DAY_MS - purchases.at(-1)!.getTime();
+    const now = addDays(START, 2000);
+
+    /** Bought on `intervals`, the last one `daysAgo` before `now`. */
+    function history(
+      catalogItemId: string,
+      intervals: number[],
+      daysAgo: number,
+    ): SuggestionInput {
+      const dates = datesFromIntervals(START, intervals);
+      const shift = now.getTime() - daysAgo * DAY_MS - dates.at(-1)!.getTime();
       return {
         catalogItemId,
-        purchases: purchases.map((d) => new Date(d.getTime() + shift)),
+        purchases: dates.map((d) => new Date(d.getTime() + shift)),
       };
     }
 
-    const now = addDays(START, 400);
+    /** A metronomic staple: `everyDays` apart, eight intervals, confidence 1. */
+    const staple = (id: string, everyDays: number, daysAgo: number) =>
+      history(id, Array(8).fill(everyDays), daysAgo);
 
-    it("ranks a genuinely-due item above a long-abandoned one", () => {
+    /*
+     * The case the first version of this rule got backwards.
+     *
+     * `overdueScore` is daysSinceLast/median, so a UNIFORM absence scores every
+     * item at D/median — inversely proportional to cadence. A cadence-relative
+     * ceiling alone therefore demotes the FASTEST staples first, and a row that
+     * should be untouched leads with soy sauce and buries the bread.
+     */
+    it("does not reorder staples of different cadences after a shared absence", () => {
       const result = rankSuggestions(
         [
-          // 51 days since last purchase on a 7-day rhythm: a finished season.
-          { ...weekly("jordgubbar", 51, now) },
-          // 8 days on a 7-day rhythm: actually due.
-          { ...weekly("mjolk", 8, now) },
+          staple("soja", 21, 21), // 1.00x
+          staple("brod", 3, 21), // 7.00x
+          staple("bryggkaffe", 14, 21), // 1.50x
+          staple("mjolk", 4, 21), // 5.25x
         ],
         { now },
       );
+      expect(result.map((r) => r.catalogItemId)).toEqual([
+        "brod",
+        "mjolk",
+        "bryggkaffe",
+        "soja",
+      ]);
+    });
+
+    it("does not lapse a fast staple for an ordinary fortnight away", () => {
+      // 21 days on a 3-day rhythm is 7x over, and is still just a fortnight.
+      const result = rankSuggestions(
+        [staple("soja", 21, 21), staple("brod", 3, 21)],
+        { now },
+      );
+      expect(result.map((r) => r.catalogItemId)).toEqual(["brod", "soja"]);
+    });
+
+    /*
+     * A finished season, shaped like a real one: four purchases at irregular
+     * intervals, which is low-confidence and only just clears the 0.30 floor.
+     * The earlier fixture made it metronomic, which quietly guaranteed that
+     * `overdueScore` was the only signal able to separate it — the test was
+     * built around the answer.
+     */
+    it("demotes a genuinely abandoned item below a live staple", () => {
+      const result = rankSuggestions(
+        [history("jordgubbar", [9, 5, 7, 6], 60), staple("mjolk", 4, 5)],
+        { now },
+      );
       expect(result.map((r) => r.catalogItemId)).toEqual(["mjolk", "jordgubbar"]);
-      // The abandoned one is still OFFERED, just last — see the demotion comment.
-      expect(result[0].overdueScore).toBeLessThan(result[1].overdueScore);
+      // Still offered, just last — the demotion is not a filter.
+      expect(result).toHaveLength(2);
     });
 
-    it("keeps overdue-descending order within the lapsed group", () => {
+    it("still demotes an item abandoned for a year", () => {
       const result = rankSuggestions(
-        [weekly("older", 60, now), weekly("newer", 30, now)],
+        [staple("jordgubbar", 7, 330), staple("mjolk", 4, 5)],
         { now },
       );
-      expect(result.map((r) => r.catalogItemId)).toEqual(["older", "newer"]);
+      expect(result.map((r) => r.catalogItemId)).toEqual(["mjolk", "jordgubbar"]);
     });
 
-    it("does not demote an item merely well past due but under the ceiling", () => {
-      // 20/7 = 2.9x — two skipped cycles, still plausibly a real gap.
+    /*
+     * The floor must not become the whole test. Something bought every two
+     * months is not abandoned at 100 days, and 100 > 45.
+     */
+    it("keeps a slow cupboard item live well past the floor", () => {
       const result = rankSuggestions(
-        [weekly("lapsed", 30, now), weekly("stillLive", 20, now)],
+        [staple("bakpulver", 60, 100), staple("mjolk", 4, 5)],
         { now },
       );
-      expect(result.map((r) => r.catalogItemId)).toEqual(["stillLive", "lapsed"]);
+      // 100/60 = 1.67x, under the multiple; mjolk at 1.25x sorts below it.
+      expect(result.map((r) => r.catalogItemId)).toEqual(["bakpulver", "mjolk"]);
     });
 
-    it("still fills the row after a holiday, when everything has lapsed", () => {
-      // Three weeks away: every item is far past due and none of them is dead.
-      // A hard cutoff would empty the row exactly when it is most useful.
-      const items = ["a", "b", "c"].map((id) => weekly(id, 40, now));
-      expect(rankSuggestions(items, { now })).toHaveLength(3);
+    /*
+     * A burst buyer: three consecutive days, then three weeks off. `purchaseDays`
+     * collapses same-day purchases but not consecutive ones, so the median is 1
+     * and day 18 of the gap scores 18x. That median is wrong and pre-existing —
+     * what matters here is that the lapse rule does not convert a mild
+     * mis-ranking into a demotion at the point of genuine need.
+     */
+    it("does not demote a burst buyer at the point of real need", () => {
+      const result = rankSuggestions(
+        [history("blojor", [1, 1, 20, 1, 1, 20, 1, 1], 18), staple("mjolk", 4, 5)],
+        { now },
+      );
+      expect(result.map((r) => r.catalogItemId)).toEqual(["blojor", "mjolk"]);
+    });
+
+    it("leads the lapsed tail with the least-abandoned item", () => {
+      // Above the ceiling a bigger overdueScore is stronger evidence the
+      // household has STOPPED, so the tail sorts the other way up.
+      const result = rankSuggestions(
+        [staple("deadest", 7, 300), staple("newest", 7, 60), staple("mid", 7, 120)],
+        { now },
+      );
+      expect(result.map((r) => r.catalogItemId)).toEqual([
+        "newest",
+        "mid",
+        "deadest",
+      ]);
+    });
+
+    it("drops a lapsed item entirely once live ones fill the limit", () => {
+      // The demotion is honest about this: `limit` still slices, so a lapsed
+      // item competes for a slot rather than being guaranteed one.
+      const live = Array.from({ length: 8 }, (_, i) => staple(`live-${i}`, 4, 5));
+      const result = rankSuggestions([staple("jordgubbar", 7, 300), ...live], {
+        now,
+      });
+      expect(result).toHaveLength(8);
+      expect(result.map((r) => r.catalogItemId)).not.toContain("jordgubbar");
     });
   });
 });

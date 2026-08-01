@@ -203,11 +203,42 @@ const SUGGESTION_OVERDUE_THRESHOLD = 0.85;
  *
  * Three cycles rather than two, and it is reasoned from cost asymmetry rather
  * than fitted — there is no real history to calibrate against yet, the same
- * caveat §2.8 of the history spec attaches to its own thresholds. Two cycles
- * would catch a fortnight's holiday on a weekly item, which is an ordinary gap
- * and not an abandonment. Expect to tune it.
+ * caveat §2.8 of the history spec attaches to its own thresholds. Expect to
+ * tune it.
  */
 const LAPSED_OVERDUE_MULTIPLE = 3;
+
+/**
+ * ...but never on the multiple alone, because the multiple is cadence-relative.
+ *
+ * `overdueScore` is `daysSinceLast / medianIntervalDays`, so after a UNIFORM
+ * absence of D days every item scores D/median — inversely proportional to its
+ * cadence. A ceiling on that number therefore does not measure abandonment at
+ * all after an absence: it sorts by speed, and it demotes the household's
+ * FASTEST-moving staples first.
+ *
+ * Three weeks away, every item equally untouched:
+ *
+ *     bröd       median  3d ->  7.00     mjölk      median  4d -> 5.25
+ *     bryggkaffe median 14d ->  1.50     soja       median 21d -> 1.00
+ *
+ * On the multiple alone that row leads with soy sauce and buries bread and milk
+ * at the moment the household is most out of them. A week of eating out, a work
+ * trip, illness, or one partner shopping without recording it all produce the
+ * same shape — this is not an edge case, and an earlier version of this rule
+ * shipped with a comment asserting the opposite.
+ *
+ * So an item must ALSO have been gone in absolute terms. Forty-five days is
+ * about six weeks: long enough that no ordinary holiday, illness or run of
+ * eating out reaches it, short enough to catch a finished season. It is
+ * unfitted, exactly like the 3 above, and for the same reason.
+ *
+ * Taking the max of the two is what makes the pair work. A fast item needs the
+ * floor, because three cycles of a 3-day item is nine days and nine days is
+ * nothing. A slow item needs the multiple, because 45 days is well inside the
+ * normal rhythm of something bought twice a year.
+ */
+const LAPSE_FLOOR_DAYS = 45;
 
 const DEFAULT_SUGGESTION_LIMIT = 8;
 
@@ -275,25 +306,47 @@ export function rankSuggestions(
   }
 
   /*
-   * Lapsed items sort BELOW live ones, and are not dropped.
+   * Lapsed items sort below live ones.
+   *
+   * Both gates must hold — see `LAPSE_FLOOR_DAYS` for why the multiple alone
+   * measures cadence rather than abandonment once the household has been away.
    *
    * Demoted rather than filtered, which is the same call `rankMatches` makes
    * about hidden varor and for a related reason: a rule this crude will
    * sometimes be wrong, and being wrong by burying something is recoverable in a
-   * glance where being wrong by withholding it is invisible. The concrete case
-   * is a holiday — come back after three weeks away and EVERY item is lapsed, so
-   * a hard cutoff would empty the row at the one moment it has the most to say.
-   * Demotion leaves it full and merely reorders it, and the ordering is not
-   * doing any harm when every candidate is in the same group.
+   * glance where being wrong by withholding it is invisible.
    *
-   * Within each group the order is unchanged — most overdue first — so this adds
-   * a partition and changes nothing else about how suggestions rank.
+   * **Demotion is not a promise of visibility, and the honest version of that is
+   * this:** the result is sliced to `limit` (8 by default, and `loadSuggestions`
+   * takes the default), so when eight items are genuinely due a lapsed one does
+   * not appear at all. That is accepted rather than worked around. An item the
+   * household has not bought in six weeks and three of its own cycles has no
+   * claim on the ninth slot when eight things are actually due; the case it
+   * costs is a season restarting — strawberries last bought in July, offered
+   * again the following June — which the row cannot distinguish from the eleven
+   * months in between when the same tile would be noise.
    */
-  const lapsed = (s: Suggestion) => Number(s.overdueScore > LAPSED_OVERDUE_MULTIPLE);
+  const lapsed = (s: Suggestion) =>
+    Number(
+      s.daysSinceLast >
+        Math.max(LAPSE_FLOOR_DAYS, LAPSED_OVERDUE_MULTIPLE * s.medianIntervalDays),
+    );
   candidates.sort(
     (a, b) =>
       lapsed(a) - lapsed(b) ||
-      b.overdueScore - a.overdueScore ||
+      /*
+       * Live items: most overdue first, unchanged.
+       *
+       * Lapsed items: LEAST overdue first, which is the opposite key and is
+       * deliberate. Above the ceiling the claim `overdueScore` makes has
+       * inverted — a bigger number is stronger evidence the household has
+       * stopped rather than that it is about to need one — so ordering the tail
+       * by "most overdue" would lead it with the deadest item, ranked by a
+       * signal this rule has just declared meaningless. Among things you have
+       * stopped buying, the one closest to still being current is the likeliest
+       * to be a real gap.
+       */
+      (lapsed(a) ? a.overdueScore - b.overdueScore : b.overdueScore - a.overdueScore) ||
       b.confidence - a.confidence,
   );
   return candidates.slice(0, limit);
