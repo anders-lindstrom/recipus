@@ -47,6 +47,21 @@ export interface ItemTileProps {
   animateIn?: boolean;
   onTap: () => void;
   onLongPress?: () => void;
+  /**
+   * Whether the hold opens a sheet. Set false where it acts instead.
+   *
+   * This used to be inferred from `onLongPress` existing, which made the claim
+   * true of every tile that opens a sheet — the buy zone, the catalog, the add
+   * bar's two grids — and FALSE of the suggestion tile, whose hold dismisses the
+   * suggestion outright. A screen reader announced a dialog behind a gesture
+   * that silently deletes the tile.
+   *
+   * Opt-OUT rather than opt-in, deliberately: four of the five surfaces do open
+   * a dialog, and making them all re-declare it would mean any surface that
+   * forgot lost a TRUE announcement to fix one false one. The default is what is
+   * usually so; the exception says so.
+   */
+  longPressOpensDialog?: boolean;
 }
 
 export function ItemTile({
@@ -63,6 +78,7 @@ export function ItemTile({
   animateIn = false,
   onTap,
   onLongPress,
+  longPressOpensDialog = true,
 }: ItemTileProps) {
   // The gesture lives in `useLongPress` now — the add bar's search rows need the
   // identical 500ms hold, and a second copy of a timer this fiddly is a second
@@ -77,7 +93,10 @@ export function ItemTile({
       // advertisement is a hint that waits for a third item, is dismissible, and
       // is then said once ever per device — which is nothing for anyone who is
       // not looking at the screen.
-      aria-haspopup={onLongPress ? "dialog" : undefined}
+      //
+      // Claimed by the caller, never inferred from `onLongPress`: see
+      // `longPressOpensDialog`. Not every hold opens something.
+      aria-haspopup={onLongPress && longPressOpensDialog ? "dialog" : undefined}
       className={cn(
         "group relative flex min-h-[92px] flex-col items-center justify-start",
         "rounded-tile border px-1.5 pt-3 pb-2.5 text-center",

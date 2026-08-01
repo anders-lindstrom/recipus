@@ -558,7 +558,15 @@ export function ListScreen({
                 : "Planerar — byt till handla-läge"
             }
             className={cn(
-              "mr-1 flex h-8 flex-none items-center gap-1.5 rounded-full px-2.5",
+              // 44px, not the 32 it was. This is the control that decides what
+              // every other tap on the screen MEANS — a tile tapped in the wrong
+              // mode either invents a purchase or fails to record one — and it
+              // was the shortest thing on a header where the settings link had
+              // already been grown for exactly this reason. The pill now matches
+              // the aisle rail's chips directly below it, which are the same
+              // type at the same 44px, so the header reads as one row of
+              // controls rather than two sizes of them.
+              "mr-1 flex min-h-11 flex-none items-center gap-1.5 rounded-full px-3",
               "text-caption font-semibold transition-colors duration-150",
               mode === "buy"
                 // `text-on-brand`, not a hardcoded white. White on the buy line
@@ -615,10 +623,16 @@ export function ListScreen({
               one nobody could find was the one filed furthest down. A bag reads
               as goods rather than as a layout, and the button in the well stays
               — it is right where it is, it just is not the only way in. */}
+          {/* 44×44, and the glyphs are unchanged at 20px — only the touchable
+              box grew. Measured at 36×36 with 4px between them: two different
+              screens, both under the floor this app uses everywhere else, in the
+              top corner a one-handed grip reaches least well. The settings link
+              beside them had already been fixed for the same reason and these
+              two were left behind. */}
           <Link
             href="/varor"
             aria-label="Varor"
-            className="ml-1.5 flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
+            className="ml-1 flex h-11 w-11 flex-none items-center justify-center rounded-full text-ink-soft"
           >
             <UiIcon name="registry" size={20} />
           </Link>
@@ -626,7 +640,7 @@ export function ListScreen({
           <Link
             href="/recept"
             aria-label="Recept"
-            className="flex h-9 w-9 items-center justify-center rounded-full text-ink-soft"
+            className="-mr-1 flex h-11 w-11 flex-none items-center justify-center rounded-full text-ink-soft"
           >
             <UiIcon name="recipes" size={20} />
           </Link>
@@ -743,7 +757,12 @@ export function ListScreen({
               type="button"
               onClick={() => setLayoutOpen(true)}
               aria-label="Vy och ordning"
-              className="-mr-1 flex h-8 items-center gap-1 rounded-full px-2 text-caption font-semibold text-ink-soft normal-case"
+              // 44px of target inside 32px of layout. The negative margin is
+              // what keeps the second half of that true: this heading
+              // deliberately reserves a fixed height so a control appearing in
+              // it cannot shove the list down, and a plainly taller button would
+              // have spent 12px of the first screen to buy the same reach.
+              className="-mr-1 -my-1.5 flex min-h-11 items-center gap-1 rounded-full px-2 text-caption font-semibold text-ink-soft normal-case"
             >
               <UiIcon name="allAisles" size={14} />
               Ordning
@@ -765,7 +784,19 @@ export function ListScreen({
             In flow rather than over the tiles, for the same reason the buy
             toast was taken out: this sits above the grid it describes and
             covers no control. It waits for a third item so it is not the first
-            thing a brand-new list says. */}
+            thing a brand-new list says.
+
+            Left as it is, after trying to narrow it to "en bricka i listan" and
+            finding that worse. The hold is one gesture with two meanings — here
+            and in the catalog it opens a sheet, on a Föreslås tile it dismisses
+            the suggestion outright — and this sentence is the only thing that
+            advertises any of it. Scoping it to the list buys accuracy about two
+            or three suggestion tiles by making it silent about 341 catalog ones,
+            whose hold is the documented way to say "two mogna mango" without
+            three navigations. That is a worse trade, and `useOnce` makes it a
+            one-way one: this is said once ever per device, so anyone who has
+            already read it never sees a correction. The gesture that needs
+            changing is the destructive one, not the sentence. */}
         {longPressHint.pending && live.length >= 3 && (
           <div className="mb-2 flex items-center gap-2 rounded-control border border-line bg-surface-raised px-3 py-2">
             <UiIcon
@@ -850,6 +881,9 @@ export function ListScreen({
                     // containing one button is ceremony. The safety valve is the
                     // Ångra above, exactly as it is for buying.
                     onLongPress={() => dismissSuggestion(item.id, item.name)}
+                    // Which is why this one tile must not claim a dialog: the
+                    // hold acts, and every other tile's hold opens something.
+                    longPressOpensDialog={false}
                   />
                 );
               })}
@@ -965,7 +999,18 @@ export function ListScreen({
         aria-label="Skanna streckkod"
         // Neutral shadow, not a brand-tinted one: a green glow under a green
         // button reads as a neon halo in dark mode rather than as elevation.
-        className="safe-bottom fixed right-4 bottom-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-brand text-on-brand shadow-lg shadow-black/20 transition-transform duration-100 active:scale-95"
+        //
+        // The inset is in `bottom`, not in `padding-bottom`. `.safe-bottom` sets
+        // padding, and this button has a FIXED height — so on a border-box
+        // element the padding ate the content box instead of moving the button:
+        // measured with a 34px indicator, the circle still ended 16px from the
+        // screen edge (18px inside the home indicator) and the glyph was pushed
+        // 17px above the circle's centre. The undo strip beside it gets this
+        // right because its inset lands on a wrapper with no height of its own.
+        // Expressed in `bottom`, which is the one property that moves a sized
+        // box. Its own 16px, not the strip's 12px — this keeps the gap the
+        // button already had and adds the indicator to it.
+        className="fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-40 flex h-14 w-14 items-center justify-center rounded-full bg-brand text-on-brand shadow-lg shadow-black/20 transition-transform duration-100 active:scale-95"
       >
         <UiIcon name="scan" size={24} />
       </button>
