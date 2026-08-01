@@ -25,6 +25,7 @@ function load_worktree_config() {
         DEVELOPER_CONFIG_FILES=()
     fi
     WORKTREE_BRANCH_PREFIX="${WORKTREE_BRANCH_PREFIX:-feat_wt}"
+    WORKTREE_LAYOUT="${WORKTREE_LAYOUT:-flat}"
     BUILD_INIT_ENABLED="${BUILD_INIT_ENABLED:-true}"
     BUILD_INIT_COMMAND="${BUILD_INIT_COMMAND:-./gradlew build -x test --quiet}"
 }
@@ -76,15 +77,25 @@ function get_worktree_info() {
 function get_work_name_from_path() {
     local worktree_path="$1"
     local worktree_name=$(basename "$worktree_path")
+    local parent_name=$(basename "$(dirname "$worktree_path")")
     local repo_name="${REPO_NAME:-$(get_repo_name)}"
-    
-    # Expected format: <repo>-<work>
+
+    # Both layouts are recognised regardless of which one is configured, so a
+    # worktree created under the old layout stays identifiable after a switch.
+
+    # nested: <repo>_wt/<work>
+    if [[ "$parent_name" == "${repo_name}_wt" ]]; then
+        echo "$worktree_name"
+        return 0
+    fi
+
+    # flat: <repo>-<work>
     if [[ "$worktree_name" =~ ^${repo_name}-(.+)$ ]]; then
         echo "${BASH_REMATCH[1]}"
         return 0
-    else
-        return 1
     fi
+
+    return 1
 }
 
 # Get the main repository path from any worktree
@@ -153,11 +164,31 @@ function validate_work_name() {
     return 0
 }
 
-# Create standard worktree path from work name
+# Where a worktree for <work> belongs. Two layouts, chosen in worktree.conf:
+#
+#   flat    ../<repo>-<work>      one sibling directory per worktree (default)
+#   nested  ../<repo>_wt/<work>   all of a repo's worktrees under one parent
+#
+# Nested keeps the parent directory tidy once a repo has several worktrees, at
+# the cost of one more level. Flat stays the default so repos that never opt in
+# are untouched.
+#
+# Whichever layout is configured, a worktree that already exists at the other
+# one keeps its path. Switching layouts must not orphan existing checkouts —
+# remove.sh and switch.sh find worktrees through this function, so a layout
+# change that silently relocated them would leave them unreachable by the very
+# scripts meant to manage them.
 function get_worktree_path() {
     local work="$1"
     local repo_name="${REPO_NAME:-$(get_repo_name)}"
-    echo "../${repo_name}-${work}"
+    local flat="../${repo_name}-${work}"
+    local nested="../${repo_name}_wt/${work}"
+
+    if [[ "${WORKTREE_LAYOUT:-flat}" == "nested" ]]; then
+        if [[ ! -e "$nested" && -e "$flat" ]]; then echo "$flat"; else echo "$nested"; fi
+    else
+        if [[ ! -e "$flat" && -e "$nested" ]]; then echo "$nested"; else echo "$flat"; fi
+    fi
 }
 
 # Colors for consistent output

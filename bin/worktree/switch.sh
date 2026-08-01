@@ -46,7 +46,8 @@ if [[ "$#" -eq 1 ]]; then
     else
         # Search through all worktrees for a match
         while IFS=$'\t' read -r path _; do
-            if [[ "$(basename "$path")" == "${REPO_NAME}-${WORK_NAME}" ]] || \
+            if [[ "$(get_work_name_from_path "$path" 2>/dev/null)" == "$WORK_NAME" ]] || \
+               [[ "$(basename "$path")" == "${REPO_NAME}-${WORK_NAME}" ]] || \
                [[ "$(basename "$path")" == "$WORK_NAME" ]] || \
                [[ "$path" == *"$WORK_NAME"* ]]; then
                 TARGET_PATH="$path"

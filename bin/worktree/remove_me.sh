@@ -41,7 +41,7 @@ echo "Extracting work name..."
 WORK_NAME=$(get_work_name_from_path "$WORKTREE_PATH" 2>/dev/null || echo "")
 if [[ -z "$WORK_NAME" ]]; then
     echo "Error: Unable to determine work name from worktree path: $WORKTREE_NAME" >&2
-    echo "Expected format: ${REPO_NAME}-<work_name>" >&2
+    echo "Expected ${REPO_NAME}-<work_name> or ${REPO_NAME}_wt/<work_name>" >&2
     echo "Debug: WORKTREE_PATH=$WORKTREE_PATH, REPO_NAME=$REPO_NAME" >&2
     exit 1
 fi
@@ -194,8 +194,15 @@ if [[ "$HAS_SUBMODULES" == "true" ]]; then
 
     echo "Worktree removed successfully using manual method"
 else
-    # Standard removal for worktrees without submodules
-    if ! git worktree remove "$WORKTREE_PATH" ${FORCE_REMOVE:+--force}; then
+    # Standard removal for worktrees without submodules.
+    # FORCE_REMOVE holds the string "true"/"false", never an empty value, so
+    # ${FORCE_REMOVE:+--force} expanded on both — passing --force unconditionally
+    # and disabling git's refusal to remove a worktree with uncommitted changes.
+    # That refusal is the backstop behind the "continue?" prompts above, so it
+    # has to be an explicit test, the way the branch deletion below already does it.
+    remove_args=()
+    [[ "$FORCE_REMOVE" == "true" ]] && remove_args=(--force)
+    if ! git worktree remove "$WORKTREE_PATH" "${remove_args[@]+"${remove_args[@]}"}"; then
         echo "Error: Failed to remove worktree" >&2
         echo "The worktree may have uncommitted changes or be busy" >&2
         echo "Try: git worktree remove --force \"$WORKTREE_PATH\"" >&2

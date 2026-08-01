@@ -25,10 +25,11 @@ if ! is_in_worktree; then
 else
     echo -e "${BLUE}Type:${NC} Worktree"
     
-    # Extract work name if in a worktree
+    # Extract work name if in a worktree. Ask the shared helper rather than
+    # re-deriving the layout here, so this keeps working under either layout.
     WORKTREE_NAME=$(basename "$CURRENT_DIR")
-    if [[ "$WORKTREE_NAME" =~ ^${REPO_NAME}-(.+)$ ]]; then
-        WORK_NAME="${BASH_REMATCH[1]}"
+    WORK_NAME=$(get_work_name_from_path "$CURRENT_DIR" 2>/dev/null || echo "")
+    if [[ -n "$WORK_NAME" ]]; then
         echo -e "${BLUE}Work name:${NC} $WORK_NAME"
     fi
 fi
