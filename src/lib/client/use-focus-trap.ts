@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 /**
  * The keyboard half of a modal: focus goes in, Tab stays in, Escape gets out,
@@ -45,7 +45,12 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
-function focusableWithin(root: HTMLElement): HTMLElement[] {
+/**
+ * Exported for the add bar, which is not a modal and must not become one — it
+ * only needs the same answer to "what can take focus in here", so that Arrow
+ * keys walk its results in exactly the order Tab would.
+ */
+export function focusableWithin(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
     (el) => el.getClientRects().length > 0,
   );
@@ -101,11 +106,34 @@ export function useFocusTrap<T extends HTMLElement>(
 ): RefObject<T | null> {
   const ref = useRef<T>(null);
 
+  /**
+   * What opened this sheet, captured during the FIRST RENDER rather than in the
+   * mount effect below.
+   *
+   * It has to be, and the effect is measurably too late. React honours a field's
+   * `autoFocus` during the commit, and every effect — passive or layout — runs
+   * after that commit. So a sheet that opens onto a field had already moved focus
+   * INTO ITSELF by the time this ran, and the effect dutifully recorded the
+   * sheet's own amount input as the thing to go back to. That element is
+   * unmounting at the moment the cleanup wants it, `isConnected` is false, and
+   * focus fell to `<body>` — the exact failure the return was written to prevent,
+   * silently present in every sheet that autofocuses anything.
+   *
+   * Measured on the details sheet: focus the ananas tile, open it, Escape.
+   * Before, focus came back to `<body>`; after, to the tile. The entry sheet,
+   * which autofocuses nothing, was correct all along — which is why this went
+   * unnoticed.
+   *
+   * A state initialiser rather than a ref assignment because it runs exactly
+   * once, before the commit, and never again on a re-render.
+   */
+  const [returnTo] = useState<Element | null>(() =>
+    typeof document === "undefined" ? null : document.activeElement,
+  );
+
   useEffect(() => {
     const container = ref.current;
     if (!container) return;
-
-    const returnTo = document.activeElement;
 
     /**
      * Only when nothing inside has already claimed it.
@@ -124,14 +152,37 @@ export function useFocusTrap<T extends HTMLElement>(
 
     return () => {
       /**
-       * Back to the trigger, if it is still there.
+       * Back to the trigger, if it is still there — and only if the sheet still
+       * had focus to give back.
        *
        * Closing used to leave focus on `<body>`, so the next Tab restarted from
        * the top of the document — several screens away from the tile you had
        * just been looking at. And half these sheets exist to remove the thing
        * that opened them, so a detached trigger is the normal case, not an
        * edge one: focusing it would be indistinguishable from focusing nothing.
+       *
+       * The `contains` check is what makes this safe under StrictMode, which is
+       * on: the App Router defaults `reactStrictMode` to true, so dev runs
+       * setup → cleanup → setup on every mount. Now that `returnTo` is the
+       * TRIGGER rather than whatever had focus after the commit, an unguarded
+       * cleanup would fire between the two setups and pull focus out of a sheet
+       * that is still on screen — the second setup would then find nothing
+       * focused inside and fall back to the dialog wrapper, so the amount field
+       * this sheet exists for would never hold the caret and a phone keyboard
+       * would open and shut in one frame. Exactly what the comment above says
+       * must not happen, in dev only, which is the worst place to have it:
+       * every manual test of every autofocusing sheet would diverge from
+       * production.
+       *
+       * The discriminator is the container itself. StrictMode's simulated
+       * unmount does not touch the DOM, so the dialog is still in the document
+       * when that cleanup runs; a real close has already removed it by the time
+       * a passive cleanup gets there. Checking where focus currently sits does
+       * NOT work here and was the first thing tried: at the simulated cleanup
+       * focus is still on the sheet's own autofocused field, which is inside the
+       * container, so the guard passes and the steal happens anyway.
        */
+      if (container.isConnected) return;
       if (returnTo instanceof HTMLElement && returnTo.isConnected) {
         returnTo.focus();
       }
@@ -139,8 +190,9 @@ export function useFocusTrap<T extends HTMLElement>(
     // Mount and unmount only, which is why nothing reactive may be read above:
     // re-running this would yank focus out of a field mid-word, and `onClose`
     // is an inline arrow at most call sites, so it changes identity on every
-    // render.
-  }, []);
+    // render. `returnTo` is state with no setter, so it is stable by
+    // construction and safe to close over.
+  }, [returnTo]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
