@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import type { CatalogItem, Id } from "@/lib/domain";
+import { focusableWithin } from "@/lib/client/use-focus-trap";
 import { useLongPress } from "@/lib/client/use-long-press";
 import { resolvePair, resolveQuery } from "@/lib/services/search";
 import { cn, normalizeName } from "@/lib/utils";
@@ -225,6 +226,9 @@ export function AddBar({
   const [frequent, setFrequent] = useState<CatalogItem[]>([]);
   const input = useRef<HTMLInputElement>(null);
   const opened = useRef(false);
+  /** The field and the panel together — what "focus is still in here" means. */
+  const wrap = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
 
   const { matches, modifier, amountText, name } = useMemo(
     () => resolveQuery(catalog, raw),
@@ -361,13 +365,92 @@ export function AddBar({
    */
   const keepFocus = (e: React.MouseEvent) => e.preventDefault();
 
+  /**
+   * Arrow keys walk the panel, and the panel keeps real focus while they do.
+   *
+   * A results list you can only reach with a mouse is a mouse UI with a text box
+   * in front of it. Measured before this: ArrowDown in the field did nothing at
+   * all, Enter could only ever take the FIRST match, and the confirmation
+   * strip's "Ångra" — the undo for the one-key add — had no keyboard route to it
+   * whatsoever, because Tab blurred the field and the strip went with it.
+   *
+   * Roving focus rather than `aria-activedescendant`, and that is a deliberate
+   * trade. Activedescendant would keep the caret in the field so you could carry
+   * on typing, but it requires the rows to be `role="option"` inside a
+   * `role="listbox"` — and these rows are `button`s that the whole e2e suite
+   * locates by role, plus `useLongPress` already gives a focused button its own
+   * Shift+F10 route to the details sheet. Moving focus for real reuses all of
+   * that: highlight a row, press Shift+F10, and the amount-and-sort sheet opens
+   * on it — the only keyboard way there, and it cost nothing.
+   *
+   * Arrow keys are a hardware-keyboard gesture, so nothing here can dismiss a
+   * phone's on-screen keyboard: a thumb never generates one.
+   */
+  function moveInto(from: "top" | "bottom") {
+    const stops = panel.current ? focusableWithin(panel.current) : [];
+    if (stops.length === 0) return false;
+    (from === "top" ? stops[0] : stops[stops.length - 1]).focus();
+    return true;
+  }
+
+  function stepWithin(delta: 1 | -1) {
+    const stops = panel.current ? focusableWithin(panel.current) : [];
+    const at = stops.indexOf(document.activeElement as HTMLElement);
+    if (at === -1) return;
+    const next = at + delta;
+    // Off the top is back to the field, which is where more typing goes. Off the
+    // bottom stays put rather than wrapping: wrapping past the last result into
+    // the confirmation strip reads as the list having moved under you.
+    if (next < 0) input.current?.focus();
+    else if (next < stops.length) stops[next].focus();
+  }
+
   const typing = name.length >= 1;
-  const showSuggestions = typing && (matches.length > 0 || canCreate || pair);
+  // `open` gates every branch, so the panel cannot outlive the focus that
+  // summoned it. It used to gate only two: blur set `open` false while
+  // `showSuggestions` read the query alone, so clicking anything else on the
+  // page left a full-width results panel hanging over the list until you came
+  // back and cleared the field. Measured — it survived `blur()` with "brö" typed.
+  const showSuggestions =
+    open && typing && (matches.length > 0 || canCreate || pair);
   const showFrequent = open && !typing && frequent.length > 0;
   const showPanel = showSuggestions || showFrequent || (open && justAdded);
 
   return (
-    <div className="relative my-3">
+    <div
+      ref={wrap}
+      className="relative my-3"
+      // One handler for the whole widget: Escape has to mean the same thing on a
+      // result row as it does in the field, and a row that swallowed it would be
+      // a dead end you can only leave with the mouse.
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        if (document.activeElement === input.current) return;
+        e.preventDefault();
+        input.current?.focus();
+      }}
+      onBlur={(e) => {
+        // Only when focus has genuinely left the widget. Tabbing or arrowing
+        // from the field INTO the panel is not leaving it, and closing on that
+        // blur is what made every control in the panel unreachable.
+        if (wrap.current?.contains(e.relatedTarget)) return;
+        /**
+         * A sheet opening over the panel is not the panel being dismissed.
+         *
+         * Holding a result row opens the details sheet, which takes focus — and
+         * tearing the panel down on that blur unmounts the very row the sheet
+         * belongs to, so `useFocusTrap` has nothing connected to hand focus back
+         * to and it lands on `<body>`. Measured: Escape out of a details sheet
+         * opened from a search row put focus at the top of the document.
+         *
+         * Staying open is also what the touch path already does — a finger never
+         * blurs the field, because the panel prevents the mousedown — so this
+         * only makes the keyboard behave like the thumb.
+         */
+        if (e.relatedTarget?.closest('[role="dialog"]')) return;
+        closePanel();
+      }}
+    >
       <div className="flex items-center gap-2.5 rounded-card border border-line bg-surface-raised px-3 py-2.5">
         <UiIcon name="search" size={18} className="flex-none text-ink-faint" />
         <input
@@ -378,13 +461,21 @@ export function AddBar({
             setJustAdded(null);
           }}
           onFocus={openPanel}
-          onBlur={closePanel}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               // Empty already: the second press is a request to get out, not to
               // clear something that is not there.
               if (raw) reset(null);
               else input.current?.blur();
+              return;
+            }
+            // Into the results, and out the far end back here. The caret does
+            // not move in a single-line field, so neither key has another job.
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              if (!showPanel) return;
+              if (moveInto(e.key === "ArrowDown" ? "top" : "bottom")) {
+                e.preventDefault();
+              }
               return;
             }
             if (e.key !== "Enter") return;
@@ -396,9 +487,27 @@ export function AddBar({
           }}
           placeholder="Lägg till vara…"
           aria-label="Sök eller lägg till vara"
-          enterKeyHint="done"
+          inputMode="text"
+          /**
+           * "Go", not "Done".
+           *
+           * Enter here adds the top match and leaves the field focused and
+           * empty for the next vara — measured, and deliberate: adding six
+           * things is one errand, not six. A return key labelled *klar* promises
+           * the keyboard is about to go away, and then it does not, on the one
+           * surface where you are meant to press it repeatedly.
+           */
+          enterKeyHint="go"
           autoComplete="off"
           autoCorrect="off"
+          /**
+           * iOS capitalises the first letter of a field by default, so every
+           * vara typed at a desk arrived as "Mjölk". The catalog is lower-case
+           * throughout and `normalizeName` folds it away before matching, so the
+           * capital never broke a search — it only ever showed up in the name of
+           * a vara someone CREATED, permanently, next to 341 lower-case ones.
+           */
+          autoCapitalize="off"
           spellCheck={false}
           className="min-w-0 flex-1 bg-transparent text-body text-ink outline-none placeholder:text-ink-faint"
         />
@@ -422,7 +531,13 @@ export function AddBar({
 
       {showPanel && (
         <div
+          ref={panel}
           onMouseDown={keepFocus}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+            e.preventDefault();
+            stepWithin(e.key === "ArrowDown" ? 1 : -1);
+          }}
           className="absolute inset-x-0 top-full z-30 mt-1.5 overflow-hidden rounded-card border border-line bg-surface-raised shadow-xl shadow-black/10"
         >
           {/* The tile lands behind the keyboard, and keeping focus made that
@@ -518,7 +633,9 @@ export function AddBar({
           )}
 
           {showSuggestions && (
-            <ul>
+            // Named, so a screen reader says what the rows below the field are
+            // rather than announcing an unheralded list of buttons.
+            <ul aria-label="Sökträffar">
               {pair && (
                 <li>
                   <button
