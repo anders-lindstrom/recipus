@@ -443,7 +443,12 @@ export async function loadListSnapshot(
     recipeAdditions: additions,
     recipeTitles,
     meta,
-    suggestions: await loadSuggestions(listId, entries, now),
+    suggestions: await loadSuggestions(
+      listId,
+      entries,
+      new Set(catalog.filter((c) => c.hidden).map((c) => c.id)),
+      now,
+    ),
     purchaseStats: await loadPurchaseStats(now),
   };
 }
@@ -493,9 +498,10 @@ async function loadPurchaseStats(now: Date): Promise<Record<Id, CadenceStats>> {
  * Pulls the last two years of purchases — enough for the engine to see a yearly
  * pattern, bounded enough that the query stays cheap as history grows.
  */
-async function loadSuggestions(
+export async function loadSuggestions(
   listId: Id,
   entries: ListEntry[],
+  hiddenItemIds: Set<Id>,
   now: Date,
 ): Promise<Array<{ catalogItemId: Id; reason: string }>> {
   const since = new Date(now);
@@ -524,14 +530,43 @@ async function loadSuggestions(
     else byItem.set(r.catalogItemId, [r.purchasedAt]);
   }
 
-  // Already wanted, or explicitly declined today. Both are the same instruction
-  // to the engine — "do not offer me this" — so they go in as one exclusion set
-  // rather than as a second concept inside `rankSuggestions`. The dismissals are
-  // household-wide by design; see src/lib/services/suggestion-dismissals.ts.
+  // Already wanted, explicitly declined today, or hidden. All three are the same
+  // instruction to the engine — "do not offer me this" — so they go in as one
+  // exclusion set rather than as extra concepts inside `rankSuggestions`. The
+  // dismissals are household-wide by design; see
+  // src/lib/services/suggestion-dismissals.ts.
   const exclude = new Set(
     entries.filter((e) => e.removedAt === null).map((e) => e.catalogItemId),
   );
   for (const id of await dismissedOn(now)) exclude.add(id);
+  /*
+   * Hidden varor were being suggested, which made hiding one useless against the
+   * surface that offers things hardest.
+   *
+   * Every OTHER unprompted offer already excludes them — the catalog well
+   * (list-screen.tsx) and the add bar's "Vanligast" (add-bar.tsx) both filter on
+   * `hidden`, and only search keeps them, demoted, because typing an exact name
+   * is asking for it back. This row is the most unprompted surface in the app:
+   * it appears on the main screen without being asked. Dismissal could not
+   * cover the gap either, because a dismissal is scoped to one calendar day, so
+   * a household that hid a vara got it offered again the next morning, forever.
+   *
+   * Stated plainly because it widens a recorded decision: DECISIONS.md says
+   * hiding "makes no claim about the thing at all", and the sheet's own label
+   * says "Dold i sök och katalog" — this makes it a third surface. If that is
+   * wrong the label is the thing to change, not this filter, because the
+   * alternative is a household that cannot stop being offered a vara it has
+   * explicitly put away.
+   *
+   * The ids are the EFFECTIVE ones (`byItem` is keyed by the COALESCE of
+   * purchase → product → vara), so a hidden vara is excluded whether its
+   * purchases were tapped or scanned.
+   *
+   * Offline, the client renders the last snapshot, so hiding something with no
+   * signal leaves one stale suggestion until the next hydrate. Self-healing and
+   * not worth an op.
+   */
+  for (const id of hiddenItemIds) exclude.add(id);
 
   return rankSuggestions(
     [...byItem.entries()].map(([catalogItemId, purchases]) => ({
