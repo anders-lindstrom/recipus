@@ -411,16 +411,74 @@ export function AddBar({
     return true;
   }
 
-  function stepWithin(delta: 1 | -1) {
+  /**
+   * Two stops share a row when their tops agree. Grid tiles agree exactly; list
+   * rows are a whole row apart, so a few pixels of slack is enough and cannot
+   * accidentally merge two of them.
+   */
+  const SAME_ROW_PX = 8;
+
+  /**
+   * Step by geometry, not by document order.
+   *
+   * Document order is the right answer for the results list and the wrong one
+   * for "Vanligast", which is a three-column `TileGrid`: consecutive tiles in
+   * the DOM are side by side on screen, so ArrowDown walked SIDEWAYS along the
+   * first row and ArrowUp could never leave it. That is the identical defect
+   * this lane filed against the list screen's own grid, and it shipped here
+   * first — found in review, not by me.
+   *
+   * Reading the boxes handles both shapes with one rule and needs no column
+   * count: down is the nearest stop starting below this one, tie-broken by
+   * horizontal centre so a grid keeps its column; left and right only consider
+   * stops on the same row, so they do nothing in a single-column list.
+   */
+  function stepWithin(key: "ArrowDown" | "ArrowUp" | "ArrowLeft" | "ArrowRight") {
     const stops = panel.current ? focusableWithin(panel.current) : [];
-    const at = stops.indexOf(document.activeElement as HTMLElement);
-    if (at === -1) return;
-    const next = at + delta;
+    const current = document.activeElement;
+    if (!(current instanceof HTMLElement) || !stops.includes(current)) return;
+
+    const from = current.getBoundingClientRect();
+    const boxed = stops
+      .filter((el) => el !== current)
+      .map((el) => ({ el, r: el.getBoundingClientRect() }));
+
+    if (key === "ArrowLeft" || key === "ArrowRight") {
+      const sameRow = boxed.filter(
+        ({ r }) =>
+          Math.abs(r.top - from.top) < SAME_ROW_PX &&
+          (key === "ArrowRight" ? r.left > from.left : r.left < from.left),
+      );
+      sameRow
+        .sort((a, b) =>
+          key === "ArrowRight" ? a.r.left - b.r.left : b.r.left - a.r.left,
+        )[0]
+        ?.el.focus();
+      return;
+    }
+
+    const down = key === "ArrowDown";
+    const candidates = boxed.filter(({ r }) =>
+      down ? r.top > from.top + SAME_ROW_PX : r.top < from.top - SAME_ROW_PX,
+    );
+
     // Off the top is back to the field, which is where more typing goes. Off the
     // bottom stays put rather than wrapping: wrapping past the last result into
     // the confirmation strip reads as the list having moved under you.
-    if (next < 0) input.current?.focus();
-    else if (next < stops.length) stops[next].focus();
+    if (candidates.length === 0) {
+      if (!down) input.current?.focus();
+      return;
+    }
+
+    const centre = (r: DOMRect) => r.left + r.width / 2;
+    candidates
+      .sort(
+        (a, b) =>
+          (down ? a.r.top - b.r.top : b.r.top - a.r.top) ||
+          Math.abs(centre(a.r) - centre(from)) -
+            Math.abs(centre(b.r) - centre(from)),
+      )[0]
+      .el.focus();
   }
 
   const typing = name.length >= 1;
@@ -522,27 +580,45 @@ export function AddBar({
           aria-autocomplete="list"
           inputMode="text"
           /**
-           * "Send", not "Done" and not "Go".
+           * No `enterKeyHint`, deliberately, and this is the interesting one.
            *
-           * Enter here adds the top match and leaves the field focused and
-           * empty for the next vara — measured, and deliberate: adding six
-           * things is one errand, not six. A return key labelled *klar* promises
-           * the keyboard is about to go away and then does not, on the one
-           * surface you are meant to press repeatedly; and *go* means take me to
-           * the target of what I typed, which is not what happens either. Send
-           * is the one that means "commit this, the field stays open".
+           * It was `done`, which promises a keyboard that is about to go away —
+           * and Enter here adds the top match and leaves the field focused and
+           * empty for the next vara, measured, because adding six things is one
+           * errand. So it was argued to `go`, which means take me to the target
+           * of what I typed, and then to `send`, which on a Swedish iOS keyboard
+           * reads *Skicka* — on a SHARED household list with live two-phone
+           * sharing, which invites "send this to my partner": a plausible,
+           * adjacent action this app does not have.
+           *
+           * Three values in one review cycle, every one argued from semantics by
+           * someone with no phone in their hand. The churn is the finding. The
+           * default *retur* promises nothing, costs nothing to learn, and is the
+           * honest label for a field that does two jobs at once — its own
+           * accessible name is "Sök eller lägg till vara". Whoever holds the
+           * device gets to decide; nobody else should be voting on the
+           * most-looked-at key of the most-used surface.
            */
-          enterKeyHint="send"
           autoComplete="off"
           autoCorrect="off"
           /**
-           * iOS capitalises the first letter of a field by default, so every
-           * vara typed at a desk arrived as "Mjölk". The catalog is lower-case
-           * throughout and `normalizeName` folds it away before matching, so the
-           * capital never broke a search — it only ever showed up in the name of
-           * a vara someone CREATED, permanently, next to 341 lower-case ones.
+           * No `autoCapitalize="off"` either, for a better reason than taste.
+           *
+           * It was set to keep created varor lower-case, and it does not even do
+           * that: `ensureVara` derives a vara's id through `slugify` →
+           * `normalizeName`, which lowercases, so a capital collides with the
+           * existing id and returns the existing vara. A capital cannot fork the
+           * catalog. It survives in exactly one place — the display name — and
+           * the rename sheets in /varor never had the attribute anyway, so the
+           * rule was enforced at one keyboard and nowhere else.
+           *
+           * The cost was real and permanent: Swedish grocery lists are
+           * brand-led — Kalles, Bregott, Oatly, Findus, ICA Basic — and every
+           * one of those became a manual shift press, one-handed, in a shop, on
+           * a field that already offers no autocorrect and no spellcheck. The
+           * fix belongs in `ensureVara`, which owns catalog names; see the
+           * report.
            */
-          autoCapitalize="off"
           spellCheck={false}
           className="min-w-0 flex-1 bg-transparent text-body text-ink outline-none placeholder:text-ink-faint"
         />
@@ -569,9 +645,19 @@ export function AddBar({
           ref={panel}
           onMouseDown={keepFocus}
           onKeyDown={(e) => {
-            if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+            // Left and right join down and up because "Vanligast" is a grid, and
+            // a grid you can only walk vertically is half a grid. They are inert
+            // in the single-column lists, where nothing shares a row.
+            if (
+              e.key !== "ArrowDown" &&
+              e.key !== "ArrowUp" &&
+              e.key !== "ArrowLeft" &&
+              e.key !== "ArrowRight"
+            ) {
+              return;
+            }
             e.preventDefault();
-            stepWithin(e.key === "ArrowDown" ? 1 : -1);
+            stepWithin(e.key);
           }}
           className="absolute inset-x-0 top-full z-30 mt-1.5 overflow-hidden rounded-card border border-line bg-surface-raised shadow-xl shadow-black/10"
         >
