@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import {
+  accessibleText,
   catalogTile,
   entriesInIndexedDb,
   expect,
@@ -431,8 +432,9 @@ test("the walking order is editable per list, and survives a reload", async ({
   // The order is stated as positions, so "first" is a claim the test can read
   // rather than infer from pixel geometry.
   const rows = sheet.locator("ul li");
-  const firstAisle = (await rows.first().textContent())!.replace(/^\d+/, "").trim();
-  const secondAisle = (await rows.nth(1).textContent())!.replace(/^\d+/, "").trim();
+  const [firstAisle, secondAisle] = (await accessibleText(rows))
+    .slice(0, 2)
+    .map((t) => t.replace(/^\d+/, "").trim());
   expect(firstAisle).not.toBe(secondAisle);
 
   await sheet
@@ -483,10 +485,9 @@ test("the view choice turns aisle headings off without unsorting the list", asyn
   // The order is not "whatever the entry map produced": items from one aisle
   // stay adjacent. Milk, butter, cheese and eggs are all Mejeri & ägg, so their
   // positions in the flat grid must be consecutive.
-  const positions = await page.evaluate(() => {
-    const tiles = [...document.querySelectorAll('button[aria-pressed="true"]')];
-    return tiles.map((t) => (t.textContent || "").trim());
-  });
+  const positions = await accessibleText(
+    page.locator('button[aria-pressed="true"]'),
+  );
   const dairyIdx = ["mjölk", "smör", "ost", "ägg"]
     .map((n) => positions.findIndex((p) => p.startsWith(n)))
     .sort((a, b) => a - b);

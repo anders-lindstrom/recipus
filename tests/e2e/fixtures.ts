@@ -1,4 +1,4 @@
-import { expect, test as base, type Page } from "@playwright/test";
+import { expect, test as base, type Locator, type Page } from "@playwright/test";
 import postgres from "postgres";
 
 /**
@@ -293,6 +293,34 @@ export function catalogTile(page: Page, name: string) {
   return page
     .locator(`button[aria-pressed="false"]:has(:text-is("${name}"))`)
     .first();
+}
+
+/**
+ * The text an accessible name is built from, per element.
+ *
+ * `textContent` is the obvious thing to reach for and it is the wrong one.
+ * `ItemIcon` falls back to the system emoji as a real text node whenever the
+ * OpenMoji sprite is missing — and it is ALWAYS missing in CI, because the
+ * sprite is gitignored and only `pnpm icons:build` produces it. So a locally
+ * green assertion on `textContent` reads "Bröd" on a laptop and "🍞Bröd" on
+ * the runner, which is how two of these tests passed here and blocked a deploy
+ * there.
+ *
+ * Dropping `aria-hidden` subtrees is not a workaround for that one fallback: it
+ * is what the browser itself does when it computes an accessible name, so this
+ * asserts on the string a screen reader is given rather than on the artwork
+ * that happens to sit beside it.
+ */
+export async function accessibleText(locator: Locator): Promise<string[]> {
+  return locator.evaluateAll((els) =>
+    els.map((el) => {
+      const clone = el.cloneNode(true) as HTMLElement;
+      for (const hidden of clone.querySelectorAll("[aria-hidden='true']")) {
+        hidden.remove();
+      }
+      return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
+    }),
+  );
 }
 
 /** Live entries as the client has them persisted, not as the server sees them. */
