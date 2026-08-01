@@ -25,6 +25,30 @@ export function normalizeName(s: string): string {
     .trim();
 }
 
+/**
+ * A person's name, from the username Authelia authenticated them as.
+ *
+ * `anders` → `Anders`. Derived rather than stored, and the `users` table is
+ * deliberately not consulted: the roster already comes from `autheliaUser`,
+ * which is on every op and every purchase row, so maintaining a second source
+ * of truth would buy a join and a way for the two to disagree.
+ *
+ * The stated cost, because it will eventually be somebody's problem: this
+ * assumes an Authelia username IS a first name. `svc-backup` becomes
+ * `Svc-backup`, which is wrong and harmless. The day that matters is the day
+ * `users.display_name` earns its keep, and this is the one function that would
+ * have to change.
+ *
+ * Only ever for display. Nothing keys off the result.
+ */
+export function displayName(autheliaUser: string): string {
+  const trimmed = autheliaUser.trim();
+  if (!trimmed) return trimmed;
+  // `slice(1)` untouched rather than lowercased, so "JB" stays "JB" instead of
+  // being corrected into "Jb".
+  return trimmed[0].toUpperCase() + trimmed.slice(1);
+}
+
 /** Deterministic slug from a name, used for seeded catalog ids. */
 export function slugify(s: string): string {
   return normalizeName(s)

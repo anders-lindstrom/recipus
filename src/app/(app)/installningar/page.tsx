@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { ScreenHeader } from "@/components/screen-header";
 import { SettingsHintReset } from "@/components/settings-hint-reset";
 import { authenticate, AuthError } from "@/lib/auth";
+import { displayName } from "@/lib/utils";
 import { commitUrl, formatBuildTime, getBuildInfo } from "@/lib/version";
 
 // The layout sets a single constant "Recipus" for every route, so navigating
@@ -48,7 +49,7 @@ export default async function SettingsPage() {
       <Section title="Konto">
         <Row
           label="Inloggad som"
-          value={actor ?? "Inte inloggad"}
+          value={actor ? displayName(actor) : "Inte inloggad"}
           muted={!actor}
         />
       </Section>

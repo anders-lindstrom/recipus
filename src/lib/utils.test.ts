@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codepointToEmoji, emojiToCodepoint } from "./utils";
+import { codepointToEmoji, displayName, emojiToCodepoint } from "./utils";
 
 /**
  * The inverse of `codepointToEmoji`, for the icon picker.
@@ -40,5 +40,33 @@ describe("emojiToCodepoint", () => {
     expect(emojiToCodepoint("")).toBeNull();
     expect(emojiToCodepoint("bröd")).toBeNull();
     expect(emojiToCodepoint("a")).toBeNull();
+  });
+});
+
+/**
+ * Deriving a person's name from the username Authelia authenticated them as.
+ *
+ * The roster comes from `autheliaUser` because it is already on every op and
+ * every purchase row; this is the whole of the "display name" question, and
+ * keeping it one pure function is what makes the assumption it rests on easy to
+ * find on the day it stops holding.
+ */
+describe("displayName", () => {
+  it("capitalises a username into a name", () => {
+    expect(displayName("anders")).toBe("Anders");
+    expect(displayName("jannica")).toBe("Jannica");
+  });
+
+  it("leaves the rest of the string alone", () => {
+    // Not `.toLowerCase()` on the tail: that would turn "JB" into "Jb" and
+    // correct a name its owner had already written the way they wanted it.
+    expect(displayName("JB")).toBe("JB");
+    expect(displayName("Anders")).toBe("Anders");
+  });
+
+  it("survives the degenerate inputs", () => {
+    expect(displayName("")).toBe("");
+    expect(displayName("   ")).toBe("");
+    expect(displayName("a")).toBe("A");
   });
 });
