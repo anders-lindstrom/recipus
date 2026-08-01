@@ -9,7 +9,11 @@ import {
   splitQuery,
 } from "./search";
 
-function item(name: string, useCount = 0): CatalogItem {
+function item(
+  name: string,
+  useCount = 0,
+  lastUsedAt: string | null = null,
+): CatalogItem {
   return {
     id: name,
     name,
@@ -20,7 +24,7 @@ function item(name: string, useCount = 0): CatalogItem {
     hasAtHome: false,
     hidden: false,
     useCount,
-    lastUsedAt: null,
+    lastUsedAt,
   };
 }
 
@@ -99,6 +103,58 @@ describe("rankMatches", () => {
     expect(names.indexOf("havremjölk")).toBeLessThan(
       names.indexOf("mellanmjölk"),
     );
+  });
+
+  /*
+   * The same recency+frequency ordering the catalog well uses.
+   *
+   * These two orderings sit inches apart on one screen over the same 341 items,
+   * and until now they disagreed: the well decayed old usage with
+   * `catalogOrderScore`, the search field counted it forever. A household that
+   * switched from lättmjölk to mellanmjölk six months ago went on being offered
+   * lättmjölk first for as long as the app lived.
+   */
+  describe("recency", () => {
+    const NOW = new Date("2026-08-01T12:00:00Z");
+    const daysAgo = (n: number) =>
+      new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
+
+    it("puts a lightly-used recent vara above a heavily-used stale one", () => {
+      const catalog = [
+        item("mjölk lätt", 40, daysAgo(200)),
+        item("mjölk mellan", 8, daysAgo(3)),
+      ];
+      expect(rankMatches(catalog, "mjölk", 6, NOW).map((i) => i.name)).toEqual([
+        "mjölk mellan",
+        "mjölk lätt",
+      ]);
+    });
+
+    it("still prefers the more-used vara when both were used equally recently", () => {
+      const catalog = [
+        item("mjölk lätt", 3, daysAgo(5)),
+        item("mjölk mellan", 30, daysAgo(5)),
+      ];
+      expect(rankMatches(catalog, "mjölk", 6, NOW)[0].name).toBe("mjölk mellan");
+    });
+
+    it("falls back to raw use count for varor that have never been used", () => {
+      // `lastUsedAt` is null across the seeded catalog until something is
+      // bought, and every score is then 0 — the ordering must not collapse to
+      // alphabetical on a fresh install.
+      const catalog = [item("mjölk lätt", 2), item("mjölk mellan", 30)];
+      expect(rankMatches(catalog, "mjölk", 6, NOW)[0].name).toBe("mjölk mellan");
+    });
+
+    it("never lets recency outrank a better literal match", () => {
+      // Tiers come first, always. "mj" means mjölk even if havremjölk was
+      // bought this morning and mjölk a month ago.
+      const catalog = [
+        item("havremjölk", 50, daysAgo(0)),
+        item("mjölk", 1, daysAgo(30)),
+      ];
+      expect(rankMatches(catalog, "mj", 6, NOW)[0].name).toBe("mjölk");
+    });
   });
 
   it("returns nothing for an empty query", () => {

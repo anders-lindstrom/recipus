@@ -1,3 +1,4 @@
+import { catalogOrderScore } from "@/lib/cadence";
 import type { CatalogItem } from "@/lib/domain";
 import { parseQuantityPrefix } from "@/lib/units";
 import { normalizeName } from "@/lib/utils";
@@ -186,6 +187,7 @@ export function rankMatches(
   catalog: CatalogItem[],
   query: string,
   limit = MAX_SUGGESTIONS,
+  now: Date = new Date(),
 ): CatalogItem[] {
   const q = normalizeName(query);
   if (!q) return [];
@@ -233,6 +235,33 @@ export function rankMatches(
         Number(a.item.hidden) - Number(b.item.hidden) ||
         a.score - b.score ||
         a.distance - b.distance ||
+        /*
+         * The catalog's own recency+frequency ordering, decayed — the SAME
+         * function the catalog well is sorted by, deliberately.
+         *
+         * These two orderings sit inches apart on one screen over one set of
+         * 341 varor, and a raw `useCount` here made them disagree in a way that
+         * only ever got worse: usage counted forever, so a vara bought forty
+         * times last winter outranked one bought eight times this month, and a
+         * household that switched from lättmjölk to mellanmjölk went on being
+         * offered lättmjölk first for the life of the install.
+         *
+         * `useCount` survives as the tie-break rather than being replaced,
+         * because `catalogOrderScore` returns 0 for every vara with no
+         * `lastUsedAt` — which is the whole seeded catalog until something is
+         * bought. Without the fallback a fresh install would rank on nothing but
+         * the name.
+         */
+        catalogOrderScore(
+          b.item.useCount,
+          b.item.lastUsedAt ? new Date(b.item.lastUsedAt) : null,
+          now,
+        ) -
+          catalogOrderScore(
+            a.item.useCount,
+            a.item.lastUsedAt ? new Date(a.item.lastUsedAt) : null,
+            now,
+          ) ||
         b.item.useCount - a.item.useCount ||
         a.item.name.localeCompare(b.item.name, "sv"),
     )
@@ -345,6 +374,7 @@ export function resolveQuery(
   catalog: CatalogItem[],
   raw: string,
   limit = MAX_SUGGESTIONS,
+  now: Date = new Date(),
 ): ResolvedQuery {
   const { name, amountText } = splitQuery(raw);
   const empty: ResolvedQuery = { matches: [], modifier: "", amountText, name };
@@ -356,7 +386,7 @@ export function resolveQuery(
   // Qualifier in front — "mogen banan". Longest tail first, so a multi-word
   // vara stays whole.
   for (let i = 0; i <= cap; i++) {
-    const attempt = trySplit(catalog, words.slice(i), words.slice(0, i), limit);
+    const attempt = trySplit(catalog, words.slice(i), words.slice(0, i), limit, now);
     if (attempt) return { ...attempt, amountText, name };
   }
 
@@ -365,7 +395,7 @@ export function resolveQuery(
   // taking an instruction. Second because Swedish puts the head noun last, so
   // when both readings are available the front one is the qualifier.
   for (let j = 1; j <= cap; j++) {
-    const attempt = trySplit(catalog, words.slice(0, -j), words.slice(-j), limit);
+    const attempt = trySplit(catalog, words.slice(0, -j), words.slice(-j), limit, now);
     if (attempt) return { ...attempt, amountText, name };
   }
 
@@ -381,11 +411,12 @@ function trySplit(
   varaWords: string[],
   modifierWords: string[],
   limit: number,
+  now: Date,
 ): { matches: CatalogItem[]; modifier: string } | null {
   if (varaWords.length === 0) return null;
 
   const vara = varaWords.join(" ");
-  const matches = rankMatches(catalog, vara, limit);
+  const matches = rankMatches(catalog, vara, limit, now);
   if (matches.length === 0) return null;
 
   const modifier = modifierWords.join(" ");
@@ -423,6 +454,7 @@ const CONJUNCTION_SPLIT_RE = /\s+och\s+/i;
 export function resolvePair(
   catalog: CatalogItem[],
   raw: string,
+  now: Date = new Date(),
 ): [CatalogItem, CatalogItem] | null {
   const { name, amountText } = splitQuery(raw);
   if (amountText || !CONJUNCTION_SPLIT_RE.test(name)) return null;
@@ -430,7 +462,7 @@ export function resolvePair(
   const parts = name.split(CONJUNCTION_SPLIT_RE);
   if (parts.length !== 2) return null;
 
-  const resolved = parts.map((part) => resolveQuery(catalog, part.trim(), 1));
+  const resolved = parts.map((part) => resolveQuery(catalog, part.trim(), 1, now));
   if (resolved.some((r) => r.matches.length === 0 || r.modifier)) return null;
 
   const [first, second] = resolved.map((r) => r.matches[0]);
