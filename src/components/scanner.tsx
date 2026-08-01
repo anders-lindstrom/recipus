@@ -35,6 +35,20 @@ export interface ScannerProps {
   onClose: () => void;
   /** Feedback for the last scan: what happened, in Swedish. */
   lastResult?: ScanOutcome | null;
+  /**
+   * Stop reporting hits, without tearing the camera down.
+   *
+   * Set while a scan is waiting on an answer — "which vara is this?" — because
+   * the session is continuous by design: the viewfinder stays live and a second
+   * product drifting past would replace the question mid-sentence. The
+   * per-code cooldown does not cover this; it suppresses repeats of the SAME
+   * code, and the problem here is a different one.
+   *
+   * Deliberately not a teardown. Releasing the stream and re-acquiring it costs
+   * a visible second of black and, on iOS, another permission-shaped pause —
+   * for a dialog that is usually dismissed in two taps.
+   */
+  paused?: boolean;
 }
 
 type DetectFn = (video: HTMLVideoElement) => Promise<string[]>;
@@ -95,7 +109,12 @@ async function createDetector(): Promise<DetectFn | null> {
   }
 }
 
-export function Scanner({ onScan, onClose, lastResult }: ScannerProps) {
+export function Scanner({
+  onScan,
+  onClose,
+  lastResult,
+  paused = false,
+}: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const runningRef = useRef(true);
@@ -107,8 +126,23 @@ export function Scanner({ onScan, onClose, lastResult }: ScannerProps) {
   const [manual, setManual] = useState("");
   const [needsManual, setNeedsManual] = useState(false);
 
+  /*
+   * A ref rather than a dependency, and the reason is the camera.
+   *
+   * `handleHit` is what the detection effect depends on, so putting `paused` in
+   * its dependency list would change its identity every time a sheet opens —
+   * tearing the effect down, stopping every track, and re-acquiring the stream.
+   * That is a second of black and, on iOS, a second permission-shaped pause,
+   * every time somebody is asked what they just scanned.
+   */
+  const pausedRef = useRef(paused);
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
+
   const handleHit = useCallback(
     (code: string) => {
+      if (pausedRef.current) return;
       const now = Date.now();
       const seen = recentRef.current.get(code);
       if (seen && now - seen < 2500) return;

@@ -91,10 +91,33 @@ export async function dropCatalogItems(ids: string[]): Promise<void> {
   await sql`delete from catalog_items where id in ${sql(ids)}`;
 }
 
+/**
+ * What the server actually stored for a scanned barcode.
+ *
+ * Worth having as its own assertion because "the outbox drained" does NOT mean
+ * "the server accepted it": a refused op is retried a bounded number of times
+ * and then dropped, which empties the outbox exactly as success does. Asserting
+ * on the drain alone would pass for an op the server threw away.
+ */
+export async function barcodeRow(
+  ean: string,
+): Promise<{ productId: string; catalogItemId: string | null } | null> {
+  const rows = await sql<Array<{ productId: string; catalogItemId: string | null }>>`
+    select b.product_id as "productId", p.catalog_item_id as "catalogItemId"
+    from barcodes b join products p on p.id = b.product_id
+    where b.ean = ${ean}
+  `;
+  return rows[0] ?? null;
+}
+
 /** Products a test created that never landed on one of its own varor. */
 export async function dropProducts(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   await sql`delete from purchases where product_id in ${sql(ids)}`;
+  // Barcodes before products, because the pointer is the FK holder. Nothing in
+  // this suite created a barcode link until the scan specs did, so this
+  // omission was invisible rather than absent.
+  await sql`delete from barcodes where product_id in ${sql(ids)}`;
   await sql`delete from products where id in ${sql(ids)}`;
 }
 

@@ -6,10 +6,13 @@ import { useList } from "@/lib/client/use-list";
 import { useMode } from "@/lib/client/use-mode";
 import { nextOpTimestamp } from "@/lib/client/op-clock";
 import { scanAction } from "@/lib/client/scan-action";
+import { resolveScan } from "@/lib/client/scan-resolve";
+import { autoMapProductName } from "@/lib/ingredients";
 import type { Op } from "@/lib/sync";
 import {
   entryId,
   manualContributionId,
+  productId,
   type Amount,
   type CatalogItem,
   type Id,
@@ -22,6 +25,7 @@ import { normalizeName, slugify } from "@/lib/utils";
 import { ListScreen } from "./list-screen";
 import { ListSwitcher } from "./list-switcher";
 import { Scanner, type ScanOutcome } from "./scanner";
+import { VarorPlaceSheet } from "./varor-place-sheet";
 
 /**
  * Wiring the list screen to the sync layer.
@@ -41,6 +45,41 @@ import { Scanner, type ScanOutcome } from "./scanner";
  */
 
 const SHELL_KEY = "recipus:shell";
+
+/**
+ * How long a scan waits for the server before carrying on without it.
+ *
+ * The same 2.5s the service worker gives a navigation, for the same reason it
+ * gives it: when you are genuinely offline the fetch fails on connection setup
+ * in milliseconds, so this only bites on a flaky signal — the supermarket
+ * basement case, where a slightly slower correct answer would still be worse
+ * than getting on with it. Nothing is lost by giving up: the product and its
+ * barcode are already written, and the name can arrive later.
+ */
+const LOOKUP_TIMEOUT_MS = 2500;
+
+interface BarcodeLookup {
+  productName: string | null;
+  brand: string | null;
+}
+
+/**
+ * Ask the server what a barcode is, and never let the answer matter enough to
+ * block on. Null means "no answer" — offline, unknown to Open Food Facts, or
+ * simply slow — and every one of those is the same thing to the caller.
+ */
+async function lookUpBarcode(ean: string): Promise<BarcodeLookup | null> {
+  try {
+    const res = await fetch(`/api/barcode/${encodeURIComponent(ean)}`, {
+      signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Partial<BarcodeLookup>;
+    return { productName: body.productName ?? null, brand: body.brand ?? null };
+  } catch {
+    return null;
+  }
+}
 
 /** The bits ListScreen needs that do not live in SyncState. */
 interface ShellContext {
@@ -86,6 +125,17 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<ScanOutcome | null>(null);
   const [switching, setSwitching] = useState(false);
+  /**
+   * A scanned product waiting to be told what it is.
+   *
+   * Held by id rather than by value so the sheet re-reads the product out of
+   * state on every render: the lookup that follows an unknown scan patches the
+   * name a moment later, and a snapshot taken at open would leave the sheet
+   * offering "7310865004703" after the app had learned it was Mellanmjölk.
+   */
+  const [placing, setPlacing] = useState<{ ean: string; productId: Id } | null>(
+    null,
+  );
 
   // Read once, on first render, so the offline path has a list name and
   // category names before anything async resolves.
@@ -377,8 +427,129 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
      */
     setCategoryOrder: (categoryOrder: Id[]) =>
       dispatch({ kind: "update_list", listId, patch: { categoryOrder } }),
+    /**
+     * Saying which vara a scanned product is — the same two ops `/varor` uses
+     * for the same answer, deliberately, so a placement made at the till and one
+     * made at the kitchen table are the same event to every other device.
+     */
+    placeProduct: (id: Id, catalogItemId: Id) =>
+      dispatch({
+        kind: "update_product",
+        productId: id,
+        patch: { catalogItemId },
+      }),
+    createVaraAndPlace: (id: Id, name: string): Id | null => {
+      const trimmed = name.trim();
+      if (!trimmed) return null;
+      const catalogItemId = slugify(trimmed);
+      dispatch({
+        kind: "create_catalog_item",
+        item: {
+          id: catalogItemId,
+          name: trimmed,
+          nameNorm: normalizeName(trimmed),
+          // Unsorted until somebody says otherwise, exactly as the add bar and
+          // the registry both do it — guessing an aisle from a product name
+          // sends you to the wrong end of the shop, permanently.
+          categoryId: "ovrigt",
+          iconRef: "1F4E6",
+          isCustom: true,
+          hasAtHome: false,
+          useCount: 0,
+          lastUsedAt: null,
+        },
+      });
+      dispatch({
+        kind: "update_product",
+        productId: id,
+        patch: { catalogItemId },
+      });
+      return catalogItemId;
+    },
   };
 
+  /**
+   * Act on a barcode we can name.
+   *
+   * Split out because three routes reach it — a local hit, an auto-mapped new
+   * product, and a placement the user just made — and every one of them must
+   * run the same four-cell table. An `add_and_buy` that only some paths could
+   * reach is how a scan silently stops recording purchases.
+   */
+  function actOnVara(catalogItemId: Id, name: string) {
+    if (!listId) return;
+    const entry = state.entries[entryId(listId, catalogItemId)];
+    const onList = Boolean(entry && entry.removedAt === null);
+
+    // Which of the four things a scan means lives in `scanAction`, tested
+    // there. This only turns the decision into ops and Swedish.
+    switch (scanAction(mode, onList).kind) {
+      case "buy": {
+        const clientOpId = actions.removeItem(catalogItemId, true);
+        setScanResult({
+          text: `${name} köpt`,
+          undo: () => {
+            actions.addItem(catalogItemId, undefined, clientOpId);
+            setScanResult({ text: `${name} tillbaka på listan` });
+          },
+        });
+        return;
+      }
+
+      case "add_and_buy": {
+        actions.addItem(catalogItemId);
+        const clientOpId = actions.removeItem(catalogItemId, true);
+        setScanResult({
+          text: `${name} tillagd och köpt`,
+          undo: () => {
+            // Two halves: put it back so the purchase can be retracted against
+            // the op that wrote it, then take it off again WITHOUT recording a
+            // purchase — landing back where you were before the scan.
+            actions.addItem(catalogItemId, undefined, clientOpId);
+            actions.removeItem(catalogItemId, false);
+            setScanResult({ text: `${name} ångrad` });
+          },
+        });
+        return;
+      }
+
+      case "already_on_list": {
+        // No op, and so no undo: there is nothing to take back. Saying so is
+        // still worth a line — otherwise a scan that changed nothing looks
+        // identical to one the camera never read.
+        setScanResult({ text: `${name} finns redan på listan` });
+        return;
+      }
+
+      case "add": {
+        actions.addItem(catalogItemId);
+        setScanResult({
+          text: `${name} tillagd`,
+          undo: () => {
+            actions.removeItem(catalogItemId, false);
+            setScanResult({ text: `${name} borttagen igen` });
+          },
+        });
+        return;
+      }
+    }
+  }
+
+  /**
+   * A scan, answered from this device first.
+   *
+   * The order is the design doc's, and only the first step is new: the local EAN
+   * map, then the server, then Open Food Facts, then ask. What shipped went
+   * straight to `/api/barcode` and did nothing else, so every scan — including
+   * one for a barcode this household had already answered for — died with the
+   * signal, in the shop, which is the only place anybody scans anything.
+   *
+   * Nothing here awaits the network before acting. A known barcode resolves out
+   * of `SyncState` and is on the list before the camera has stopped shaking; an
+   * unknown one is *written* before anything is fetched, so the scan survives
+   * having no signal at all. The lookup that follows only ever improves a row
+   * that already exists.
+   */
   async function handleScan(ean: string) {
     // `listId` is guaranteed by the guard above, but this function is hoisted
     // out of that narrowing. The old code interpolated the id by hand, which
@@ -386,80 +557,85 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     // `entryId` closes the last place in the codebase that built an entry id
     // itself, at the cost of this one honest guard.
     if (!listId) return;
-    try {
-      const res = await fetch(`/api/barcode/${encodeURIComponent(ean)}`);
-      if (!res.ok) {
-        setScanResult({ text: `Okänd streckkod ${ean}` });
-        return;
-      }
-      const { catalogItemId, productName } = await res.json();
-      if (!catalogItemId) {
-        setScanResult({
-          text: productName ? `${productName} — välj vara` : "Välj vara",
-        });
-        return;
-      }
 
-      const item = state.catalog[catalogItemId];
-      const name = item?.name ?? "Varan";
-      const entry = state.entries[entryId(listId, catalogItemId)];
-      const onList = Boolean(entry && entry.removedAt === null);
+    const resolved = resolveScan(state, ean);
 
-      // Which of the four things a scan means lives in `scanAction`, tested
-      // there. This only turns the decision into ops and Swedish.
-      switch (scanAction(mode, onList).kind) {
-        case "buy": {
-          const clientOpId = actions.removeItem(catalogItemId, true);
-          setScanResult({
-            text: `${name} köpt`,
-            undo: () => {
-              actions.addItem(catalogItemId, undefined, clientOpId);
-              setScanResult({ text: `${name} tillbaka på listan` });
-            },
-          });
-          return;
-        }
-
-        case "add_and_buy": {
-          actions.addItem(catalogItemId);
-          const clientOpId = actions.removeItem(catalogItemId, true);
-          setScanResult({
-            text: `${name} tillagd och köpt`,
-            undo: () => {
-              // Two halves: put it back so the purchase can be retracted against
-              // the op that wrote it, then take it off again WITHOUT recording a
-              // purchase — landing back where you were before the scan.
-              actions.addItem(catalogItemId, undefined, clientOpId);
-              actions.removeItem(catalogItemId, false);
-              setScanResult({ text: `${name} ångrad` });
-            },
-          });
-          return;
-        }
-
-        case "already_on_list": {
-          // No op, and so no undo: there is nothing to take back. Saying so is
-          // still worth a line — otherwise a scan that changed nothing looks
-          // identical to one the camera never read.
-          setScanResult({ text: `${name} finns redan på listan` });
-          return;
-        }
-
-        case "add": {
-          actions.addItem(catalogItemId);
-          setScanResult({
-            text: `${name} tillagd`,
-            undo: () => {
-              actions.removeItem(catalogItemId, false);
-              setScanResult({ text: `${name} borttagen igen` });
-            },
-          });
-          return;
-        }
-      }
-    } catch {
-      setScanResult({ text: "Kunde inte slå upp streckkoden" });
+    if (resolved.kind === "vara") {
+      actOnVara(resolved.catalogItemId, resolved.name);
+      return;
     }
+
+    if (resolved.kind === "unplaced") {
+      setPlacing({ ean, productId: resolved.productId });
+      return;
+    }
+
+    /*
+     * A barcode nobody has met. Write it down BEFORE looking it up.
+     *
+     * This is the ordering the whole feature turns on. `create_product` and
+     * `link_barcode` go through the outbox, so a shop with no signal queues them
+     * and they land when it has one — which is what the op comment has promised
+     * since the registry shipped ("unknown barcodes are created in a shop,
+     * offline… only the outbox can fix that"). Fetching first and writing on
+     * success inverts it, and that is what dropped the scan.
+     *
+     * The EAN stands in as the name, exactly as the PUT route and drizzle/0005
+     * both do for a nameless product, and it is what the review queue shows
+     * until something better arrives.
+     */
+    const id = productId(ean);
+    dispatch({
+      kind: "create_product",
+      product: {
+        id,
+        name: ean,
+        brand: null,
+        catalogItemId: null,
+        defaultSize: null,
+        sourceSizeText: null,
+        imageUrl: null,
+        createdAt: new Date().toISOString(),
+        createdBy: effectiveActor ?? "okand",
+      },
+    });
+    dispatch({ kind: "link_barcode", ean, productId: id, source: "off" });
+
+    const found = await lookUpBarcode(ean);
+    if (found?.productName) {
+      // One patch, naming only the fields this lookup actually learned. Each of
+      // `update_product`'s four clocks is independent precisely so a patch that
+      // is silent about the mapping cannot beat one that sets it.
+      dispatch({
+        kind: "update_product",
+        productId: id,
+        patch: { name: found.productName, brand: found.brand ?? null },
+      });
+
+      /*
+       * Auto-map, at 0.8 and never 0.7 — the threshold's own module explains
+       * why (0.7 put "Kaffe Gevalia Mellanrost" onto *ost*). A confident match
+       * is the difference between a scan that just works and one that asks a
+       * question in front of a till, and anything less confident belongs in the
+       * review queue where somebody can look at it properly.
+       */
+      const guess = autoMapProductName(
+        found.productName,
+        Object.values(state.catalog),
+      );
+      const vara = guess ? state.catalog[guess.id] : undefined;
+      if (vara) {
+        dispatch({
+          kind: "update_product",
+          productId: id,
+          patch: { catalogItemId: vara.id },
+        });
+        actOnVara(vara.id, vara.name);
+        return;
+      }
+    }
+
+    setPlacing({ ean, productId: id });
   }
 
   return (
@@ -522,6 +698,67 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
           onScan={handleScan}
           onClose={() => setScanning(false)}
           lastResult={scanResult}
+          // The camera keeps firing behind an open sheet otherwise, and the
+          // per-code cooldown only suppresses the SAME barcode — a second
+          // product drifting through the viewfinder would replace the question
+          // you are halfway through answering.
+          paused={placing !== null}
+        />
+      )}
+      {placing && (
+        <VarorPlaceSheet
+          /* Re-read every render: the lookup patches the name a moment after
+             this opens, so a value captured at open would keep offering the
+             bare EAN after the app had learned the product's real name. */
+          product={
+            state.products[placing.productId] ?? {
+              id: placing.productId,
+              name: placing.ean,
+              brand: null,
+              catalogItemId: null,
+              defaultSize: null,
+              sourceSizeText: null,
+              imageUrl: null,
+              createdAt: new Date().toISOString(),
+              createdBy: effectiveActor ?? "okand",
+            }
+          }
+          catalog={Object.values(state.catalog)}
+          current={null}
+          onPlace={(catalogItemId) => {
+            actions.placeProduct(placing.productId, catalogItemId);
+            setPlacing(null);
+            const vara = state.catalog[catalogItemId];
+            // Placing is the answer to "what did I just scan", so the scan then
+            // completes — the alternative is telling someone at a till that
+            // their answer was recorded and their item was not.
+            if (vara) actOnVara(vara.id, vara.name);
+          }}
+          onCreateAndPlace={(name) => {
+            const catalogItemId = actions.createVaraAndPlace(
+              placing.productId,
+              name,
+            );
+            setPlacing(null);
+            if (catalogItemId) actOnVara(catalogItemId, name.trim());
+          }}
+          /* Nothing to send back to the queue: this product has no vara to
+             leave, which is the entire reason the sheet is open. */
+          onUnplace={() => setPlacing(null)}
+          onClose={() => {
+            /*
+             * Dismissing answers nothing, and that is allowed to cost the
+             * purchase.
+             *
+             * The product and its barcode are already written, so the scan is
+             * not lost — it lands in the review queue on /varor. What does not
+             * happen is a purchase, because there is no vara to attribute one
+             * to and inventing an attribution is the same class of error as
+             * inventing the purchase itself. Under-record, never invent.
+             */
+            setPlacing(null);
+            setScanResult({ text: "Sparad i granskningskön" });
+          }}
         />
       )}
     </>
