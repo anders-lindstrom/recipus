@@ -308,6 +308,69 @@ describe("rankSuggestions", () => {
     const result = rankSuggestions([{ catalogItemId: "a", purchases }], { now });
     expect(result[0].reason).toBe("3 v sen");
   });
+
+  /*
+   * The lapsed group.
+   *
+   * Measured against a synthetic twelve-week history before this existed: a
+   * household with mjölk on a confident four-day rhythm, coffee, bananas, butter
+   * and yoghurt all genuinely due, plus strawberries bought four times in June
+   * and not since, was offered STRAWBERRIES FIRST — 7.3x overdue beats 1.25x
+   * under a plain descending sort, and the more thoroughly an item has been
+   * abandoned the higher it climbs. Every real staple ranked below a dead season.
+   */
+  describe("lapsed items", () => {
+    /** median 7, high confidence, last bought `daysAgo`. */
+    function weekly(catalogItemId: string, daysAgo: number, now: Date): SuggestionInput {
+      const purchases = datesFromIntervals(START, [7, 7, 7, 7, 7, 7, 7]);
+      const shift = now.getTime() - daysAgo * DAY_MS - purchases.at(-1)!.getTime();
+      return {
+        catalogItemId,
+        purchases: purchases.map((d) => new Date(d.getTime() + shift)),
+      };
+    }
+
+    const now = addDays(START, 400);
+
+    it("ranks a genuinely-due item above a long-abandoned one", () => {
+      const result = rankSuggestions(
+        [
+          // 51 days since last purchase on a 7-day rhythm: a finished season.
+          { ...weekly("jordgubbar", 51, now) },
+          // 8 days on a 7-day rhythm: actually due.
+          { ...weekly("mjolk", 8, now) },
+        ],
+        { now },
+      );
+      expect(result.map((r) => r.catalogItemId)).toEqual(["mjolk", "jordgubbar"]);
+      // The abandoned one is still OFFERED, just last — see the demotion comment.
+      expect(result[0].overdueScore).toBeLessThan(result[1].overdueScore);
+    });
+
+    it("keeps overdue-descending order within the lapsed group", () => {
+      const result = rankSuggestions(
+        [weekly("older", 60, now), weekly("newer", 30, now)],
+        { now },
+      );
+      expect(result.map((r) => r.catalogItemId)).toEqual(["older", "newer"]);
+    });
+
+    it("does not demote an item merely well past due but under the ceiling", () => {
+      // 20/7 = 2.9x — two skipped cycles, still plausibly a real gap.
+      const result = rankSuggestions(
+        [weekly("lapsed", 30, now), weekly("stillLive", 20, now)],
+        { now },
+      );
+      expect(result.map((r) => r.catalogItemId)).toEqual(["stillLive", "lapsed"]);
+    });
+
+    it("still fills the row after a holiday, when everything has lapsed", () => {
+      // Three weeks away: every item is far past due and none of them is dead.
+      // A hard cutoff would empty the row exactly when it is most useful.
+      const items = ["a", "b", "c"].map((id) => weekly(id, 40, now));
+      expect(rankSuggestions(items, { now })).toHaveLength(3);
+    });
+  });
 });
 
 describe("catalogOrderScore", () => {

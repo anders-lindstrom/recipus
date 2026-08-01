@@ -184,6 +184,31 @@ const SUGGESTION_CONFIDENCE_FLOOR = 0.3;
 /** Suggestion threshold on overdueScore. */
 const SUGGESTION_OVERDUE_THRESHOLD = 0.85;
 
+/**
+ * Past this many of an item's OWN cycles, being later is no longer evidence.
+ *
+ * The suggestion row's whole claim is "you are about due for this". Below the
+ * ceiling, a bigger `overdueScore` makes that claim stronger. Above it the claim
+ * inverts: an item you have skipped three times over is not one you are about to
+ * need, it is one you have stopped buying — a season that ended, a brand you
+ * changed, a thing you tried once in a heatwave.
+ *
+ * Sorting on `overdueScore` alone therefore rewards exactly the wrong items, and
+ * it gets worse the longer the household uses the app: an abandoned item's score
+ * grows without bound while a live staple's oscillates around 1, so every dead
+ * item ever recorded eventually sits permanently above every real one. Measured
+ * on a synthetic twelve-week history, the single suggestion ranked first was
+ * strawberries whose season had ended six weeks earlier, above milk on a
+ * confident four-day rhythm that was genuinely due.
+ *
+ * Three cycles rather than two, and it is reasoned from cost asymmetry rather
+ * than fitted — there is no real history to calibrate against yet, the same
+ * caveat §2.8 of the history spec attaches to its own thresholds. Two cycles
+ * would catch a fortnight's holiday on a weekly item, which is an ordinary gap
+ * and not an abandonment. Expect to tune it.
+ */
+const LAPSED_OVERDUE_MULTIPLE = 3;
+
 const DEFAULT_SUGGESTION_LIMIT = 8;
 
 export interface SuggestionInput {
@@ -249,7 +274,28 @@ export function rankSuggestions(
     });
   }
 
-  candidates.sort((a, b) => b.overdueScore - a.overdueScore || b.confidence - a.confidence);
+  /*
+   * Lapsed items sort BELOW live ones, and are not dropped.
+   *
+   * Demoted rather than filtered, which is the same call `rankMatches` makes
+   * about hidden varor and for a related reason: a rule this crude will
+   * sometimes be wrong, and being wrong by burying something is recoverable in a
+   * glance where being wrong by withholding it is invisible. The concrete case
+   * is a holiday — come back after three weeks away and EVERY item is lapsed, so
+   * a hard cutoff would empty the row at the one moment it has the most to say.
+   * Demotion leaves it full and merely reorders it, and the ordering is not
+   * doing any harm when every candidate is in the same group.
+   *
+   * Within each group the order is unchanged — most overdue first — so this adds
+   * a partition and changes nothing else about how suggestions rank.
+   */
+  const lapsed = (s: Suggestion) => Number(s.overdueScore > LAPSED_OVERDUE_MULTIPLE);
+  candidates.sort(
+    (a, b) =>
+      lapsed(a) - lapsed(b) ||
+      b.overdueScore - a.overdueScore ||
+      b.confidence - a.confidence,
+  );
   return candidates.slice(0, limit);
 }
 
