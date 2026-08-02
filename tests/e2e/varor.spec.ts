@@ -4,6 +4,7 @@ import {
   catalogTile,
   dropCatalogItems,
   dropProducts,
+  dropRecipes,
   entriesInIndexedDb,
   expect,
   longPressTile,
@@ -652,4 +653,111 @@ test("clearing a stand-in tile in buy mode records no purchase", async ({
   expect(await purchaseCount(listId)).toBe(0);
 
   await dropCatalogItems([varaId]);
+});
+
+/**
+ * A merge moves what a recipe asked for, and the recipe goes on asking.
+ *
+ * The production report, in the reporter's words: "I have a recipe, it put 1200 g
+ * kycklingbröstfilé on my list as an övrigt. I merged that into kycklingfilé. The
+ * thing in my list then disappears — and if I remove the recipe and add it again,
+ * 1200 g kycklingbröstfilé appears again, so what I tried to do wasn't performed
+ * at all."
+ *
+ * Two omissions, one story. The merge carried the ask across as a `set_amount`,
+ * which is to say as a MANUAL ask — the number survived and the provenance did
+ * not, so the tile stopped saying which recipe wanted it and `remove_recipe`,
+ * which collects by addition, no longer recognised the share as its own. And the
+ * recipe's own line never learned which vara it had meant: it was stored null at
+ * import and re-decided from the raw text on every add, so the next add slugged
+ * the merged-away word straight back into existence, `create_catalog_item`
+ * beating the tombstone on clock.
+ *
+ * Driven through the UI, because every symptom in the report is a sentence about
+ * what the screen showed.
+ */
+test("a merged recipe ingredient keeps its recipe, and adding the recipe again does not duplicate it", async ({
+  page,
+  listId,
+}) => {
+  const suffix = unique();
+  const survivorName = `Kycklingfile ${suffix}`;
+  const survivorId = await createVara(page, survivorName);
+  // The word the recipe invents: nothing in the catalog matches it, so the add
+  // flow creates it as an Övrigt exactly as the report describes.
+  const lineName = `Kycklingbrostfile ${suffix}`;
+  const recipeTitle = `E2E Kyckling ${suffix}`;
+
+  const saved = await page.request.post("/api/recipes/paste", {
+    data: { title: recipeTitle, servings: 4, text: `1200 g ${lineName}` },
+  });
+  expect(saved.ok()).toBe(true);
+  const recipe = (await saved.json()) as { id: string };
+
+  async function addRecipeToList() {
+    await page.goto(`/recept/${recipe.id}`);
+    await page.getByRole("button", { name: "Lägg till i lista" }).click();
+    // The household has more than one list in the test database, so the picker
+    // always appears; the fixture's list is the one named E2E.
+    await page.getByRole("button", { name: "E2E", exact: true }).click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: /^Lägg till 1 vara/ })
+      .click();
+    await expect(page.getByText(`Tillagt i E2E`)).toBeVisible();
+  }
+
+  await addRecipeToList();
+  await page.goto(`/?list=${listId}`);
+  await expect(onListTile(page, lineName)).toContainText("1200 g");
+
+  // Merge the invented word into the vara the household already had.
+  await page.goto(`/varor?list=${listId}`);
+  await page.getByRole("button", { name: new RegExp(lineName) }).click();
+  const sheet = page.getByRole("dialog");
+  await sheet.getByRole("button", { name: "Slå samman med annan vara" }).click();
+  await sheet.getByLabel("Sök vara att slå samman med").fill(survivorName);
+  await sheet.getByRole("button", { name: new RegExp(survivorName) }).click();
+
+  await page.goto(`/?list=${listId}`);
+  // The ask moved, amount and all…
+  await expect(onListTile(page, survivorName)).toContainText("1200 g");
+  await expect(onListTile(page, lineName)).toHaveCount(0);
+
+  // …and it is still the RECIPE's ask. This button is the only place a person
+  // can see that, and it was the thing a `set_amount` silently took away.
+  await longPressTile(page, onListTile(page, survivorName));
+  const entrySheet = page.getByRole("dialog");
+  await expect(
+    entrySheet.getByRole("button", { name: `Ta bort ${recipeTitle}` }),
+  ).toBeVisible();
+
+  // Taking the recipe off the list takes its 1200 g with it, wherever the ask
+  // ended up — and the survivor is offered as an item nothing else wants, which
+  // is `itemsOnlyWantedByRecipe` recognising the moved share as this recipe's.
+  // Left labelled manual instead, the 1200 g simply stayed, and stacked with the
+  // next add.
+  await entrySheet.getByRole("button", { name: `Ta bort ${recipeTitle}` }).click();
+  const removal = page.getByRole("dialog");
+  await expect(removal.getByText(/står på listan bara för det här receptet/)).toBeVisible();
+  await removal.getByRole("button", { name: /^Ta bort receptet och 1 vara/ }).click();
+  await expect(onListTile(page, survivorName)).toHaveCount(0);
+
+  await settle(page);
+  await addRecipeToList();
+  await page.goto(`/?list=${listId}`);
+
+  // One line, on the surviving word, asking for what the recipe asks for. The
+  // report's "it adds a new line of the other one, and they go double" was both
+  // halves of this assertion failing at once.
+  await expect(onListTile(page, survivorName)).toContainText("1200 g");
+  await expect(onListTile(page, lineName)).toHaveCount(0);
+  const live = await entriesInIndexedDb(page);
+  expect(live.filter((id) => id.startsWith(`${listId}:`))).toEqual([
+    `${listId}:${survivorId}`,
+  ]);
+
+  await settle(page);
+  await dropRecipes([recipe.id]);
+  await dropCatalogItems([survivorId, slug(lineName)]);
 });

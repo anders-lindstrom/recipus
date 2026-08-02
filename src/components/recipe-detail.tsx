@@ -3,12 +3,19 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import type { Amount, CatalogItem, Id, List, Recipe, RecipeIngredient } from "@/lib/domain";
+import type {
+  Amount,
+  CatalogItem,
+  CatalogItemAlias,
+  Id,
+  List,
+  Recipe,
+} from "@/lib/domain";
 import type { CadenceStats } from "@/lib/cadence";
-import { parseIngredientLine } from "@/lib/ingredients";
 import type { Op } from "@/lib/sync";
-import { normalizeName, slugify } from "@/lib/utils";
+import { normalizeName } from "@/lib/utils";
 import { ItemIcon } from "./icon";
+import { type PendingVara, resolveRecipeVaror } from "./recipe-model";
 import { RecipeAddSheet } from "./recipe-add-sheet";
 import { ScreenHeader } from "./screen-header";
 import { Sheet } from "./sheet";
@@ -57,12 +64,6 @@ type LoadResult =
   | { attempt: number; kind: "ready"; recipe: Recipe }
   | { attempt: number; kind: "error"; message: string };
 
-/** A catalog item this screen is about to create for an unmatched ingredient. */
-interface PendingCreate {
-  id: Id;
-  name: string;
-}
-
 type AddFlow =
   | { step: "idle" }
   | { step: "choosing-list"; lists: List[] }
@@ -74,7 +75,7 @@ type AddFlow =
       purchaseStats: Record<Id, CadenceStats>;
       recipe: Recipe;
       catalog: Record<Id, CatalogItem>;
-      pendingCreates: PendingCreate[];
+      pendingCreates: PendingVara[];
       submitting: boolean;
     };
 
@@ -241,31 +242,27 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
       if (!res.ok) throw new Error(await readError(res, "Kunde inte förbereda listan."));
       const snapshot = (await res.json()) as {
         catalog: CatalogItem[];
+        aliases?: CatalogItemAlias[];
         purchaseStats?: Record<Id, CadenceStats>;
       };
       const catalog: Record<Id, CatalogItem> = {};
       for (const item of snapshot.catalog) catalog[item.id] = item;
 
-      // Every unmatched ingredient becomes a brand-new catalog item, created
-      // before the sheet ever opens — RecipeAddSheet's own confirm handler
-      // drops any row still null at that point, so a null id here would
-      // silently lose the ingredient rather than add it. The new id is
-      // deliberately NOT added to `catalog`: RecipeAddSheet's "isNew" check is
-      // just `!catalog[id]`, so leaving it absent is what makes the NY VARA
-      // badge show, exactly as if the server matcher had never resolved it.
-      const pending = new Map<string, PendingCreate>();
-      const patchedIngredients: RecipeIngredient[] = recipe.ingredients.map((ing) => {
-        if (ing.catalogItemId) return ing;
-        const parsed = parseIngredientLine(ing.rawText);
-        const name = parsed.name.trim() || ing.rawText.trim();
-        const key = normalizeName(name);
-        let entry = pending.get(key);
-        if (!entry) {
-          entry = { id: slugify(name) || `vara-${ing.id}`, name };
-          pending.set(key, entry);
-        }
-        return { ...ing, catalogItemId: entry.id };
-      });
+      // Which vara each line means, given the catalog and the words the
+      // household has merged away — see `resolveRecipeVaror`, which is where all
+      // the judgement lives. Anything it could not resolve comes back as a
+      // pending create, made only if the sheet is confirmed with that line still
+      // ticked: RecipeAddSheet's own handler drops rows whose id is null, so a
+      // null here would silently lose the ingredient rather than add it.
+      //
+      // A pending id is deliberately NOT added to `catalog`: RecipeAddSheet's
+      // "isNew" check is just `!catalog[id]`, so leaving it absent is what makes
+      // the NY VARA badge show.
+      const { ingredients: patchedIngredients, pending } = resolveRecipeVaror(
+        recipe.ingredients,
+        catalog,
+        snapshot.aliases ?? [],
+      );
 
       setFlow({
         step: "sheet",
@@ -273,12 +270,53 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
         purchaseStats: snapshot.purchaseStats ?? {},
         recipe: { ...recipe, ingredients: patchedIngredients },
         catalog,
-        pendingCreates: [...pending.values()],
+        pendingCreates: pending,
         submitting: false,
       });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Kunde inte förbereda listan.");
       setFlow({ step: "idle" });
+    }
+  }
+
+  /**
+   * Write the decision down, so the next add does not have to make it again.
+   *
+   * The line that reaches this point resolved to a vara — matched at import,
+   * reached through a merge's alias, or invented a moment ago — and until now
+   * nothing kept that answer. `recipe_ingredients.catalogItemId` stayed null,
+   * and a null row is a row `repointMergedCatalogItem` cannot follow: merge the
+   * vara away and the server re-points every recipe line EXCEPT the ones that
+   * never said which vara they meant. Recording it here is what puts this
+   * recipe inside the reach of the next merge.
+   *
+   * Only rows still null are filled, server-side, so this cannot re-aim a line
+   * the household has since corrected — and a failure is deliberately not
+   * fatal. The shopping is already on the list at this point; the mapping is
+   * bookkeeping, and losing it costs exactly what today costs, which is that
+   * the next add decides again.
+   */
+  async function rememberIngredientVaror(
+    recipe: Recipe,
+    usedIds: Set<Id>,
+  ): Promise<void> {
+    const mappings = recipe.ingredients
+      .filter((ing) => ing.catalogItemId && usedIds.has(ing.catalogItemId))
+      .map((ing) => ({
+        ingredientId: ing.id,
+        catalogItemId: ing.catalogItemId as Id,
+      }));
+    if (mappings.length === 0) return;
+
+    try {
+      await fetch(`/api/recipes/${encodeURIComponent(recipe.id)}/ingredients`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mappings }),
+      });
+    } catch {
+      // Deliberately swallowed — see above. Nothing the person just asked for
+      // depends on it.
     }
   }
 
@@ -343,6 +381,8 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
       };
       const failed = body.results.find((r) => r.error);
       if (failed) throw new Error(failed.error ?? "Kunde inte lägga till i listan.");
+
+      await rememberIngredientVaror(current.recipe, usedIds);
 
       // Sidesteps agreeing "tillagd"/"tillagt" with an arbitrary recipe
       // title's grammatical gender/number — "Blåbärsmuffins", "Pannkakor",

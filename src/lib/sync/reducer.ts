@@ -674,6 +674,44 @@ export function applyOp(state: SyncState, op: Op): SyncState {
     }
 
     /**
+     * The same recipe, asking for a different vara.
+     *
+     * Two writes on two independent clocks — the share appears on the survivor,
+     * the share on the loser goes — and NOT a rewrite of one row, which is what
+     * keeps it order-independent. Both ids are derived from
+     * `recipeContributionId`, so the op names its two records the same way
+     * `add_recipe` names its one, and a concurrent `add_recipe` for this
+     * addition resolves against each of them separately: an older one loses the
+     * drop and never re-creates the share it asked for, a newer one wins both
+     * and the recipe has simply changed its mind since.
+     *
+     * The entry the share lands on is upserted here rather than left to a
+     * separate `add_item`, for the reason `add_recipe` upserts its own: a share
+     * on an entry nobody has added is an ask nothing renders. The entry it
+     * LEAVES is untouched — emptying it is `remove_item`'s job and the merge
+     * sends one, and an entry with no contributions is a perfectly good "buy
+     * some, amount unspecified" that this op has no business deciding about.
+     */
+    case "repoint_recipe_item": {
+      let next = upsertEntry(state, op, op.listId, op.toCatalogItemId);
+      next = setContribution(next, op, {
+        id: recipeContributionId(op.recipeAdditionId, op.toCatalogItemId),
+        entryId: entryId(op.listId, op.toCatalogItemId),
+        sourceKind: "recipe",
+        recipeAdditionId: op.recipeAdditionId,
+        modifier: null,
+        // Already scaled, exactly as `add_recipe` receives it.
+        amount: op.amount,
+        note: null,
+      });
+      return dropContribution(
+        next,
+        op,
+        recipeContributionId(op.recipeAdditionId, op.fromCatalogItemId),
+      );
+    }
+
+    /**
      * A move relocates the entry; it does not copy it.
      *
      * Everything written here comes from the op itself — see the op's own

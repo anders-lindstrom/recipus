@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/db";
-import { recipeIngredients, recipes } from "@/db/schema";
+import { catalogItems, recipeIngredients, recipes } from "@/db/schema";
 import { matchParsedIngredient, parseIngredientLine } from "@/lib/ingredients";
 import { loadMatchCandidates } from "@/lib/services/match-candidates";
 import { cleanPastedIngredients, importRecipeFromUrl } from "@/lib/recipes";
@@ -117,6 +117,26 @@ async function persistRecipe(recipe: RecipeToPersist, actor: string) {
 }
 
 /**
+ * What an add-to-list learned about a recipe's unresolved lines.
+ *
+ * Kept here rather than in ../schemas for the same reason the paste body below
+ * is: it is this route's business and nothing else's. Bounded because a recipe
+ * has ingredients, not a database of them.
+ */
+const ingredientMappingsSchema = z
+  .object({
+    mappings: z
+      .array(
+        z.object({
+          ingredientId: z.string().min(1),
+          catalogItemId: z.string().min(1),
+        }),
+      )
+      .max(200),
+  })
+  .openapi("RecipeIngredientMappings");
+
+/**
  * Defined here rather than in ../schemas alongside the import request, because
  * nothing outside this route needs it — and the bounds are the interesting
  * part. `text` is a whole pasted ingredient list, so it has to be roomy, but
@@ -206,6 +226,72 @@ export function recipesRoutes() {
         ),
         200,
       );
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "patch",
+      path: "/{id}/ingredients",
+      tags: ["recipes"],
+      description:
+        "Record which vara each ingredient line ended up meaning, for lines the import could not resolve. Only rows whose catalogItemId is still NULL are filled: a line the household has already mapped — by a later import, by a merge's re-pointing, or by a previous add — is never re-aimed by this, so replaying it is a no-op and a stale client cannot undo a correction.",
+      request: { params: idParam, body: jsonBody(ingredientMappingsSchema) },
+      responses: {
+        200: jsonRes(z.object({ updated: z.number().int() }), "Rows filled in"),
+        404: jsonRes(errorSchema, "Not found"),
+      },
+    }),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const { mappings } = c.req.valid("json");
+
+      const [recipeRow] = await db
+        .select({ id: recipes.id })
+        .from(recipes)
+        .where(and(eq(recipes.id, id), isNull(recipes.deletedAt)))
+        .limit(1);
+      if (!recipeRow) return c.json({ error: "Not found" }, 404);
+
+      // Varor this row is allowed to point at. `recipe_ingredients` has a
+      // foreign key onto `catalog_items`, and the vara a mapping names is
+      // usually one the client created moments ago with a `create_catalog_item`
+      // op — so a caller that has not flushed its outbox yet, or whose create
+      // lost to a concurrent delete, would otherwise turn bookkeeping into a
+      // 500. Unknown ids are skipped and counted out instead: the line stays
+      // null, which is exactly where it was.
+      const known = new Set(
+        (
+          await db
+            .select({ id: catalogItems.id })
+            .from(catalogItems)
+            .where(
+              inArray(
+                catalogItems.id,
+                mappings.map((m) => m.catalogItemId),
+              ),
+            )
+        ).map((r) => r.id),
+      );
+
+      let updated = 0;
+      for (const m of mappings) {
+        if (!known.has(m.catalogItemId)) continue;
+        const rows = await db
+          .update(recipeIngredients)
+          .set({ catalogItemId: m.catalogItemId })
+          .where(
+            and(
+              eq(recipeIngredients.id, m.ingredientId),
+              eq(recipeIngredients.recipeId, id),
+              isNull(recipeIngredients.catalogItemId),
+            ),
+          )
+          .returning({ id: recipeIngredients.id });
+        updated += rows.length;
+      }
+
+      return c.json({ updated }, 200);
     },
   );
 

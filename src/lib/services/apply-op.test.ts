@@ -816,6 +816,65 @@ describe("snapshot meta for removed records", () => {
     await db.delete(recipeAdditions).where(eq(recipeAdditions.id, additionId));
   });
 
+  it("writes both halves of a repointed recipe share", async () => {
+    // The server has to move the row, not just the client's copy of it. Scoping
+    // this op to one side would leave the share on both varor after a rehydrate
+    // — the tile total silently doubled — or on neither.
+    const from = `${catalogItemId}-repoint-from`;
+    const to = `${catalogItemId}-repoint-to`;
+    await seedItem(from);
+    await seedItem(to);
+
+    const recipeId = `${catalogItemId}-repoint-recipe`;
+    extraRecipes.push(recipeId);
+    await db.insert(recipes).values({
+      id: recipeId,
+      title: "Grädden byter vara",
+      servings: 4,
+      createdBy: ACTOR,
+      updatedBy: ACTOR,
+    });
+
+    const additionId = `${listId}-repoint-addition`;
+    await applyOpToDatabase(
+      op("add_recipe", "2026-07-01T00:00:00.000Z", {
+        listId,
+        recipeId,
+        recipeAdditionId: additionId,
+        scaleFactor: 1,
+        items: [{ catalogItemId: from, amount: { value: 8, unit: "dl" } }],
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("repoint_recipe_item", "2026-07-01T01:00:00.000Z", {
+        listId,
+        recipeAdditionId: additionId,
+        fromCatalogItemId: from,
+        toCatalogItemId: to,
+        amount: { value: 8, unit: "dl" },
+      }),
+      ACTOR,
+    );
+
+    const snapshot = await loadListSnapshot(listId, new Date());
+    const forRecipe = snapshot!.contributions.filter(
+      (c) => c.recipeAdditionId === additionId,
+    );
+    expect(forRecipe).toHaveLength(1);
+    expect(forRecipe[0]).toMatchObject({
+      entryId: entryId(listId, to),
+      sourceKind: "recipe",
+      amount: { value: 8, unit: "dl" },
+    });
+    // And the survivor is on the list, put there by the op itself.
+    expect(
+      snapshot!.entries.find((e) => e.catalogItemId === to)?.removedAt,
+    ).toBeNull();
+
+    await db.delete(recipeAdditions).where(eq(recipeAdditions.id, additionId));
+  });
+
   it("marks a tombstoned entry as deleted in its clock too", async () => {
     const item = `${catalogItemId}-tombstone-meta`;
     await seedItem(item);

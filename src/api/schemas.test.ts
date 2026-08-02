@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { emptyState, entryId, manualContributionId } from "@/lib/domain";
+import {
+  emptyState,
+  entryId,
+  manualContributionId,
+  recipeContributionId,
+} from "@/lib/domain";
 import { applyOp, type Op } from "@/lib/sync";
 import { opSchema } from "./schemas";
 
@@ -60,5 +65,46 @@ describe("opSchema round trip", () => {
     // urgent item anyone ever moved.
     const { priority: _priority, ...withoutPriority } = move;
     expect(opSchema.safeParse(withoutPriority).success).toBe(false);
+  });
+});
+
+/**
+ * The other op whose whole point is a payload surviving the trip.
+ *
+ * A merge re-points a recipe's share of the ask with this, so a field stripped
+ * at the door does not fail loudly: the share arrives with no amount, or the op
+ * is refused with a 400 the outbox retries forever, and either way the recipe
+ * quietly stops asking for what it asked for.
+ */
+describe("repoint_recipe_item round trip", () => {
+  const repoint = {
+    kind: "repoint_recipe_item" as const,
+    clientOpId: "op-2",
+    actor: "anders",
+    at: "2026-08-02T09:00:00.000Z",
+    listId: "hemkop",
+    recipeAdditionId: "ra-1",
+    fromCatalogItemId: "kycklingbrostfile",
+    toCatalogItemId: "kycklingfile",
+    amount: { value: 1200, unit: "g" as const },
+  };
+
+  it("carries the share onto the surviving vara, amount and all", () => {
+    const parsed = opSchema.parse(repoint);
+    expect(parsed).toEqual(repoint);
+
+    const state = applyOp(emptyState(), parsed as Op);
+    const moved = state.contributions[recipeContributionId("ra-1", "kycklingfile")];
+    expect(moved).toMatchObject({
+      sourceKind: "recipe",
+      recipeAdditionId: "ra-1",
+      amount: { value: 1200, unit: "g" },
+    });
+    expect(state.entries[entryId("hemkop", "kycklingfile")].removedAt).toBeNull();
+  });
+
+  it("accepts a share nobody put a quantity on", () => {
+    const bare = { ...repoint, amount: null };
+    expect(opSchema.parse(bare)).toEqual(bare);
   });
 });

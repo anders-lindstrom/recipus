@@ -330,21 +330,22 @@ describe("mergeVaraOps", () => {
   function contribution(
     catalogItemId: string,
     amount: Amount | null,
-    sourceKind: "manual" | "recipe" = "recipe",
+    sourceKind: "manual" | "recipe" | "scan" = "recipe",
     modifier: string | null = null,
+    recipeAdditionId = "add-1",
   ): Contribution {
     return {
       id: `c-${catalogItemId}-${sourceKind}`,
       entryId: entryId(LIST, catalogItemId),
       sourceKind,
-      recipeAdditionId: sourceKind === "recipe" ? "add-1" : null,
+      recipeAdditionId: sourceKind === "recipe" ? recipeAdditionId : null,
       amount,
       note: null,
       modifier,
     };
   }
 
-  it("carries the shopping across to the survivor and takes the loser off", () => {
+  it("carries a recipe's share across as that recipe's, not as a manual amount", () => {
     const state = stateWith({
       catalog: {
         kycklingbrostfile: item("kycklingbrostfile", "kycklingbröstfilé"),
@@ -360,16 +361,24 @@ describe("mergeVaraOps", () => {
 
     expect(KIND(ops)).toEqual([
       "add_item",
-      "set_amount",
+      "repoint_recipe_item",
       "remove_item",
       "merge_catalog_items",
     ]);
-    // The number the tile was showing survives the merge. Losing it was the
-    // whole complaint: you merged two words and the meat left your list.
+    // The number the tile was showing survives the merge, and so does the fact
+    // that a recipe is what wants it. Carrying it as a `set_amount` kept the
+    // number and lost the rest: the tile stopped saying "från recept", and
+    // `remove_recipe` — which collects by addition — could no longer take it back
+    // off the list, so the recipe's 600 g outlived the recipe.
     expect(ops[1]).toMatchObject({
-      catalogItemId: "kycklingbrost",
+      recipeAdditionId: "add-1",
+      fromCatalogItemId: "kycklingbrostfile",
+      toCatalogItemId: "kycklingbrost",
       amount: { value: 600, unit: "g" },
     });
+    // No `set_amount` beside it. Sending the same 600 g twice — once as the
+    // recipe's share, once as a manual total — is 1200 g on the tile.
+    expect(KIND(ops)).not.toContain("set_amount");
     // Administration, not a shop. A purchase here would teach the cadence engine
     // that you buy this every time you tidy your vocabulary.
     expect(ops[2]).toMatchObject({
@@ -384,10 +393,39 @@ describe("mergeVaraOps", () => {
     });
   });
 
-  it("leaves the survivor's own tile alone when it is already on the list", () => {
+  it("moves every recipe's share, one op each", () => {
+    const state = stateWith({
+      catalog: { vitloksklyfta: item("vitloksklyfta"), vitlok: item("vitlok") },
+      entries: { [entryId(LIST, "vitloksklyfta")]: entry("vitloksklyfta") },
+      contributions: {
+        "c-1": {
+          ...contribution("vitloksklyfta", { value: 2, unit: "st" }, "recipe"),
+          id: "c-1",
+        },
+        "c-2": {
+          ...contribution("vitloksklyfta", { value: 3, unit: "st" }, "recipe", null, "add-2"),
+          id: "c-2",
+        },
+      },
+    });
+
+    const ops = mergeVaraOps(state, LIST, "vitloksklyfta", "vitlok", []);
+
+    // Two additions, two shares, two ops. Summing them into one would work out to
+    // the same tile total and then answer "vad behövs det till?" with a shrug.
+    expect(KIND(ops).filter((k) => k === "repoint_recipe_item")).toHaveLength(2);
+    expect(
+      ops
+        .filter((o) => o.kind === "repoint_recipe_item")
+        .map((o) => o.recipeAdditionId)
+        .sort(),
+    ).toEqual(["add-1", "add-2"]);
+  });
+
+  it("leaves the survivor's own manual amount alone when it is already on the list", () => {
     // Two tiles folding into one. The survivor is a tile somebody is looking at,
-    // so its amount stands: overwriting it would silently change a number on
-    // screen, and `set_amount` cannot ask for "one more" instead.
+    // so its manual amount stands: overwriting it would silently change a number
+    // on screen, and `set_amount` cannot ask for "one more" instead.
     const state = stateWith({
       catalog: {
         vitloksklyfta: item("vitloksklyfta", "vitloksklyfta"),
@@ -398,8 +436,8 @@ describe("mergeVaraOps", () => {
         [entryId(LIST, "vitlok")]: entry("vitlok"),
       },
       contributions: {
-        "c-1": contribution("vitloksklyfta", { value: 2, unit: "st" }),
-        "c-2": contribution("vitlok", { value: 1, unit: "st" }),
+        "c-1": contribution("vitloksklyfta", { value: 2, unit: "st" }, "manual"),
+        "c-2": contribution("vitlok", { value: 1, unit: "st" }, "manual"),
       },
     });
 
@@ -407,6 +445,36 @@ describe("mergeVaraOps", () => {
 
     expect(KIND(ops)).toEqual(["remove_item", "merge_catalog_items"]);
     expect(ops[0]).toMatchObject({ catalogItemId: "vitloksklyfta" });
+  });
+
+  it("still moves a recipe's share onto a tile the survivor already has", () => {
+    // The manual half is what the standing tile owns; a recipe's share is a
+    // contribution of its own, so it lands beside whatever that tile already says
+    // and the breakdown adds them up. Dropping it here is what left a recipe
+    // asking for a word nobody could see.
+    const state = stateWith({
+      catalog: { vitloksklyfta: item("vitloksklyfta"), vitlok: item("vitlok") },
+      entries: {
+        [entryId(LIST, "vitloksklyfta")]: entry("vitloksklyfta"),
+        [entryId(LIST, "vitlok")]: entry("vitlok"),
+      },
+      contributions: {
+        "c-1": contribution("vitloksklyfta", { value: 2, unit: "st" }, "recipe"),
+        "c-2": contribution("vitlok", { value: 1, unit: "st" }, "manual"),
+      },
+    });
+
+    const ops = mergeVaraOps(state, LIST, "vitloksklyfta", "vitlok", []);
+
+    expect(KIND(ops)).toEqual([
+      "repoint_recipe_item",
+      "remove_item",
+      "merge_catalog_items",
+    ]);
+    expect(ops[0]).toMatchObject({
+      toCatalogItemId: "vitlok",
+      amount: { value: 2, unit: "st" },
+    });
   });
 
   it("carries sort and urgency, and stamps priority's clock only when it says something", () => {
@@ -432,7 +500,7 @@ describe("mergeVaraOps", () => {
     expect(ops[2]).toMatchObject({ priority: "urgent" });
   });
 
-  it("invents no quantity when the entry spans two unit families", () => {
+  it("invents no quantity when the manual half spans two unit families", () => {
     // "2 dl" and "3 st" cannot be summed honestly, so `buildEntryView` reports
     // two totals — and a single `set_amount` would have to pick one of them and
     // call it the answer. It carries neither instead.
@@ -440,13 +508,40 @@ describe("mergeVaraOps", () => {
       catalog: { gradde: item("gradde"), matlagningsgradde: item("matlagningsgradde") },
       entries: { [entryId(LIST, "gradde")]: entry("gradde") },
       contributions: {
-        "c-1": contribution("gradde", { value: 2, unit: "dl" }, "recipe"),
+        "c-1": contribution("gradde", { value: 2, unit: "dl" }, "scan"),
         "c-2": contribution("gradde", { value: 3, unit: "st" }, "manual"),
       },
     });
 
     const ops = mergeVaraOps(state, LIST, "gradde", "matlagningsgradde", []);
     expect(KIND(ops)).toEqual(["add_item", "remove_item", "merge_catalog_items"]);
+  });
+
+  it("keeps a recipe's share out of the manual amount it carries", () => {
+    // Both halves travel, and they must not travel as each other. Merging them
+    // into one `set_amount` sends the recipe's 2 dl twice — once inside the
+    // total, once as its own share — and the survivor's tile reads 4 dl for an
+    // ask nobody wrote.
+    const state = stateWith({
+      catalog: { gradde: item("gradde"), matlagningsgradde: item("matlagningsgradde") },
+      entries: { [entryId(LIST, "gradde")]: entry("gradde") },
+      contributions: {
+        "c-1": contribution("gradde", { value: 2, unit: "dl" }, "recipe"),
+        "c-2": contribution("gradde", { value: 3, unit: "dl" }, "manual"),
+      },
+    });
+
+    const ops = mergeVaraOps(state, LIST, "gradde", "matlagningsgradde", []);
+
+    expect(KIND(ops)).toEqual([
+      "add_item",
+      "set_amount",
+      "repoint_recipe_item",
+      "remove_item",
+      "merge_catalog_items",
+    ]);
+    expect(ops[1]).toMatchObject({ amount: { value: 3, unit: "dl" } });
+    expect(ops[2]).toMatchObject({ amount: { value: 2, unit: "dl" } });
   });
 
   it("ignores a tombstoned entry, and moves the products it was given", () => {

@@ -189,6 +189,17 @@ async function loadStateSlice(
     case "remove_recipe":
       scope.additionIds.add(op.recipeAdditionId);
       break;
+    // Both shares and both entries. The addition itself is deliberately absent:
+    // this op changes what a recipe asks for, never whether the recipe is on the
+    // list, so loading the addition row would only invite a write to it.
+    case "repoint_recipe_item":
+      for (const itemId of [op.fromCatalogItemId, op.toCatalogItemId]) {
+        scope.entryIds.add(makeEntryId(op.listId, itemId));
+        scope.contributionIds.add(
+          recipeContributionId(op.recipeAdditionId, itemId),
+        );
+      }
+      break;
     case "move_item": {
       const from = makeEntryId(op.fromListId, op.catalogItemId);
       const to = makeEntryId(op.toListId, op.catalogItemId);

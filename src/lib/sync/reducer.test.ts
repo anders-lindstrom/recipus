@@ -351,6 +351,94 @@ describe("recipes", () => {
   });
 });
 
+/**
+ * The half of a merge `merge_catalog_items` is forbidden to do.
+ *
+ * A recipe's share of the ask, moved to another vara, still a recipe's share.
+ * Before this op the only way to carry it across was `set_amount`, which says
+ * "manual" — and a share relabelled manual is a share `remove_recipe` no longer
+ * recognises, so the recipe's 8 dl outlived the recipe and the next add of the
+ * same recipe stacked a second 8 dl on top of it.
+ */
+describe("repoint_recipe_item", () => {
+  const CREAM_LIGHT = "matlagningsgradde";
+  const addMuffins: Op = {
+    ...base("anders", 1),
+    kind: "add_recipe",
+    listId: LIST,
+    recipeId: "muffins",
+    recipeAdditionId: "ra-muffins",
+    scaleFactor: 2,
+    items: [{ catalogItemId: CREAM, amount: { value: 8, unit: "dl" } }],
+  };
+  const repoint: Op = {
+    ...base("anders", 5),
+    kind: "repoint_recipe_item",
+    listId: LIST,
+    recipeAdditionId: "ra-muffins",
+    fromCatalogItemId: CREAM,
+    toCatalogItemId: CREAM_LIGHT,
+    amount: { value: 8, unit: "dl" },
+  };
+
+  it("moves the share, and moves it as a recipe's", () => {
+    const state = applyOps(emptyState(), [addMuffins, repoint]);
+
+    expect(state.contributions[recipeContributionId("ra-muffins", CREAM)]).toBeUndefined();
+    expect(
+      state.contributions[recipeContributionId("ra-muffins", CREAM_LIGHT)],
+    ).toMatchObject({
+      sourceKind: "recipe",
+      recipeAdditionId: "ra-muffins",
+      amount: { value: 8, unit: "dl" },
+    });
+    // The survivor is on the list now: a share on an entry nobody added is an
+    // ask nothing renders.
+    expect(state.entries[entryId(LIST, CREAM_LIGHT)].removedAt).toBeNull();
+  });
+
+  it("hands the moved share back to remove_recipe", () => {
+    // The whole point. Taking the recipe off the list has to take its ask with
+    // it, wherever the ask ended up.
+    const state = applyOps(emptyState(), [
+      addMuffins,
+      repoint,
+      {
+        ...base("anders", 7),
+        kind: "remove_recipe",
+        listId: LIST,
+        recipeAdditionId: "ra-muffins",
+      },
+    ]);
+
+    expect(
+      state.contributions[recipeContributionId("ra-muffins", CREAM_LIGHT)],
+    ).toBeUndefined();
+  });
+
+  it("converges under every ordering of the add and the move", () => {
+    // The interesting order is the wrong one: a long-offline `add_recipe`
+    // landing after the move must not re-create the share on the word the
+    // household has stopped using.
+    const orderings = permutations([addMuffins, repoint]);
+    const states = orderings.map((ops) => applyOps(emptyState(), ops));
+    for (const state of states) {
+      expect(state.contributions).toEqual(states[0].contributions);
+      expect(state.meta).toEqual(states[0].meta);
+      expect(Object.keys(state.entries).sort()).toEqual(
+        Object.keys(states[0].entries).sort(),
+      );
+    }
+    expect(states[0].contributions[recipeContributionId("ra-muffins", CREAM)]).toBeUndefined();
+  });
+
+  it("is idempotent when it replays", () => {
+    const once = applyOps(emptyState(), [addMuffins, repoint]);
+    const twice = applyOps(once, [repoint]);
+    expect(twice.contributions).toEqual(once.contributions);
+  });
+});
+
 describe("lists and catalog", () => {
   const create: Op = {
     ...base("anders", 0),

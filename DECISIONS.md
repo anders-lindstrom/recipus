@@ -1,4 +1,88 @@
-# The scan works in a shop now, 2026-08-01 — read this first
+# A merge keeps the recipe, 2026-08-02 — read this first
+
+The report: "I have a recipe, kycklingbröst in it. I add it to my list — 1200 g
+kycklingbröstfilé, which isn't in my varor, so it lands as an Övrigt. I merge it
+with kycklingfilé. The thing in my list then disappears. I remove the recipe and
+add it again, and 1200 g kycklingbröstfilé appears again — so what I tried to do
+wasn't performed at all."
+
+Three defects, one story, and the 07-31 entry below fixed only the first of them.
+
+## The merge kept the number and threw away who was asking
+
+`mergeVaraOps` carried the loser's ask to the survivor as a `set_amount`, which
+is to say as a MANUAL ask. The 1200 g survived and its provenance did not. On
+screen that is a tile that stops saying "från recept" and a breakdown that stops
+naming the recipe — but the expensive half is invisible: `remove_recipe` collects
+by `recipeAdditionId`, so a share relabelled manual is a share the recipe can no
+longer take back. Removing the recipe left its 1200 g standing on the survivor,
+and adding the recipe again stacked a second 1200 g on top of it. One tile, 2400
+g, nobody told.
+
+**`repoint_recipe_item` is the fix, and it is a new op kind.** It moves one
+recipe's share from one vara to another: upsert the destination entry, write the
+share under `recipeContributionId(addition, to)`, drop the one under
+`(addition, from)`. Two writes on two independent contribution clocks, payload
+carried on the op the way `move_item` carries its own, so a long-offline
+`add_recipe` arriving afterwards cannot re-create the share on the retired word.
+
+**Re-issuing `add_recipe` with the items re-pointed was the cheap alternative,
+and it is wrong.** `add_recipe` upserts an entry per item, so it would put every
+ingredient of that recipe back on the list — including the ones already ticked
+off in the shop.
+
+**The manual half still does not merge, and that is unchanged.** If the survivor
+already has a tile, its own amount stands: overwriting a number somebody is
+looking at is worse than dropping one, and `set_amount` names an amount, it
+cannot ask for one more. What changed is that the recipe shares now travel
+regardless — they are separate contributions, so they land beside whatever the
+standing tile says and the breakdown adds them up.
+
+**A merge that carries both halves must not carry them twice.** The amount the
+`set_amount` names is now built from the NON-recipe contributions only. Merging
+the full total, as before, would send the recipe's 2 dl once inside the total and
+once as its own share.
+
+## The recipe line never learned which vara it meant
+
+`recipe_ingredients.catalog_item_id` was written once, at import, and never
+again. A line the matcher could not place was stored NULL and stayed NULL — so
+`repointMergedCatalogItem`, which re-points recipe lines by `WHERE
+catalog_item_id = fromItemId`, could never see it, and every add re-decided the
+line from its raw text: slugify, then `create_catalog_item`. That op beats the
+merge's tombstone on clock. The word the household had just retired came back to
+life, on the list, beside the one they had merged it into.
+
+**Two changes, and the first alone would have been enough to stop the bleeding.**
+`resolveRecipeVaror` now resolves an unplaced line against the ALIASES first — a
+merged-away word pointing at its survivor is exactly the household saying "that
+word means this one now" — then against a vara the slug already names, and only
+then invents one. Same order `ensureVara` follows, and for the same reasons.
+
+**And the answer is now written down.** `PATCH /api/recipes/{id}/ingredients`
+records what each line resolved to, once the add has actually landed. Only rows
+still NULL are filled, so it can never re-aim a line a later import or a merge
+has already corrected, and an id naming a vara that does not exist is skipped
+rather than 500ing on the foreign key — the vara is usually one the client
+created moments ago, and a create that has not landed must leave the line where
+it was. A failure is swallowed: the shopping is already on the list, and losing
+the mapping costs exactly what the old behaviour cost.
+
+**Aliases were only ever read at import time.** That is worth stating plainly,
+because the alias's own comment says it exists "so old recipe lines go on
+resolving" and it was doing so only for recipes imported AFTER the merge. Typing
+a merged-away word into the add bar still re-creates it; that path is untouched
+here and is the next thing to fix.
+
+## What was verified
+
+The failing story was reproduced end to end against the real reducer, the real
+`applyOpToDatabase` and the real snapshot loader before anything was changed —
+including the 2400 g stacking, which nobody had reported yet. The e2e that now
+guards it fails on the pre-fix code at exactly the point the provenance
+disappears, checked by stashing the source and running it.
+
+# The scan works in a shop now, 2026-08-01
 
 Anders asked for a walkthrough of this log against what he actually wanted from
 Recipus. Four things came out of it, and the first one was that the log was

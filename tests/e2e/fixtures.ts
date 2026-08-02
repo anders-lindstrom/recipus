@@ -88,7 +88,20 @@ export async function dropCatalogItems(ids: string[]): Promise<void> {
   await sql`delete from purchases where catalog_item_id in ${sql(ids)}`;
   await sql`delete from catalog_item_aliases where catalog_item_id in ${sql(ids)}`;
   await sql`delete from list_entries where catalog_item_id in ${sql(ids)}`;
+  // Emptied rather than deleted: an ingredient line pointing at a vara is a
+  // recipe's own row, and a test that borrowed the vara has no business taking
+  // the line with it. Adding a recipe to a list now WRITES this mapping — see
+  // the PATCH in src/api/routes/recipes.ts — so a vara a recipe has ever asked
+  // for is a vara this delete could not remove until the pointer let go.
+  await sql`update recipe_ingredients set catalog_item_id = null where catalog_item_id in ${sql(ids)}`;
   await sql`delete from catalog_items where id in ${sql(ids)}`;
+}
+
+/** Recipes a test invented, with the ingredient rows that hang off them. */
+export async function dropRecipes(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql`delete from recipe_additions where recipe_id in ${sql(ids)}`;
+  await sql`delete from recipes where id in ${sql(ids)}`; // ingredients cascade
 }
 
 /**

@@ -237,13 +237,14 @@ export type OpDraft = DistributiveOmit<Op, "clientOpId" | "actor" | "at">;
  * built a SECOND entry beside the invisible one — the "it adds a new line of the
  * other one, and they go double" in the report.
  *
- * Only existing op kinds are used, so convergence is untouched and a phone on an
- * older build understands every one of them. What travels is what the tile was
- * SHOWING — its merged total, its sort, its urgency. What does not travel is
- * provenance: the amount arrives as a manual one, so "Behövs till: Vitlöksstekt
- * kyckling" is not preserved. That is the trade `move_item` already makes, and
- * for the same reason — a contribution is keyed to a recipe addition, and
- * rehoming one would take a recipe's own bookkeeping with it.
+ * What travels is what the tile was SHOWING — its total, its sort, its urgency —
+ * and, since `repoint_recipe_item` exists, WHERE EACH PART OF IT CAME FROM. The
+ * first version of this carried the whole merged total across as a `set_amount`,
+ * which is to say as a manual ask, and that lost more than a label: a share
+ * relabelled manual is no longer collected by `remove_recipe`, so taking the
+ * recipe off the list left its 1200 g stranded on the survivor, and adding the
+ * recipe back stacked a second 1200 g on top of it. So the manual part travels
+ * as manual and each recipe's share travels as that recipe's, on its own op.
  *
  * Pure and ordered rather than dispatched inline so the whole plan can be
  * asserted in a test, which is the only way the interesting cases here — the
@@ -292,31 +293,43 @@ export function mergeVaraOps(
     if (entry.listId !== listId) continue;
 
     const standing = state.entries[entryId(entry.listId, toId)];
-    // The survivor already has a tile on this list, and that tile wins.
-    // Overwriting its amount with the loser's would silently change a number
-    // somebody is looking at, and adding the two is not something `set_amount`
-    // can say — it names an amount, it cannot ask for one more.
+    // The survivor already has a tile on this list, and that tile wins the
+    // MANUAL half. Overwriting its amount with the loser's would silently change
+    // a number somebody is looking at, and adding the two is not something
+    // `set_amount` can say — it names an amount, it cannot ask for one more.
+    //
+    // The recipe shares below are not subject to that: they are separate
+    // contributions with ids of their own, so they land beside whatever the
+    // standing tile already says and the two simply add up, which is what the
+    // breakdown is for.
     if (!standing || standing.removedAt !== null) {
       ops.push({ kind: "add_item", listId: entry.listId, catalogItemId: toId });
 
-      const view = buildEntryView(entry, contributions);
+      // The manual half only. Merging the recipes' amounts in here as well would
+      // send them across twice — once as this number, once as their own shares
+      // below — and the tile would quietly read 2400 g where the household asked
+      // for 1200.
+      const manual = buildEntryView(
+        entry,
+        contributions.filter((c) => c.sourceKind !== "recipe"),
+      );
       // One total, or none at all. Two totals means two unit families — "2 dl"
       // and "3 st" — which no single amount can carry, and choosing one of them
       // would invent a quantity the household never wrote.
-      if (view.totals.length === 1) {
+      if (manual.totals.length === 1) {
         ops.push({
           kind: "set_amount",
           listId: entry.listId,
           catalogItemId: toId,
-          amount: view.totals[0],
+          amount: manual.totals[0],
         });
       }
-      if (view.modifier) {
+      if (manual.modifier) {
         ops.push({
           kind: "set_modifier",
           listId: entry.listId,
           catalogItemId: toId,
-          modifier: view.modifier,
+          modifier: manual.modifier,
         });
       }
       // Only when it says something. "normal" is what an entry is born with, and
@@ -330,6 +343,23 @@ export function mergeVaraOps(
           priority: entry.priority,
         });
       }
+    }
+
+    // Each recipe that wanted the losing word now wants the surviving one, and
+    // still says so. Keyed by addition rather than merged into one number,
+    // because that is what lets "Behövs till: Vitlöksstekt kyckling" survive and
+    // what lets `remove_recipe` take its own share back off the list again.
+    for (const c of contributions) {
+      if (c.entryId !== entry.id) continue;
+      if (c.sourceKind !== "recipe" || !c.recipeAdditionId) continue;
+      ops.push({
+        kind: "repoint_recipe_item",
+        listId: entry.listId,
+        recipeAdditionId: c.recipeAdditionId,
+        fromCatalogItemId: fromId,
+        toCatalogItemId: toId,
+        amount: c.amount,
+      });
     }
 
     // `bought: false`, always — the rule `takeOffList` follows. Tidying your own

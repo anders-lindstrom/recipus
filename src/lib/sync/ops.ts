@@ -137,6 +137,41 @@ export type Op =
   | (OpBase & { kind: "remove_recipe"; listId: Id; recipeAdditionId: Id })
   | (OpBase & {
       /**
+       * A recipe's share of the ask, moved to another vara.
+       *
+       * The half of a merge `merge_catalog_items` is forbidden to do. That op
+       * tombstones a word and records an alias and NOTHING else, so what hangs
+       * off the losing word has to be moved around it by ops of its own — and
+       * before this one existed, the only op that could carry a recipe's 1200 g
+       * across was `set_amount`, which says "manual". The number survived and
+       * the provenance did not: the tile stopped saying "från recept", the
+       * breakdown stopped naming the recipe, and `remove_recipe` — which
+       * collects by `recipeAdditionId` — no longer recognised the share as its
+       * own, so taking the recipe off the list left the 1200 g stranded on the
+       * survivor. Adding the recipe back then stacked a second 1200 g on top of
+       * it, silently, on one tile.
+       *
+       * Re-issuing `add_recipe` with the items re-pointed would move the same
+       * share with no new op kind, and was rejected: `add_recipe` upserts an
+       * entry per item, so it would put every ingredient of that recipe back on
+       * the list, including the ones already ticked off in the shop.
+       *
+       * Order-independent for the reason `move_item` is — the op carries its
+       * payload rather than reading the state it rewrites — and each half
+       * resolves on its own contribution clock, so the arrival order of a
+       * concurrent `add_recipe` cannot leave the share in two places or in
+       * none.
+       */
+      kind: "repoint_recipe_item";
+      listId: Id;
+      recipeAdditionId: Id;
+      fromCatalogItemId: Id;
+      toCatalogItemId: Id;
+      /** Already scaled, exactly as `add_recipe` carries it. */
+      amount: Amount | null;
+    })
+  | (OpBase & {
+      /**
        * Buy it at the other shop instead.
        *
        * The op carries what it moves, and that is the whole design. Every other
@@ -285,6 +320,7 @@ export function opListId(op: Op): Id | null {
     case "set_priority":
     case "add_recipe":
     case "remove_recipe":
+    case "repoint_recipe_item":
       return op.listId;
     // A move concerns TWO lists, and this function returns one id. Returning
     // `toListId` meant a device with the SOURCE list open never received the op

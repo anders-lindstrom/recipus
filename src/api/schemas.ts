@@ -394,6 +394,16 @@ const removeRecipeOpSchema = z.object({
   recipeAdditionId: z.string(),
 });
 
+const repointRecipeItemOpSchema = z.object({
+  ...opBase,
+  kind: z.literal("repoint_recipe_item"),
+  listId: z.string(),
+  recipeAdditionId: z.string(),
+  fromCatalogItemId: z.string(),
+  toCatalogItemId: z.string(),
+  amount: amountSchema.nullable(),
+});
+
 const moveItemOpSchema = z.object({
   ...opBase,
   kind: z.literal("move_item"),
@@ -484,6 +494,7 @@ export const opSchema = z
     setPriorityOpSchema,
     addRecipeOpSchema,
     removeRecipeOpSchema,
+    repointRecipeItemOpSchema,
     moveItemOpSchema,
     createProductOpSchema,
     updateProductOpSchema,
