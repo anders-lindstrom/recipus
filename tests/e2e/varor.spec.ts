@@ -356,7 +356,7 @@ test("an item you invented can be moved out of Övrigt, and it stays moved", asy
   // One token, no trailing digits: the add bar splits a trailing quantity off a
   // query ("mjölk 2 l"), so a name ending in numbers would be created without
   // them and nothing here would match.
-  const varaName = `Surdegsbrod${suffix.replace(/-/g, "")}`;
+  const varaName = `Surdegsbrod${suffix.replace(/-/g, "")}x`;
 
   // Created the way the household actually creates things: typed into the add
   // bar. Everything that route makes lands in Övrigt on purpose — guessing an
