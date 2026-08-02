@@ -365,10 +365,12 @@ test("an item you invented can be moved out of Övrigt, and it stays moved", asy
   // it is the whole reason the category carries a clock of its own.
   await page.goto(`/?list=${listId}`);
   await page.getByLabel("Sök eller lägg till vara").fill(varaName);
-  // The label wraps the name in curly quotes, so match on the suffix rather
-  // than reproducing the punctuation.
+  // An `option`, not a button: the add bar's results are a listbox under the
+  // field's combobox, so every row in it carries that role and `getByRole`
+  // resolves the explicit one. The label wraps the name in curly quotes, so
+  // match on the suffix rather than reproducing the punctuation.
   await page
-    .getByRole("button", { name: new RegExp(`Lägg till.*${varaName}`) })
+    .getByRole("option", { name: new RegExp(`Lägg till.*${varaName}`) })
     .click();
   await expect(onListTile(page, varaName)).toBeVisible();
 
