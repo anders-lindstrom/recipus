@@ -46,11 +46,12 @@ else
     # 1-arg mode: treat input as the branch; derive a safe work name from it.
     existing_branch="$1"
 
-    # Strip the configured worktree branch prefix if present
-    work="$existing_branch"
-    if [[ -n "$WORKTREE_BRANCH_PREFIX" ]] && [[ "$work" =~ ^${WORKTREE_BRANCH_PREFIX}/(.+)$ ]]; then
-        work="${BASH_REMATCH[1]}"
-        echo "Info: Stripped prefix '$WORKTREE_BRANCH_PREFIX/' from branch name, using work name '$work'." >&2
+    # Strip a worktree branch prefix of any configured type, not just the
+    # default one — otherwise fix_wt/login-crash yields the work name
+    # "fix_wt-login-crash" once the sanitiser below replaces the slash.
+    work="$(strip_worktree_prefix "$existing_branch")"
+    if [[ "$work" != "$existing_branch" ]]; then
+        echo "Info: Stripped worktree prefix from branch name, using work name '$work'." >&2
     fi
 
     # Replace any run of characters not in [a-zA-Z0-9._-] with '-'
@@ -59,7 +60,7 @@ else
         echo "Error: Could not derive a safe work name from branch '$existing_branch'." >&2
         exit 1
     fi
-    if [[ "$work" != "$existing_branch" ]] && [[ ! "$existing_branch" =~ ^${WORKTREE_BRANCH_PREFIX}/ ]]; then
+    if [[ "$work" != "$existing_branch" ]] && ! is_worktree_branch "$existing_branch"; then
         echo "Info: Derived work name '$work' from branch '$existing_branch'." >&2
     fi
 fi

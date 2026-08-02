@@ -211,7 +211,7 @@ else
 fi
 
 # Delete the branch only if it's a worktree branch AND fully merged (or --force)
-if [[ "$CURRENT_BRANCH" == "$WORKTREE_BRANCH_PREFIX"/* ]]; then
+if is_worktree_branch "$CURRENT_BRANCH"; then
     if [[ "$FORCE_REMOVE" == "true" ]]; then
         echo "Force deleting branch $CURRENT_BRANCH..."
         git branch -D "$CURRENT_BRANCH"

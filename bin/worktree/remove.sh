@@ -12,17 +12,19 @@ source ${BASE_DIR}/bin/worktree_functions.sh || { echo "not right setup"; exit 1
 load_worktree_config
 
 if [[ "$#" -lt 1 ]]; then
-    echo "Usage: $0 work_name" >&2
-    echo "Removes worktree and branch $WORKTREE_BRANCH_PREFIX/work_name" >&2
+    echo "Usage: $0 [type/]work_name" >&2
+    echo "Removes the worktree named work_name and the branch checked out in it" >&2
+    echo "A type may be given for symmetry with new.sh; it is ignored, because the" >&2
+    echo "branch is read from the worktree rather than rebuilt from its name." >&2
     exit 1
 fi
 
-# Validate work name
-work="$1"
+# Accept "type/work" so remove mirrors new, but derive nothing from the type:
+# the directory has never carried it, and the branch is discovered below.
+read -r _work_type work <<< "$(split_work_type "$1")"
 validate_work_name "$work" || exit 1
 
 worktree_path=$(get_worktree_path "$work")
-branch_name="$WORKTREE_BRANCH_PREFIX/$work"
 
 # Verify we're in a git repository
 verify_root_folder
@@ -31,6 +33,17 @@ verify_root_folder
 if [[ ! -d "$worktree_path" ]]; then
     echo "Error: Worktree directory $worktree_path does not exist" >&2
     exit 1
+fi
+
+# Ask git which branch this worktree is on rather than rebuilding it from the
+# work name. With one fixed prefix the two agreed; now that the type varies per
+# worktree, reconstruction would name a branch that does not exist here — and
+# the merged-branch deletion below would act on the wrong one. Fall back to the
+# old construction only if git cannot answer.
+branch_name="$(worktree_branch_at "$worktree_path" || true)"
+if [[ -z "$branch_name" || "$branch_name" == "HEAD" ]]; then
+    branch_name="$(worktree_branch_name "$WORKTREE_DEFAULT_TYPE" "$work")"
+    echo "Warning: could not read the branch at $worktree_path; assuming $branch_name" >&2
 fi
 
 # Check if branch exists

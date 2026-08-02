@@ -25,6 +25,18 @@ function load_worktree_config() {
         DEVELOPER_CONFIG_FILES=()
     fi
     WORKTREE_BRANCH_PREFIX="${WORKTREE_BRANCH_PREFIX:-feat_wt}"
+    # Branches are <type><suffix>/<work>. The suffix is what marks a branch as
+    # belonging to a worktree at all; the type says what the work is.
+    WORKTREE_TYPE_SUFFIX="${WORKTREE_TYPE_SUFFIX:-_wt}"
+    # The default type is read back out of WORKTREE_BRANCH_PREFIX so a repo that
+    # only ever set that one value keeps its exact previous behaviour without
+    # touching its config.
+    WORKTREE_DEFAULT_TYPE="${WORKTREE_DEFAULT_TYPE:-${WORKTREE_BRANCH_PREFIX%"$WORKTREE_TYPE_SUFFIX"}}"
+    # Conventional Commits types, so a worktree's type and the commits it carries
+    # use one vocabulary, plus the two exploratory kinds that produce no feature.
+    if [[ -z "${WORKTREE_TYPES:-}" ]]; then
+        WORKTREE_TYPES="feat fix docs style refactor perf test build ci chore revert research spike"
+    fi
     WORKTREE_LAYOUT="${WORKTREE_LAYOUT:-flat}"
     BUILD_INIT_ENABLED="${BUILD_INIT_ENABLED:-true}"
     BUILD_INIT_COMMAND="${BUILD_INIT_COMMAND:-./gradlew build -x test --quiet}"
@@ -160,6 +172,84 @@ function count_behind_commits() {
     else
         echo "0"
     fi
+}
+
+# Split a "type/work" argument into its parts, echoing "<type> <work>".
+# A bare work name takes the default type, so every existing invocation is
+# unchanged. Work names cannot contain a slash (see validate_work_name), which
+# is what makes the first slash unambiguously the type separator.
+function split_work_type() {
+    local arg="$1"
+    if [[ "$arg" == */* ]]; then
+        echo "${arg%%/*} ${arg#*/}"
+    else
+        echo "${WORKTREE_DEFAULT_TYPE:-feat} $arg"
+    fi
+}
+
+# Membership test against the space-separated WORKTREE_TYPES.
+#
+# Matching a padded string rather than looping over an unquoted expansion is
+# deliberate: `for t in ${WORKTREE_TYPES}` needs word-splitting, which zsh does
+# not do to unquoted parameters, so these helpers silently matched nothing when
+# sourced from a zsh shell.
+function is_known_worktree_type() {
+    case " ${WORKTREE_TYPES} " in
+        *" $1 "*) return 0 ;;
+    esac
+    return 1
+}
+
+function validate_work_type() {
+    if is_known_worktree_type "$1"; then
+        return 0
+    fi
+    echo "Error: unknown worktree type '$1'" >&2
+    echo "Valid types: ${WORKTREE_TYPES}" >&2
+    echo "Set WORKTREE_TYPES in bin/worktree/worktree.conf to change this list." >&2
+    return 1
+}
+
+# The branch a worktree of this type and name gets.
+function worktree_branch_name() {
+    echo "${1}${WORKTREE_TYPE_SUFFIX}/${2}"
+}
+
+# True when a branch looks like one of ours, whatever its type. Used instead of
+# matching a single hard-coded prefix, which only ever recognised feature
+# worktrees and silently treated every other type as an unrelated branch.
+function is_worktree_branch() {
+    local branch="$1"
+    [[ "$branch" == *"${WORKTREE_TYPE_SUFFIX}/"* ]] || return 1
+    is_known_worktree_type "${branch%%"${WORKTREE_TYPE_SUFFIX}/"*}"
+}
+
+# Strip a "<type><suffix>/" prefix of any configured type, echoing what is left.
+# A branch that carries no such prefix comes back unchanged.
+function strip_worktree_prefix() {
+    local branch="$1"
+    if is_worktree_branch "$branch"; then
+        local t="${branch%%"${WORKTREE_TYPE_SUFFIX}/"*}"
+        echo "${branch#"${t}${WORKTREE_TYPE_SUFFIX}/"}"
+    else
+        echo "$branch"
+    fi
+}
+
+# The branch actually checked out at a worktree path.
+#
+# Ask git rather than rebuilding "<prefix>/<work>" from the work name. Once the
+# type varies per worktree the name alone no longer determines the branch, and
+# reconstruction would delete or skip the wrong one. This is also more truthful
+# for existing worktrees: it survives a branch someone renamed by hand.
+function worktree_branch_at() {
+    # Not named `path`: zsh ties that name to $PATH as an array, so `local
+    # path=...` empties the command search path for the rest of the function and
+    # git itself stops resolving. Harmless under bash, but these helpers get
+    # sourced into interactive shells too.
+    local wt_path="$1"
+    [[ -e "$wt_path" ]] || return 1
+    git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null
 }
 
 # Validate work name contains only safe characters

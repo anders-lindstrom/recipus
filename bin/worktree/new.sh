@@ -15,19 +15,24 @@ source ${BASE_DIR}/bin/worktree_functions.sh || { echo "not right setup"; exit 1
 load_worktree_config
 
 if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
-    echo "Usage: $0 work_name [base_branch]" >&2
-    echo "Creates a new worktree with branch $WORKTREE_BRANCH_PREFIX/work_name based on base_branch" >&2
+    echo "Usage: $0 [type/]work_name [base_branch]" >&2
+    echo "Creates a new worktree with branch <type>$WORKTREE_TYPE_SUFFIX/work_name based on base_branch" >&2
     echo "" >&2
     echo "Examples:" >&2
-    echo "  $0 myfeature                    # Creates $WORKTREE_BRANCH_PREFIX/myfeature from $MAIN_BRANCH" >&2
-    echo "  $0 myfeature main               # Creates $WORKTREE_BRANCH_PREFIX/myfeature from main" >&2
+    echo "  $0 myfeature                    # Creates $WORKTREE_DEFAULT_TYPE$WORKTREE_TYPE_SUFFIX/myfeature from $MAIN_BRANCH" >&2
+    echo "  $0 fix/login-crash              # Creates fix$WORKTREE_TYPE_SUFFIX/login-crash from $MAIN_BRANCH" >&2
+    echo "  $0 research/caching main        # Creates research$WORKTREE_TYPE_SUFFIX/caching from main" >&2
+    echo "" >&2
+    echo "Types: $WORKTREE_TYPES" >&2
+    echo "The type names the work; the directory is always named after work_name alone." >&2
     echo "" >&2
     echo "To checkout existing branches, use: ./bin/worktree/checkout.sh" >&2
     exit 1
 fi
 
-# Validate work name
-work="$1"
+# Split "type/work" into its parts; a bare name takes the default type.
+read -r work_type work <<< "$(split_work_type "$1")"
+validate_work_type "$work_type" || exit 1
 validate_work_name "$work" || exit 1
 
 src_dir=$(pwd -P)
@@ -35,7 +40,7 @@ src_dir=$(pwd -P)
 
 # Handle base branch parameter
 base_branch="${2:-$MAIN_BRANCH}"
-branch_name="$WORKTREE_BRANCH_PREFIX/$work"
+branch_name="$(worktree_branch_name "$work_type" "$work")"
 
 worktree_path=$(get_worktree_path "$work")
 
