@@ -25,7 +25,7 @@ print_usage() {
     echo "  $0 hotfix hotfix/critical-bug      # Work on a hotfix" >&2
     echo "  $0 main-work main                  # Work on main branch" >&2
     echo "  $0 feature/pr-123                  # 1-arg: work_name becomes 'feature-pr-123'" >&2
-    echo "  $0 feat_wt/accounts_and_metrics    # Strips 'feat_wt/' prefix automatically" >&2
+    echo "  $0 fix_wt/login-crash              # Strips any '<type>_wt/' prefix automatically" >&2
 }
 
 if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then

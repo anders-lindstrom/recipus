@@ -91,7 +91,7 @@ if branch_exists "$branch_name"; then
         echo "Branch is merged into $MAIN_BRANCH, deleting $branch_name..."
         git branch -d "$branch_name"
     else
-        # Rename branch to strip the worktree prefix (e.g. feat_wt/xyz -> xyz)
+        # Rename branch to strip the worktree prefix (e.g. fix_wt/xyz -> xyz)
         if git branch -m "$branch_name" "$work" 2>/dev/null; then
             echo "Kept and renamed branch: $branch_name -> $work (not yet merged into $MAIN_BRANCH)"
         else
