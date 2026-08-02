@@ -1971,3 +1971,64 @@ ingredient.
 a bottom sheet carrying the hard-won latch that ignores the stray click a
 long-press synthesizes, and giving it a full-bleed mode would mean maintaining
 that fix through a branch that never needs it.
+
+---
+
+# Putting it back within half an hour takes the purchase with it, 2026-08-02
+
+**This reverses the rejection recorded above.** That entry said:
+
+> **Rejected: making a catalog re-add retract the purchase.** It is what people
+> actually do, and the audit suggested it — but it cannot tell "I mis-tapped"
+> from "I need another one", and inventing a retraction is the same class of
+> error as inventing a purchase. **Known residual:** the strip holds only the
+> most recent removal, so a mis-tap noticed five taps later is still unreachable.
+
+**The objection is still true and is still not answered.** Nothing can tell the
+two apart. What changed is that the residual was measured rather than assumed:
+three buy-mode taps and the strip offers only the third, so the repair anybody
+actually makes — tapping the vara back on out of the catalog — left a purchase
+that never happened standing in the one table this app never prunes, with
+`use_count` bumped and `last_used_at` moved. That is the sole input to the
+cadence engine and to `/statistik`.
+
+So it is a choice between two wrongs, and the app already has a stated
+preference: `use-mode.ts:20` — "you under-record purchases, you never invent
+one". Retracting on a re-add errs to the same side. Inside half an hour the
+mis-tap reading is the likelier of the two by a wide margin, and outside it
+nothing happens at all.
+
+**The cost, stated plainly.** Buy bananas, decide within the half hour that you
+want more, put them back on the list, and that purchase is gone from the
+history. A recipe added on the way home that wants something just bought does
+the same. Both under-record. Neither invents.
+
+**Half an hour, not the 90 minutes `modeAfterIdle` already computes.** A first
+attempt reused that window because sharing the constant looked like consistency.
+It is not: `modeAfterIdle` answers "are you still in a shop", and you can be
+forty minutes into a shop and genuinely want a second carton. Two questions, two
+constants. Thirty minutes is a judgement about a mis-tap on a 92px tile noticed
+a few taps later, not a measurement.
+
+**Two conditions, and only two.** The vara had actually left the list, and there
+is a purchase of it on this list inside the window. The first is what makes
+"add" mean "add BACK": `add_item` is also fired by setting an amount through the
+duplicate sheet and by a recipe topping up something already on the list, and
+without it your partner re-adding mjölk over SSE and you then setting "2 l"
+would delete a genuine purchase for an item that never went anywhere.
+
+**Deliberately not conditioned on who, or on which device.** An earlier attempt
+kept a token in the buying phone's `localStorage`, which meant the partner at
+home could not fix a mis-tap they could plainly see, and made the repair depend
+on which handset you happened to be holding. The household shops as one. The
+server is the only place that knows about a purchase both phones can see, so the
+rule lives there and the token store is gone.
+
+**Scanning is the one exception.** `add_and_buy` sets `keepsPurchase`, because a
+scan asserts the product is in your hand — scanning the same vara twice is two
+bottles, and without the opt-out the add half would take back the first a moment
+before the remove half wrote the second, leaving one where there were two.
+
+Six tests. Four fail without the rule; the other two — the 31-minute case and
+the scan exemption — pass either way and are regression guards rather than
+evidence for the change.

@@ -70,6 +70,21 @@ export type Op =
        * the history correction.
        */
       undoesClientOpId?: string;
+      /**
+       * Opt out of the put-it-back rule. Set by scanning, and by nothing else.
+       *
+       * An ordinary add that puts a vara BACK on the list takes back a purchase
+       * of that vara made in the last half hour — see `retractRecentPurchase`.
+       * A scan cannot mean that. Scanning asserts the product is in your hand,
+       * so `add_and_buy` scanning the same vara twice is two bottles, and its
+       * add half would otherwise retract the first bottle and rewrite it a
+       * minute later, leaving one purchase where there were two.
+       *
+       * Optional, and the reducer ignores it, like `undoesClientOpId` beside it:
+       * both are server-side history corrections, so a client that has never
+       * heard of either still applies the add correctly.
+       */
+      keepsPurchase?: boolean;
     })
   | (OpBase & {
       kind: "remove_item";

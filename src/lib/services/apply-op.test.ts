@@ -546,6 +546,204 @@ describe("undo retracts the purchase", () => {
   });
 });
 
+/**
+ * Putting a vara back within half an hour takes the purchase with it.
+ *
+ * `DECISIONS.md:302` rejected this and the objection stands: nothing can tell "I
+ * mis-tapped" from "I need another one". What is chosen is the direction — miss
+ * a purchase rather than invent one — plus a window short enough that the
+ * mis-tap reading is the likelier of the two.
+ *
+ * The bound is time and the list, deliberately NOT who or which device. Two
+ * phones shopping as one household is what this app IS, so the partner at home
+ * putting the bananas back must fix the mis-tap the same way the phone in the
+ * shop would.
+ */
+describe("putting it back retracts a recent purchase", () => {
+  async function buy(item: string, at: string, actor = ACTOR) {
+    const removal = op("remove_item", at, { listId, catalogItemId: item, bought: true });
+    await applyOpToDatabase(removal, actor);
+    return removal;
+  }
+
+  async function purchaseRows(item: string) {
+    return db.select().from(purchases).where(eq(purchases.catalogItemId, item));
+  }
+
+  it("retracts a purchase from twelve minutes ago, naming nothing", async () => {
+    const item = `${catalogItemId}-window-hit`;
+    await seedItem(item);
+    await applyOpToDatabase(
+      op("add_item", "2026-05-01T09:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    await buy(item, "2026-05-01T10:00:00.000Z");
+    expect(await purchaseRows(item)).toHaveLength(1);
+
+    // No undoesClientOpId. This is the plain catalog re-add anybody makes.
+    await applyOpToDatabase(
+      op("add_item", "2026-05-01T10:12:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+
+    expect(await purchaseRows(item)).toHaveLength(0);
+    const [after] = await db
+      .select({ useCount: catalogItems.useCount, lastUsedAt: catalogItems.lastUsedAt })
+      .from(catalogItems)
+      .where(eq(catalogItems.id, item));
+    expect(after.useCount).toBe(0);
+    expect(after.lastUsedAt).toBeNull();
+  });
+
+  it("lets the partner's phone take back what this phone bought", async () => {
+    const item = `${catalogItemId}-window-partner`;
+    await seedItem(item);
+    await applyOpToDatabase(
+      op("add_item", "2026-05-02T09:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    await buy(item, "2026-05-02T10:00:00.000Z", ACTOR);
+
+    // A different actor entirely — the spouse at home, on their own device, with
+    // no knowledge of which op recorded the purchase. This is the case a token
+    // kept in the buying device's localStorage could never have served.
+    await applyOpToDatabase(
+      op("add_item", "2026-05-02T10:05:00.000Z", { listId, catalogItemId: item }),
+      "the-other-phone",
+    );
+
+    expect(await purchaseRows(item)).toHaveLength(0);
+  });
+
+  it("leaves a purchase from over half an hour ago standing", async () => {
+    const item = `${catalogItemId}-window-miss`;
+    await seedItem(item);
+    await applyOpToDatabase(
+      op("add_item", "2026-05-03T09:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    await buy(item, "2026-05-03T10:00:00.000Z");
+
+    // 31 minutes. Long enough that wanting another one is the likelier reading.
+    await applyOpToDatabase(
+      op("add_item", "2026-05-03T10:31:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+
+    expect(await purchaseRows(item)).toHaveLength(1);
+  });
+
+  /**
+   * The condition that decides whether this can ship at all.
+   *
+   * `add_item` is fired by things that are not re-adds — setting an amount
+   * through the duplicate sheet, a recipe topping up a vara already on the list.
+   * Without the removed check, your partner re-adding mjölk over SSE and you
+   * then setting "2 l" would delete your genuine purchase, on an item that never
+   * left your list.
+   */
+  it("does not fire for an add of something still on the list", async () => {
+    const item = `${catalogItemId}-window-onlist`;
+    await seedItem(item);
+    await applyOpToDatabase(
+      op("add_item", "2026-05-04T09:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    await buy(item, "2026-05-04T10:00:00.000Z");
+    // Back on the list by some other route — the partner, a recipe, a scan.
+    await applyOpToDatabase(
+      op("add_item", "2026-05-04T10:01:00.000Z", { listId, catalogItemId: item }),
+      "the-other-phone",
+    );
+    // That first re-add is a repair and spends the purchase.
+    expect(await purchaseRows(item)).toHaveLength(0);
+
+    await buy(item, "2026-05-04T10:02:00.000Z");
+    await applyOpToDatabase(
+      op("add_item", "2026-05-04T10:03:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    expect(await purchaseRows(item)).toHaveLength(0);
+
+    // Now the one that matters: a SECOND add while it is already on the list,
+    // which is what an amount edit looks like at the op layer.
+    await buy(item, "2026-05-04T10:10:00.000Z");
+    await applyOpToDatabase(
+      op("add_item", "2026-05-04T10:11:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    const survived = await purchaseRows(item);
+    expect(survived).toHaveLength(0);
+
+    // And with the vara genuinely on the list, a further add must take nothing.
+    await buy(item, "2026-05-04T10:20:00.000Z");
+    await applyOpToDatabase(
+      op("add_item", "2026-05-04T10:21:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("add_item", "2026-05-04T10:22:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    expect(await purchaseRows(item)).toHaveLength(0);
+  });
+
+  it("keeps both bottles when a scan says the product is in your hand", async () => {
+    const item = `${catalogItemId}-window-scan`;
+    await seedItem(item);
+    await applyOpToDatabase(
+      op("add_item", "2026-05-05T09:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    await buy(item, "2026-05-05T10:00:00.000Z");
+
+    // add_and_buy: the add half opts out, then the remove half writes the second
+    // purchase. Without keepsPurchase the add would take back the first bottle a
+    // minute before the second was written, leaving one where there were two.
+    await applyOpToDatabase(
+      op("add_item", "2026-05-05T10:05:00.000Z", {
+        listId,
+        catalogItemId: item,
+        keepsPurchase: true,
+      }),
+      ACTOR,
+    );
+    await buy(item, "2026-05-05T10:05:01.000Z");
+
+    expect(await purchaseRows(item)).toHaveLength(2);
+  });
+
+  it("takes the most recent purchase and leaves the older one alone", async () => {
+    const item = `${catalogItemId}-window-latest`;
+    await seedItem(item);
+    // Ops in wall-clock order, because remove_item and add_item contend on the
+    // same entry and a removal dated before the add that precedes it simply
+    // loses the LWW comparison and writes no purchase at all.
+    await applyOpToDatabase(
+      op("add_item", "2026-04-29T09:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    // Last week's genuine shop, far outside the window.
+    await buy(item, "2026-04-29T10:00:00.000Z");
+    // Back on the list a week later, so nothing is retracted on the way past.
+    await applyOpToDatabase(
+      op("add_item", "2026-05-06T09:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    const today = await buy(item, "2026-05-06T10:00:00.000Z");
+
+    await applyOpToDatabase(
+      op("add_item", "2026-05-06T10:03:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+
+    const rows = await purchaseRows(item);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].clientOpId).not.toBe(today.clientOpId);
+    expect(rows[0].purchasedAt.toISOString()).toBe("2026-04-29T10:00:00.000Z");
+  });
+});
+
 describe("snapshot meta for removed records", () => {
   /**
    * A hydrating client must learn that a record was DELETED, not merely that it

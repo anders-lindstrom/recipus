@@ -337,8 +337,26 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   }
 
   const actions = {
-    addItem: (catalogItemId: Id, amountText?: string, undoesClientOpId?: string) => {
-      dispatch({ kind: "add_item", listId, catalogItemId, undoesClientOpId });
+    /**
+     * `keepsPurchase` is the scanner's opt-out and nobody else's — see the op's
+     * own comment. Every other add that puts a vara BACK on the list takes a
+     * purchase of it from the last half hour with it, decided on the server
+     * where both phones can see it, so there is nothing to pass and no call site
+     * that can forget to.
+     */
+    addItem: (
+      catalogItemId: Id,
+      amountText?: string,
+      undoesClientOpId?: string,
+      keepsPurchase?: boolean,
+    ) => {
+      dispatch({
+        kind: "add_item",
+        listId,
+        catalogItemId,
+        undoesClientOpId,
+        keepsPurchase,
+      });
       if (amountText) {
         const amount = parseAmount(amountText);
         if (amount) dispatch({ kind: "set_amount", listId, catalogItemId, amount });
@@ -578,7 +596,12 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
       }
 
       case "add_and_buy": {
-        actions.addItem(catalogItemId);
+        // Keeps its purchase, unlike every other add. A scan asserts the product
+        // is in your hand, so scanning the same vara twice is two bottles — and
+        // without this the add half would take back the first bottle a minute
+        // before the remove half wrote the second, leaving one where there were
+        // two.
+        actions.addItem(catalogItemId, undefined, undefined, true);
         const clientOpId = actions.removeItem(catalogItemId, true);
         setScanResult({
           text: `${name} tillagd och köpt`,

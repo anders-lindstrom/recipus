@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   barcodes,
@@ -1190,8 +1190,96 @@ async function repointMergedCatalogItem(
  *
  * Idempotent by key, so a replayed undo deletes nothing the second time.
  */
-async function retractPurchaseIfUndo(tx: Tx, op: Op): Promise<void> {
-  if (op.kind !== "add_item" || !op.undoesClientOpId) return;
+/**
+ * How long after buying something putting it back still reads as "we did not
+ * buy it".
+ *
+ * Half an hour, and it is a judgement about people rather than a measurement.
+ * The gesture this serves is a mis-tap on a 92px tile, one-handed, with a
+ * trolley moving — noticed a few taps later, when the tile you wanted is still
+ * missing and the one beside it is gone. That is minutes, not hours. Long
+ * enough to walk the rest of an aisle and look back; short enough that the
+ * weekly shop is over before it can reach the milk you bought on purpose.
+ *
+ * NOT `modeAfterIdle`'s 90 minutes, though the first attempt reused it. That
+ * window answers "are you still in a shop", which is a different and longer
+ * question: you can be forty minutes into a shop and genuinely want a second
+ * carton. Sharing a constant between two questions is how one of them quietly
+ * gets the wrong answer.
+ */
+const RETRACT_WINDOW_MS = 30 * 60 * 1000;
+
+/**
+ * The purchase an ordinary put-it-back takes with it, if there is one.
+ *
+ * `DECISIONS.md:302` rejected retracting on a re-add because it cannot tell "I
+ * mis-tapped" from "I need another one". That objection is still true and is
+ * still not answered — nothing can tell them apart. What is chosen here is that
+ * the app would rather MISS a purchase than INVENT one, which is the direction
+ * `use-mode.ts:20` already commits to, and that inside half an hour the mis-tap
+ * reading is overwhelmingly the likelier of the two.
+ *
+ * The cost is real and worth stating: buy bananas, decide within the half hour
+ * that you want more, put them back on the list, and that purchase is gone from
+ * the history. Same for a recipe added on the way home that happens to want
+ * something you just bought.
+ *
+ * Two conditions, and only two:
+ *
+ * 1. **The vara had actually left the list.** Without this, `add_item` is fired
+ *    by things that are not re-adds at all — setting an amount through the
+ *    duplicate sheet, a recipe topping up a vara that is already there — and
+ *    each of them would delete a genuine purchase for an item that never went
+ *    anywhere. This is what makes "add" mean "add BACK".
+ * 2. **A purchase of it inside the window**, on this list, most recent first.
+ *
+ * Deliberately NOT conditioned on who, or on which device. The household shops
+ * as one: a phone in the shop and a phone at home are the same trip, and asking
+ * "did YOU record it" would mean the partner putting the bananas back could not
+ * fix the mis-tap they can plainly see. That is also why this is resolved here
+ * rather than from a token the buying device kept — the server is the only place
+ * that knows about a purchase both phones can see.
+ */
+async function recentPurchaseToRetract(
+  tx: Tx,
+  op: Extract<Op, { kind: "add_item" }>,
+  prev: SyncState,
+): Promise<string | undefined> {
+  if (op.keepsPurchase) return undefined;
+
+  const entry = prev.entries[makeEntryId(op.listId, op.catalogItemId)];
+  if (!entry || entry.removedAt === null) return undefined;
+
+  // Through the same resolution the rest of the app reads purchases by, so a
+  // scan of a placed product is found here exactly as a tapped tile is.
+  const [recent] = await tx
+    .select({ clientOpId: purchases.clientOpId })
+    .from(purchases)
+    .leftJoin(products, purchaseProductJoin)
+    .where(
+      and(
+        eq(purchases.listId, op.listId),
+        eq(effectiveCatalogItemId, op.catalogItemId),
+        gt(
+          purchases.purchasedAt,
+          new Date(new Date(op.at).getTime() - RETRACT_WINDOW_MS),
+        ),
+      ),
+    )
+    .orderBy(desc(purchases.purchasedAt))
+    .limit(1);
+
+  return recent?.clientOpId;
+}
+
+async function retractPurchaseIfUndo(tx: Tx, op: Op, prev: SyncState): Promise<void> {
+  if (op.kind !== "add_item") return;
+
+  // The strip names its own removal and always wins: it is the only caller that
+  // knows exactly which purchase it is offering to take back, including a
+  // `bought: false` removal with no purchase behind it at all.
+  const undoes = op.undoesClientOpId ?? (await recentPurchaseToRetract(tx, op, prev));
+  if (!undoes) return;
 
   // Resolved BEFORE the delete rather than from a RETURNING clause, because a
   // scan-sourced purchase keeps its vara on the product and `DELETE` cannot
@@ -1202,7 +1290,7 @@ async function retractPurchaseIfUndo(tx: Tx, op: Op): Promise<void> {
     .select({ catalogItemId: effectiveCatalogItemId })
     .from(purchases)
     .leftJoin(products, purchaseProductJoin)
-    .where(eq(purchases.clientOpId, op.undoesClientOpId))
+    .where(eq(purchases.clientOpId, undoes))
     .limit(1);
 
   // Nothing to undo: the purchase was never written (a `bought: false` removal,
@@ -1211,7 +1299,7 @@ async function retractPurchaseIfUndo(tx: Tx, op: Op): Promise<void> {
 
   await tx
     .delete(purchases)
-    .where(eq(purchases.clientOpId, op.undoesClientOpId));
+    .where(eq(purchases.clientOpId, undoes));
 
   // A scan of a product nobody has placed on a vara yet. There is no catalog row
   // to correct — `use_count` was never incremented for it, because nothing knew
@@ -1311,7 +1399,7 @@ export async function applyOpToDatabase(
 
     await persist(tx, next, scope);
     await recordPurchaseIfBought(tx, safeOp, next);
-    await retractPurchaseIfUndo(tx, safeOp);
+    await retractPurchaseIfUndo(tx, safeOp, prev);
     await repointMergedCatalogItem(tx, safeOp, next);
 
     const [inserted] = await tx
