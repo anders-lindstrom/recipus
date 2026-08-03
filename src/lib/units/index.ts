@@ -83,8 +83,27 @@ export function fromBase(baseValue: number, family: UnitFamily, countUnit: Unit 
   return { value: round(baseValue), unit: countUnit };
 }
 
+/**
+ * Scale an amount, respecting what its unit can actually be divided into.
+ *
+ * Volumes and masses take any value — 1.5 dl is a real measurement. Counts do
+ * not: `round()` alone turned a recipe for 4 scaled to 6 into "4,5 st ägg",
+ * which is not a thing to put in a basket, on the very sheet whose own comment
+ * says getting this wrong is how you come home with half the cream.
+ *
+ * Rounded UP rather than to nearest, and that is the whole decision. Half an
+ * egg is not purchasable, so the question is only which way to be wrong, and
+ * the two directions are not symmetrical: buying one egg too many costs a
+ * krona, while buying one too few means the dish cannot be made. The floor of 1
+ * follows from the same argument — scaling a recipe down must never produce
+ * "0 st", which reads as "do not buy this" for an ingredient the recipe needs.
+ */
 export function scaleAmount(amount: Amount, factor: number): Amount {
-  return { value: round(amount.value * factor), unit: amount.unit };
+  const scaled = amount.value * factor;
+  if (unitFamily(amount.unit) === "count") {
+    return { value: Math.max(1, Math.ceil(scaled)), unit: amount.unit };
+  }
+  return { value: round(scaled), unit: amount.unit };
 }
 
 // ---------------------------------------------------------------------------
