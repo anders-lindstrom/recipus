@@ -314,6 +314,19 @@ export function ListScreen({
     // whole reason the mode exists, and it is what makes the purchase history
     // trustworthy enough to build statistics and fridge inference on.
     //
+    /*
+     * Haptic on the buy, for the reason `use-long-press.ts` already writes down
+     * about the hold: "without it a long-press feels like a tap that didn't
+     * register". That argument was never carried across to the gesture it
+     * matters most for — the one that happens twenty-five times a trip, writes
+     * purchase history, and is made while looking at a shelf rather than at the
+     * screen. Buying is the only branch that gets one: in plan mode nothing is
+     * being recorded, so there is nothing to confirm.
+     *
+     * Same 12ms, and optional-chained for the same reason — iOS Safari has no
+     * vibrate at all.
+     */
+    if (mode === "buy") navigator.vibrate?.(12);
     remove(item.id, item.name, mode === "buy");
   }
 
@@ -346,6 +359,7 @@ export function ListScreen({
     // a stack of them would be chrome in the thumb zone, and the mistake people
     // actually make is on the tap they just made.
     setUndoable({ id, name, clientOpId, bought });
+    setAnnouncement(bought ? `${name} köpt` : `${name} borttagen`);
   }
 
   /**
@@ -371,6 +385,7 @@ export function ListScreen({
     // retract the purchase the removal recorded. Re-adding alone left "bought"
     // permanently including things the user had just said they had not bought.
     actions.addItem(undoable.id, undefined, undoable.clientOpId);
+    setAnnouncement(`${undoable.name} tillbaka på listan`);
     setUndoable(null);
   }
 
@@ -476,6 +491,23 @@ export function ListScreen({
    */
   const [accepted, setAccepted] = useState<Set<Id>>(new Set());
 
+  /**
+   * What just happened, for a screen reader.
+   *
+   * The core loop is silent to assistive tech, and deliberately so for sighted
+   * users: the toast that used to confirm a buy was REMOVED because it covered
+   * the entry sheet's own buttons, on the grounds that "the tile leaves the
+   * zone, the count drops, and both are already on screen". Both of those are
+   * visual. Nothing replaced them for anyone not looking at the screen — not
+   * even "Ångra köp", which is the safety valve for the mistake most worth
+   * catching.
+   *
+   * A live region costs no pixels, so it does not reopen the argument the toast
+   * lost. `polite`, not assertive: it must not interrupt someone mid-way
+   * through the next tile.
+   */
+  const [announcement, setAnnouncement] = useState("");
+
   /** See `visibleSuggestions` in list-model.ts for why there are three sets. */
   const visibleSuggestions = useMemo(
     () => visibleSuggestionsOf(suggestions, { onList: onListIds, accepted, dismissed }),
@@ -485,6 +517,7 @@ export function ListScreen({
   function acceptSuggestion(id: Id) {
     setAccepted((prev) => new Set(prev).add(id));
     actions.addItem(id);
+    setAnnouncement(`${byId.get(id)?.name ?? "Varan"} tillagd`);
   }
 
   function dismissSuggestion(id: Id, name: string) {
@@ -521,6 +554,14 @@ export function ListScreen({
 
   return (
     <div className="min-h-dvh pb-28">
+      {/* Mounted always, and empty until there is something to say. A region
+          that appears in the same breath as its text is one the platform was
+          not yet watching, so the first announcement — often the only one —
+          is the one that gets lost. The add bar's own region says the same
+          thing about itself, in the same words. */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
       {/* Opaque, not frosted. A translucent bar let high-contrast tile labels
           ghost through it in dark mode, and `backdrop-filter` on a bar pinned
           over a 341-tile scroller costs a GPU repaint every frame on exactly

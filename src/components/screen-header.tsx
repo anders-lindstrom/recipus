@@ -34,7 +34,12 @@ export function ScreenHeader({
         <Link
           href={backHref}
           aria-label={backLabel}
-          className="flex h-9 w-9 flex-none items-center justify-center rounded-full text-ink-soft"
+          /* 44px, the same floor the outbound links in the app were raised to.
+             That audit grew everything that navigates INTO a screen and never
+             reached the control that navigates back out of one — which is on
+             seven screens, sits under the thumb, and is next to the notch. The
+             icon is unchanged; only the target grew. */
+          className="-ml-1 flex h-11 w-11 flex-none items-center justify-center rounded-full text-ink-soft"
         >
           <UiIcon name="back" size={22} />
         </Link>

@@ -211,7 +211,12 @@ button,
 :focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
-  border-radius: 4px;
+  /* No border-radius here. It used to force 4px onto every focused element,
+     which squared off round controls the moment they took focus — the scan FAB
+     visibly morphed from a circle into a rounded square, which reads as a
+     rendering bug rather than as a focus ring. An outline already follows the
+     element's own border-radius, so the correct value is the one the element
+     brought with it. */
 }
 
 /* Respect the notch and the home indicator — this runs as a standalone PWA,

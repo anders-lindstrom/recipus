@@ -37,9 +37,22 @@ export const viewport: Viewport = {
   ],
   width: "device-width",
   initialScale: 1,
-  // The tile grid is sized for thumbs; letting it zoom turns a mis-tap into a
-  // zoomed-in list you have to fix one-handed while holding a basket.
-  maximumScale: 1,
+  /*
+   * Zoom is allowed, and the argument that removed it does not survive contact
+   * with the room this app is for.
+   *
+   * It used to be `maximumScale: 1`, reasoning that an accidental pinch turns a
+   * mis-tap into a zoomed-in list you have to fix one-handed. That cost is
+   * real. The cost it was traded against is a flat WCAG 2.1 AA failure —
+   * success criterion 1.4.4 requires text to scale to 200% — applied to a 13px
+   * tile label, read at arm's length, in a badly lit aisle, by someone whose
+   * arms are full. Every framing this codebase uses to justify its other
+   * decisions argues for zoom rather than against it.
+   *
+   * The mis-tap it guarded against is also recoverable in two seconds; needing
+   * reading glasses to see what you are buying is not. Never argued in
+   * DECISIONS.md, so no recorded decision is being reversed here.
+   */
   viewportFit: "cover",
 };
 

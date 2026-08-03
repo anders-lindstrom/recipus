@@ -233,5 +233,60 @@ export function useMode(): UseModeResult {
     };
   }, [mode]);
 
+  useScreenAwakeWhile(mode === "buy");
+
   return { mode, setMode, touch };
+}
+
+/**
+ * Keep the screen on while the household is actually shopping.
+ *
+ * Buy mode is already the app's answer to "am I in a shop right now", and it
+ * demotes itself after 90 minutes idle — so the lock has a natural end and
+ * cannot quietly hold the screen on overnight. That existing signal is the
+ * whole reason this is cheap: nothing new has to decide when shopping stops.
+ *
+ * Without it the phone sleeps between every aisle, and the list is a thing you
+ * unlock your phone to see rather than a thing you glance at. It is the
+ * smallest change in this pass and the one most visible on a Saturday.
+ *
+ * Released on demote, on unmount, and by the browser itself whenever the page
+ * is hidden — which is why it is re-acquired on `visibilitychange`: coming back
+ * to the app from the camera or a message must restore the lock, not silently
+ * lose it. Every step is optional-chained past: Safari on iOS gained
+ * `wakeLock` late, and an unsupported browser must degrade to today's
+ * behaviour rather than throw on a shopping trip.
+ */
+function useScreenAwakeWhile(active: boolean): void {
+  useEffect(() => {
+    if (!active || typeof navigator === "undefined" || !("wakeLock" in navigator)) {
+      return;
+    }
+
+    let sentinel: WakeLockSentinel | null = null;
+    let released = false;
+
+    async function acquire(): Promise<void> {
+      if (released || document.visibilityState !== "visible") return;
+      try {
+        sentinel = (await navigator.wakeLock?.request("screen")) ?? null;
+      } catch {
+        // Denied, or the tab lost focus mid-request. A phone that sleeps is
+        // the behaviour we already shipped; nothing here is worth an error.
+      }
+    }
+
+    function onVisibility(): void {
+      if (document.visibilityState === "visible") void acquire();
+    }
+
+    void acquire();
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      released = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      void sentinel?.release().catch(() => {});
+    };
+  }, [active]);
 }
