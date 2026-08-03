@@ -52,6 +52,7 @@ import {
   type Op,
   type ProductField,
 } from "@/lib/sync";
+import { mergeAmounts } from "@/lib/units";
 import {
   catalogClockColumns,
   catalogFieldClocks,
@@ -1105,10 +1106,59 @@ function wonThisOp(next: SyncState, key: string, op: Op): boolean {
  * stale offline "bought the milk" arriving after someone else already
  * re-added milk with a newer timestamp must not count as a purchase.
  */
+/**
+ * How much was bought, read at the only moment it exists.
+ *
+ * `purchases.quantity_value`/`quantity_unit` are the one thing on that table
+ * that cannot be added later — the row records a moment in a shop, and no
+ * amount of future code can reconstruct how many litres of milk went into a
+ * basket in March. The columns were declared for exactly that reason and then
+ * never written, so every purchase since has recorded that something was bought
+ * and not how much.
+ *
+ * `remove_item` tombstones the entry and leaves its contributions standing, so
+ * `next` still carries what the household was asking for at the moment they
+ * ticked it off. That is the honest figure: what was on the list when it was
+ * bought.
+ *
+ * Returns null when the entry's asks do not reduce to ONE amount, and that is
+ * deliberate rather than lossy. `mergeAmounts` sums within a family and refuses
+ * to cross families, so a muffin recipe wanting 3 dl grädde and a manual "2 st"
+ * comes back as two amounts — and there is no honest single pair for that. A
+ * fabricated one would be worse than a null: it would be the only made-up
+ * number on a table whose whole purpose is to be trustworthy about the past.
+ *
+ * Read from the DATABASE rather than from `next`, and that is not an oversight
+ * to tidy up later. `loadStateSlice` deliberately loads no contributions for a
+ * `remove_item` — the reducer resolves a removal entirely on the entry row — so
+ * `next.contributions` is empty here and always would be. Widening the slice to
+ * suit this would change what the reducer sees and what `persist` then rewrites,
+ * to serve a side effect; this function already sits on the side-effect
+ * boundary, next to the `use_count` bump, which does its own query for exactly
+ * the same reason.
+ */
+async function purchasedQuantity(tx: Tx, entryId: Id): Promise<Amount | null> {
+  const rows = await tx
+    .select({ value: contributions.amountValue, unit: contributions.amountUnit })
+    .from(contributions)
+    .where(eq(contributions.entryId, entryId));
+
+  const amounts = mergeAmounts(
+    rows.map((r) =>
+      r.value !== null && r.unit !== null
+        ? ({ value: r.value, unit: r.unit as Amount["unit"] } as Amount)
+        : null,
+    ),
+  );
+  return amounts.length === 1 ? amounts[0]! : null;
+}
+
 async function recordPurchaseIfBought(tx: Tx, op: Op, next: SyncState): Promise<void> {
   if (op.kind !== "remove_item" || !op.bought) return;
   const eid = makeEntryId(op.listId, op.catalogItemId);
   if (!wonThisOp(next, entryKey(eid), op)) return;
+
+  const quantity = await purchasedQuantity(tx, eid);
 
   await tx
     .insert(purchases)
@@ -1119,6 +1169,8 @@ async function recordPurchaseIfBought(tx: Tx, op: Op, next: SyncState): Promise<
       purchasedAt: new Date(op.at),
       actor: op.actor,
       clientOpId: op.clientOpId,
+      quantityValue: quantity?.value ?? null,
+      quantityUnit: quantity?.unit ?? null,
     })
     // A replayed op must not count as a second shop. The op log is already
     // idempotent per clientOpId; this makes the purchase row idempotent on the
