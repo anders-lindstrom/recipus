@@ -1,4 +1,130 @@
-# A merge keeps the recipe, 2026-08-02 — read this first
+# Away session, 2026-08-03 — voice, and the sweep behind it — read this first
+
+Anders asked for an Alexa skill and for a sweep of what else was missing. Both
+were done; the Alexa answer is not the one that was wanted, and that is the
+first thing to read.
+
+## Alexa cannot do what was asked, and this is verified rather than assumed
+
+Two platform facts, both checked directly against Amazon's own documentation
+rather than taken from an agent's summary:
+
+**sv-SE is not an Alexa locale.** Custom skills support exactly 17 — ar-SA,
+de-DE, en-AU/CA/GB/IN/US, es-ES/MX/US, fr-CA/FR, hi-IN, it-IT, ja-JP, nl-NL,
+pt-BR. Amazon states it in the product name on amazon.se: "Echo Dot ...
+International Version ... Swedish language not available". Putting Swedish words
+in a custom slot does not rescue it either — the acoustic model is English and
+transcribes Swedish phonemes into English words BEFORE slot resolution runs.
+
+**The genuinely intuitive version was deleted.** "Alexa, add milk to the
+shopping list", landing in Alexa's own list with our server subscribed to its
+events, worked through the List Management REST API and List skills. Both were
+switched off on 2024-07-01, killing writes AND event subscriptions. No
+replacement has been announced. AnyList, the flagship integration, was forced
+back to "Alexa, tell AnyList to add milk".
+
+So the Alexa skill is English-only and needs an invocation name. It was built
+anyway, because Anders reaffirmed the ask after hearing this. Home Assistant
+carries the Swedish half, and that is the route worth actually using.
+
+## What voice looks like now
+
+One ingest core in `src/lib/voice/`, two thin adapters. Ops go through
+`applyOpToDatabase` exactly as `/api/ops` does, so a spoken add is
+indistinguishable downstream from a tapped one.
+
+The load-bearing choice: matching goes through `matchIngredient` over
+`loadMatchCandidates`, NOT the add bar's `resolveQuery`. Only the former
+consults `catalog_item_aliases`, and aliases are the entire mechanism by which
+an English word reaches a Swedish catalog. Using the other matcher would have
+made the English path impossible while looking like poor speech recognition.
+
+Nothing in the voice path creates a vara. The add bar already refuses to let a
+fuzzy match decide a word is new; speech is far noisier and has no screen to
+catch it on. Unmatched phrases are reported and spoken back.
+
+Both routes mount before the Authelia gate — their callers are machines — and
+each fails CLOSED when unconfigured. `/api/alexa` also checks the skill id,
+which Amazon's verifiers deliberately do not: the signature proves a request
+came from Amazon, not that it came from your skill.
+
+## Two bugs that only a live database found
+
+Worth remembering as a method, not just as fixes. Unit tests on pure functions
+passed throughout; running real sentences against real data immediately produced:
+
+- "add 2 liters of milk" put **2 st mjölk** — two PIECES of milk — on the list.
+  English unit words are not in the Swedish parser, so the bare number parsed
+  and the unit was discarded. Fixed in the voice layer, not in `lib/units`,
+  which is the household's Swedish vocabulary and shared with the importer.
+- "Alexa, add milk" made **"Alexa" the first shopping item**, because
+  SEPARATORS splits on commas and nothing stripped the wake word.
+
+## Three times a test caught something inspection had not
+
+- Fixing `keepsPurchase` meant writing a round-trip test keyed by `OpKind`. It
+  immediately found a SECOND stripped field: `catalog_items.hidden`, which has
+  its own clock, its own columns and its own reducer branch. "Dölj den här
+  varan" applied locally, never persisted, and never reached the other phone.
+- My first fix for it reused `catalogItemSchema.omit({id:true}).partial()`. Zod
+  fires a `.default()` THROUGH `.partial()`, so every rename would have asserted
+  "and it is not hidden" and stamped the hidden clock — the moving-clock bug
+  already paid for on note, amount, priority and the four product fields. The
+  test failed; the schema was restructured.
+- `purchasedQuantity` first read from `next`, and came back null. `loadStateSlice`
+  deliberately loads NO contributions for a `remove_item` — the reducer resolves
+  a removal on the entry row alone. Widening the slice would change what the
+  reducer sees and what `persist` rewrites in order to serve a side effect, so
+  it reads from the database at the side-effect boundary instead.
+
+Also worth recording: the alias table's first generated pass proposed 41 aliases
+that are literally Swedish vara names (lime, mango, salt, pasta, chips, bacon —
+for many groceries the Swedish word IS the English word), and 6 that were too
+generic ("chicken" on kycklingfilé, when hel kyckling exists). A test checks all
+of it by execution. It also caught ME: I asserted "bread" should map to `bröd`,
+and there is no plain `bröd` vara at all — only compounds. The data was right.
+
+## Decisions taken without asking
+
+- **`HOUSEHOLD_USERS` defaults to admitting everyone.** Failing closed would
+  lock the household out of its own list on the next Watchtower pull, remotely,
+  with SSH as the only fix. Production warns instead. **Anders must set this** —
+  until he does, any Authelia account on the box can call `merge_catalog_items`.
+- **Pinch-zoom re-enabled**, reversing `maximumScale: 1`. It was a flat WCAG
+  1.4.4 failure on a 13px label read at arm's length in bad light, traded
+  against an accidental zoom that takes two seconds to undo. Never argued in
+  this log, so no recorded decision was overturned.
+- **Scaled counts round UP with a floor of 1.** Half an egg is not purchasable,
+  so the only question is which way to be wrong: one too many costs a krona, one
+  too few means the dish cannot be made.
+- **A duplicate recipe import returns the existing recipe** rather than an
+  error. The household asked for this recipe; this recipe is what they get.
+- **Deleting a recipe does not take its ingredients off any list.** They were
+  added because someone wanted them. `remove_recipe` means the other thing.
+
+## Still needs Anders
+
+- Set `HOUSEHOLD_USERS`, `VOICE_INGEST_SECRET` and `VOICE_ACTOR` on the beelink.
+- NPM location blocks for `/api/voice` and `/api/alexa` — both are in
+  `docs/voice.md`, and neither endpoint works until Authelia stops fronting it.
+- Home Assistant has no Swedish STT pipeline yet. Prototype Whisper (small or
+  medium; tiny will not do Swedish grocery words) before buying satellites.
+- Amazon developer account, `ask deploy`, and `ALEXA_SKILL_ID` in the
+  environment. Leave the skill in Development stage: beta tests expire every 90
+  days and cannot be extended.
+
+## Not done, and why
+
+The remaining sweep items are in `docs/superpowers/specs/` territory rather than
+here: who-added-what (#26), the product/barcode lifecycle ops (#43/#44), the
+scanner torch (#58), aisle navigation for /varor (#37), household-owned aisles
+(#62) and seasonality (#63). None are bleeding. The two that WERE bleeding —
+purchase quantities and scan attribution — are done, because their cost was
+accruing daily and could never be backfilled.
+
+Nothing is pushed. 16 commits on `feat/voice-ingest-and-quick-wins`.
+
+# A merge keeps the recipe, 2026-08-02
 
 The report: "I have a recipe, kycklingbröst in it. I add it to my list — 1200 g
 kycklingbröstfilé, which isn't in my varor, so it lands as an Övrigt. I merge it
