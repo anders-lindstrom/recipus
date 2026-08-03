@@ -224,25 +224,60 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   const lastAt = useRef<string | null>(null);
 
   /** Returns the op's `clientOpId`, which undo needs to name what it retracts. */
-  const dispatch = useCallback(
-    (partial: OpDraft): string => {
-      const clientOpId = crypto.randomUUID();
+  /**
+   * Stamp a draft into a real op.
+   *
+   * Lifted out so the fire-and-forget path and the awaitable one below cannot
+   * drift: `nextOpTimestamp` against `lastAt` is what keeps two ops dispatched
+   * in the same tick strictly ordered, and a second copy of that would be a
+   * second clock nobody declared.
+   */
+  const buildOp = useCallback(
+    (partial: OpDraft): Op => {
       const at = nextOpTimestamp(lastAt.current, new Date());
       lastAt.current = at;
-      const op = {
+      return {
         ...partial,
-        clientOpId,
+        clientOpId: crypto.randomUUID(),
         actor: effectiveActor ?? "okand",
         at,
       } as Op;
+    },
+    [effectiveActor],
+  );
+
+  const dispatch = useCallback(
+    (partial: OpDraft): string => {
+      const op = buildOp(partial);
       void dispatchOp(op).catch(() =>
         // A lapsed session is reported through status.signedOut, not thrown —
         // anything reaching here is a genuine failure worth surfacing.
         toast.error("Kunde inte spara ändringen"),
       );
-      return clientOpId;
+      return op.clientOpId;
     },
-    [effectiveActor, dispatchOp],
+    [buildOp, dispatchOp],
+  );
+
+  /**
+   * Dispatch, and resolve once the op is actually written down.
+   *
+   * For the one caller that then tears the page down. `dispatch` above returns
+   * the instant the op is built and lets the outbox write settle whenever it
+   * settles, which is right for every tap that leaves the page standing — but
+   * assigning `window.location.href` can abort an IndexedDB transaction that
+   * has not committed, and an op lost there is lost silently: no outbox row to
+   * retry, no error, just a list you made that is not there after the reload.
+   */
+  const dispatchAndWait = useCallback(
+    async (partial: OpDraft): Promise<void> => {
+      try {
+        await dispatchOp(buildOp(partial));
+      } catch {
+        toast.error("Kunde inte spara ändringen");
+      }
+    },
+    [buildOp, dispatchOp],
   );
 
   // Device-local, never synced and never an op: one of you is in the shop while
@@ -782,17 +817,57 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
             if (id !== listId) window.location.href = `/?list=${encodeURIComponent(id)}`;
           }}
           onCreate={(name) => {
+            /*
+             * A list's id is `slugify(name)`, so naming a new list what an old
+             * one is already called does not make a second list — it addresses
+             * the first one. And `create_list` in the reducer REPLACES the
+             * whole record on a newer clock: name, icon, position and
+             * `categoryOrder`. So typing "Hemköp" a second time used to
+             * overwrite that shop's walking order with the order of whichever
+             * list happened to be open — destroying, in one tap and with no
+             * warning, the edit this app treats as its most valuable.
+             *
+             * `ensureVara` 400 lines up already answers exactly this question
+             * for varor. Here the honest answer is to open the list you named
+             * rather than to invent a second one that cannot exist.
+             */
             const id = slugify(name);
-            dispatch({
+            if (!id) {
+              // slugify keeps letters and digits, so an emoji-only or
+              // punctuation-only name yields "" — an id that would collide with
+              // itself forever and address nothing.
+              toast.error("Listan behöver ett namn med bokstäver i");
+              return;
+            }
+
+            // `delete_list` omits the list from this map outright, so presence
+            // here means live — a deleted list's id is free to be taken again,
+            // and its own tombstone in `meta` decides whether the new create
+            // wins.
+            const existing = state.lists[id];
+            if (existing) {
+              setSwitching(false);
+              toast.info(`Du har redan «${existing.name}» — öppnar den`);
+              window.location.href = `/?list=${encodeURIComponent(id)}`;
+              return;
+            }
+
+            setSwitching(false);
+            // Awaited: the navigation below tears this page down, and an op
+            // still in flight to IndexedDB goes with it.
+            void dispatchAndWait({
               kind: "create_list",
               listId: id,
               name,
               icon: "1F6D2",
               position: lists.length,
+              // Inherited rather than empty: a new shop with no aisle order
+              // sorts everything into Övrigt, and copying the order you are
+              // standing in is a better first guess than none.
               categoryOrder: list.categoryOrder,
+            }).then(() => {
+              window.location.href = `/?list=${encodeURIComponent(id)}`;
             });
-            setSwitching(false);
-            window.location.href = `/?list=${encodeURIComponent(id)}`;
           }}
           onClose={() => setSwitching(false)}
         />
