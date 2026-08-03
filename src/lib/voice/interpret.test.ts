@@ -144,3 +144,58 @@ describe("interpretUtterance", () => {
     });
   });
 });
+
+/**
+ * The two defects the live smoke test found, which no unit test had predicted.
+ *
+ * Both came from running a real sentence at a real database rather than at a
+ * fixture, and both were silent: one put the wrong unit on the list, the other
+ * invented an item out of the assistant's own name.
+ */
+describe("what the smoke test caught", () => {
+  it("does not make the assistant's name a grocery", () => {
+    // SEPARATORS splits on commas, so "Alexa, add ..." became two items and the
+    // first was reported back as something the shop does not sell.
+    expect(interpretUtterance("Alexa, add 2 litres of milk").map((i) => i.name)).toEqual([
+      "milk",
+    ]);
+    expect(interpretUtterance("hey google, add milk").map((i) => i.name)).toEqual(["milk"]);
+  });
+
+  it("reads English units as units, not as a count", () => {
+    // "2 st mjölk" is two PIECES of milk. It parsed the bare number and threw
+    // the unit away, which reads as a plausible amount and is not one.
+    expect(interpretUtterance("add 2 litres of milk")[0]).toMatchObject({
+      name: "milk",
+      amount: { value: 2, unit: "l" },
+    });
+    expect(interpretUtterance("add 500 grams of butter")[0]).toMatchObject({
+      amount: { value: 500, unit: "g" },
+    });
+    expect(interpretUtterance("add 2 kilos of potatoes")[0]).toMatchObject({
+      amount: { value: 2, unit: "kg" },
+    });
+    expect(interpretUtterance("add 3 cans of tomatoes")[0]).toMatchObject({
+      amount: { value: 3, unit: "burk" },
+    });
+  });
+
+  it("consumes the 'of' that follows a unit", () => {
+    // Otherwise splitQuery reads "of milk" as the vara.
+    expect(interpretUtterance("add 2 litres of milk")[0]!.name).toBe("milk");
+  });
+
+  it("leaves a unit word alone when no number precedes it", () => {
+    // The rule that keeps this from mangling names: "canned tomatoes" and
+    // "bagels" must survive untouched.
+    expect(interpretUtterance("add canned tomatoes")[0]!.name).toBe("canned tomatoes");
+    expect(interpretUtterance("add bagels")[0]!.name).toBe("bagels");
+    expect(interpretUtterance("add a box grater")[0]!.name).toBe("a box grater");
+  });
+
+  it("still reads Swedish units the way it always did", () => {
+    expect(interpretUtterance("lägg till 2 l mjölk")[0]).toMatchObject({
+      amount: { value: 2, unit: "l" },
+    });
+  });
+});

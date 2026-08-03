@@ -1,8 +1,20 @@
 import { pathToFileURL } from "node:url";
 import { eq, sql } from "drizzle-orm";
 import { db } from "./index";
-import { catalogItems, categories, listEntries, lists, users } from "./schema";
-import { CATALOG_ITEMS, CATEGORIES, STARTER_ITEMS } from "./seed-data";
+import {
+  catalogItemAliases,
+  catalogItems,
+  categories,
+  listEntries,
+  lists,
+  users,
+} from "./schema";
+import {
+  CATALOG_ITEMS,
+  CATEGORIES,
+  ENGLISH_ALIASES,
+  STARTER_ITEMS,
+} from "./seed-data";
 import { entryId } from "@/lib/domain";
 import { normalizeName, slugify } from "@/lib/utils";
 
@@ -66,6 +78,41 @@ const STARTER_LIST_ID = "hemkop";
  * Accepted consequence: once a household renames an item, that row never takes
  * another seed correction. Correct precedence — they outrank us.
  */
+/**
+ * The English words that let an Echo reach the Swedish catalog.
+ *
+ * Insert-only — `onConflictDoNothing` on `alias_norm`, never an update — and
+ * that is the whole safety story rather than laziness. Two household actions
+ * write to this table and both must outrank the seed:
+ *
+ * A merge records the losing word as an alias, so re-pointing one by hand is a
+ * real edit that a seed update would silently revert on the next deploy. And
+ * removing an alias is a SOFT delete (`deleted_at`), exactly as a catalog
+ * item's is, for the same reason — a hard delete would let an offline phone
+ * resurrect it. Upserting here would bring back every alias anyone had
+ * deliberately retired, on every boot, which is precisely the production bug
+ * `catalog_items.deleted_at` exists to prevent.
+ *
+ * So a seeded alias lands once and is then the household's to keep or drop.
+ */
+async function seedEnglishAliases(): Promise<void> {
+  const rows = Object.entries(ENGLISH_ALIASES).flatMap(([varaName, aliases]) =>
+    aliases.map((alias) => ({
+      // Folded exactly as `catalog_items.name_norm` is: an alias normalized any
+      // other way is an alias that never matches.
+      aliasNorm: normalizeName(alias),
+      catalogItemId: slugify(varaName),
+      createdBy: SEED_ACTOR,
+      updatedBy: SEED_ACTOR,
+    })),
+  );
+
+  console.log(`Seeding ${rows.length} English aliases…`);
+  for (const row of rows) {
+    await db.insert(catalogItemAliases).values(row).onConflictDoNothing();
+  }
+}
+
 export async function upsertSeedCatalogItem(item: {
   name: string;
   categorySlug: string;
@@ -129,6 +176,8 @@ export async function seed() {
   for (const item of CATALOG_ITEMS) {
     await upsertSeedCatalogItem(item);
   }
+
+  await seedEnglishAliases();
 
   // A first list, so a fresh install opens on something usable rather than an
   // empty-state screen asking you to name things before you can shop.

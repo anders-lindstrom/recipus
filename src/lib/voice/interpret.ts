@@ -107,6 +107,67 @@ const CARRIER_SUFFIXES = [
  */
 const SEPARATORS = /\s*,\s*|\s+(?:och|and|samt|plus)\s+/i;
 
+/**
+ * The name of the assistant, which is not a grocery.
+ *
+ * Stripped before anything splits, and that ordering is the point: SEPARATORS
+ * breaks on commas, so "Alexa, add 2 litres of milk" became TWO items — the
+ * first of which was the word "Alexa", duly reported back as something the
+ * household could not be sold. Observed against a live database, not imagined.
+ *
+ * Alexa's own slot usually excludes the wake word; Whisper's transcript does
+ * not, and both adapters come through here.
+ */
+const WAKE_WORDS = /^(?:hey\s+|ok\s+|hej\s+)?(?:alexa|google|siri|assistent|assistant)\b[,!.]?\s*/i;
+
+/**
+ * English quantity words, rewritten to the units the parser already knows.
+ *
+ * Here rather than in `src/lib/units`, deliberately. That module is the
+ * household's Swedish unit vocabulary, shared by the recipe importer and the
+ * add bar, and widening it with English would change how every typed and
+ * imported quantity parses in order to serve the one entry point that receives
+ * English. This layer is that entry point.
+ *
+ * Only ever applied to a word FOLLOWING a number, which is what keeps it from
+ * mangling names: "canned tomatoes" and "bagels" are untouched, while "2 cans"
+ * is not. A trailing "of" is consumed with it, because "2 litres of milk" is
+ * how the sentence is actually said and `splitQuery` would otherwise read "of
+ * milk" as the vara.
+ *
+ * Without this, "add 2 litres of milk" parsed the bare 2 and dropped the unit —
+ * putting `2 st mjölk`, two PIECES of milk, on the list.
+ */
+const ENGLISH_UNITS: Record<string, string> = {
+  litre: "l", litres: "l", liter: "l", liters: "l",
+  decilitre: "dl", decilitres: "dl", deciliter: "dl", deciliters: "dl",
+  centilitre: "cl", centilitres: "cl", centiliter: "cl", centiliters: "cl",
+  millilitre: "ml", millilitres: "ml", milliliter: "ml", milliliters: "ml",
+  kilo: "kg", kilos: "kg", kilogram: "kg", kilograms: "kg",
+  gram: "g", grams: "g", gramme: "g", grammes: "g",
+  tablespoon: "msk", tablespoons: "msk", tbsp: "msk",
+  teaspoon: "tsk", teaspoons: "tsk", tsp: "tsk",
+  piece: "st", pieces: "st",
+  pack: "pkt", packs: "pkt", packet: "pkt", packets: "pkt",
+  can: "burk", cans: "burk", tin: "burk", tins: "burk",
+  bag: "påse", bags: "påse",
+  bunch: "knippe", bunches: "knippe",
+  box: "förp", boxes: "förp",
+};
+
+const ENGLISH_UNIT_RE = new RegExp(
+  String.raw`(\d+(?:[.,]\d+)?)\s+(${Object.keys(ENGLISH_UNITS).join("|")})\b(?:\s+of\b)?`,
+  "gi",
+);
+
+function rewriteEnglishUnits(text: string): string {
+  return text.replace(
+    ENGLISH_UNIT_RE,
+    (_all, value: string, unit: string) =>
+      `${value} ${ENGLISH_UNITS[unit.toLowerCase()]}`,
+  );
+}
+
 function stripOnce(text: string, phrases: readonly string[], where: "start" | "end"): string | null {
   const lower = text.toLowerCase();
   for (const phrase of phrases) {
@@ -131,7 +192,10 @@ function stripOnce(text: string, phrases: readonly string[], where: "start" | "e
  * stacked — and bounded so a pathological input cannot spin.
  */
 function stripCarriers(raw: string): string {
-  let text = raw.trim().replace(/\s+/g, " ");
+  // Wake word first, then units — both before any splitting, since SEPARATORS
+  // breaks on the comma in "Alexa, add …" and would otherwise make the
+  // assistant's own name the first thing on the shopping list.
+  let text = rewriteEnglishUnits(raw.trim().replace(/\s+/g, " ").replace(WAKE_WORDS, ""));
   for (let i = 0; i < 4; i++) {
     const withoutPrefix = stripOnce(text, CARRIER_PREFIXES, "start");
     if (withoutPrefix !== null) {
