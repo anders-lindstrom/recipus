@@ -45,7 +45,39 @@ import { VarorPlaceSheet } from "./varor-place-sheet";
  * treats being signed out as a banner rather than a different page.
  */
 
-const SHELL_KEY = "recipus:shell";
+/**
+ * Per LIST, not one key for the app.
+ *
+ * A single key held whichever list was opened last, so switching to Bauhaus
+ * offline — where the shell is all there is until IndexedDB answers — drew
+ * Hemköp's name and Hemköp's aisle order over Bauhaus's list. One key per list
+ * costs a few hundred bytes and makes an offline switch show the right shop.
+ */
+const SHELL_KEY_PREFIX = "recipus:shell:";
+const shellKey = (listId: Id) => `${SHELL_KEY_PREFIX}${listId}`;
+
+/**
+ * The list named in the URL, read on the CLIENT.
+ *
+ * The server reads `?list=` too, and online that is the end of it — the
+ * snapshot it renders is already the right list. Offline it is not: the service
+ * worker serves a cached document, which is a render of whatever list was
+ * cached, so `window.location.href = "/?list=bauhaus"` produced a navigation
+ * that changed the URL and nothing else. The switcher appeared to do nothing,
+ * in a shop, which is the one place the choice matters.
+ *
+ * Read in an effect rather than during render so the first client render still
+ * matches the server's HTML. Online the two agree and this changes nothing;
+ * offline it costs one re-render and shows the shop you actually asked for.
+ */
+function useListIdFromUrl(): Id | null {
+  const [fromUrl, setFromUrl] = useState<Id | null>(null);
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("list");
+    if (requested) setFromUrl(requested);
+  }, []);
+  return fromUrl;
+}
 
 /**
  * How long a scan waits for the server before carrying on without it.
@@ -91,11 +123,30 @@ interface ShellContext {
   recipeTitles: Record<Id, string>;
 }
 
-function readShellContext(): ShellContext | null {
+/**
+ * The cached shell for a list, or for whichever list was seen last.
+ *
+ * `listId` is null on the very first offline open, when nothing in the URL or
+ * in a snapshot says which list is wanted — any remembered shell is better than
+ * none there, so the newest one is used. Once a list IS named, only that list's
+ * shell will do: drawing Hemköp's aisle order over Bauhaus is worse than
+ * drawing none.
+ */
+function readShellContext(listId: Id | null): ShellContext | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.localStorage.getItem(SHELL_KEY);
-    return raw ? (JSON.parse(raw) as ShellContext) : null;
+    if (listId) {
+      const raw = window.localStorage.getItem(shellKey(listId));
+      return raw ? (JSON.parse(raw) as ShellContext) : null;
+    }
+    let newest: ShellContext | null = null;
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (!key?.startsWith(SHELL_KEY_PREFIX)) continue;
+      const raw = window.localStorage.getItem(key);
+      if (raw) newest = JSON.parse(raw) as ShellContext;
+    }
+    return newest;
   } catch {
     return null;
   }
@@ -138,10 +189,23 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     null,
   );
 
-  // Read once, on first render, so the offline path has a list name and
-  // category names before anything async resolves.
-  const [cached] = useState<ShellContext | null>(() =>
-    snapshot ? null : readShellContext(),
+  /*
+   * Which list this page is for, client-side.
+   *
+   * The server reads `?list=` as well, so online `snapshot.list.id` already IS
+   * the requested list and this agrees with it. Offline it is the only thing
+   * that knows: the service worker serves a cached document rendered for
+   * whatever list was cached, so without this the switcher changed the URL and
+   * nothing else — in a shop with no signal, which is the one place choosing a
+   * shop matters.
+   */
+  const urlListId = useListIdFromUrl();
+
+  // Re-read whenever the wanted list changes, so an offline switch picks up
+  // that list's own remembered name and aisle order rather than the last one's.
+  const cached = useMemo(
+    () => (snapshot ? null : readShellContext(urlListId)),
+    [snapshot, urlListId],
   );
 
   // Remember enough to render the shell next time the server is unreachable.
@@ -155,13 +219,15 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
         categories: snapshot.categories,
         recipeTitles: snapshot.recipeTitles,
       };
-      window.localStorage.setItem(SHELL_KEY, JSON.stringify(ctx));
+      window.localStorage.setItem(shellKey(snapshot.list.id), JSON.stringify(ctx));
     } catch {
       // A full or disabled localStorage costs offline chrome, nothing more.
     }
   }, [snapshot, actor]);
 
-  const listId = snapshot?.list.id ?? cached?.listId ?? null;
+  // The URL wins. Offline the snapshot is whatever was cached, and deferring
+  // to it is exactly how switching lists became a no-op.
+  const listId = urlListId ?? snapshot?.list.id ?? cached?.listId ?? null;
   const effectiveActor = actor ?? cached?.actor ?? null;
   const categories = snapshot?.categories ?? cached?.categories ?? [];
   // Memoised, not a bare `?? {}`: that allocates a fresh object every render,

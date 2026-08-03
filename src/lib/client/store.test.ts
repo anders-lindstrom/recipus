@@ -578,8 +578,8 @@ describe("a stale snapshot cannot overwrite live local state", () => {
         createdBy: "anders",
         removedAt: null,
         priority: "normal",
-        priorityUpdatedAt: null,
-        priorityUpdatedBy: null,
+        updatedAt: "2026-03-12T10:00:00.000Z",
+        updatedBy: "anders",
       },
     ];
     await store.hydrate(withMilk);

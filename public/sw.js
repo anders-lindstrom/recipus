@@ -23,7 +23,7 @@
  * lets a bad cached shell be discarded rather than lingering.
  */
 
-const CACHE_TAG = "recipus-v2";
+const CACHE_TAG = "recipus-v3";
 const OFFLINE_URL = "/offline.html";
 
 // The shell is everything needed to render an empty app that then fills itself
@@ -79,6 +79,7 @@ const NAV_TIMEOUT_MS = 2500;
 
 async function handleNavigation(request) {
   const cache = await caches.open(CACHE_TAG);
+  const url = new URL(request.url);
 
   try {
     const response = await Promise.race([
@@ -95,13 +96,36 @@ async function handleNavigation(request) {
       response.type === "basic" &&
       (response.headers.get("content-type") || "").includes("text/html")
     ) {
-      cache.put("/", response.clone());
+      /*
+       * Under its OWN path, not under "/".
+       *
+       * Every navigation used to be cached as "/" and every offline navigation
+       * served that back with ignoreSearch, so the shell you got had nothing to
+       * do with the route you asked for: open /varor after last visiting
+       * /recept and you were served the recipe screen, at the /varor URL. The
+       * carefully-built offline branch on /varor could not execute at all,
+       * because it was never the document being rendered.
+       *
+       * The query string is deliberately still ignored on lookup below: "/" and
+       * "/?list=bauhaus" are one document, and which list it shows is the
+       * client's business to read.
+       */
+      cache.put(url.pathname, response.clone());
     }
     return response;
   } catch {
-    const cached = await cache.match("/", { ignoreSearch: true });
-    if (cached) return cached;
+    /*
+     * Its own path first, then the root, then the offline page.
+     *
+     * The root is a real fallback rather than a formality: every screen is the
+     * same Next.js shell, so serving "/" to a route never visited online still
+     * produces a working app that fills itself from IndexedDB — better than the
+     * offline page. But it is the SECOND choice, so a route that has been
+     * visited gets itself.
+     */
     return (
+      (await cache.match(url.pathname, { ignoreSearch: true })) ||
+      (await cache.match("/", { ignoreSearch: true })) ||
       (await cache.match(OFFLINE_URL)) ||
       new Response("Offline", { status: 503, statusText: "Offline" })
     );
