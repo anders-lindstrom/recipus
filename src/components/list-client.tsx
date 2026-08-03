@@ -397,11 +397,22 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
         if (amount) dispatch({ kind: "set_amount", listId, catalogItemId, amount });
       }
     },
-    removeItem: (catalogItemId: Id, bought: boolean) => {
+    /**
+     * `productId` is set by scanning and by nothing else — it makes the
+     * purchase attribute to the product rather than to the vara, which is what
+     * lets placing or re-placing that product move its whole history with it.
+     */
+    removeItem: (catalogItemId: Id, bought: boolean, scannedProductId?: Id) => {
       // Buy mode's idle clock measures shopping, not staring at the screen, so
       // it is a removal that counts as activity — not a render or a scroll.
       if (bought) touch();
-      return dispatch({ kind: "remove_item", listId, catalogItemId, bought });
+      return dispatch({
+        kind: "remove_item",
+        listId,
+        catalogItemId,
+        bought,
+        ...(scannedProductId ? { productId: scannedProductId } : {}),
+      });
     },
     setAmount: (catalogItemId: Id, amount: Amount | null) =>
       dispatch({ kind: "set_amount", listId, catalogItemId, amount }),
@@ -610,7 +621,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
    * run the same four-cell table. An `add_and_buy` that only some paths could
    * reach is how a scan silently stops recording purchases.
    */
-  function actOnVara(catalogItemId: Id, name: string) {
+  function actOnVara(catalogItemId: Id, name: string, scannedProductId?: Id) {
     if (!listId) return;
     const entry = state.entries[entryId(listId, catalogItemId)];
     const onList = Boolean(entry && entry.removedAt === null);
@@ -619,7 +630,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     // there. This only turns the decision into ops and Swedish.
     switch (scanAction(mode, onList).kind) {
       case "buy": {
-        const clientOpId = actions.removeItem(catalogItemId, true);
+        const clientOpId = actions.removeItem(catalogItemId, true, scannedProductId);
         setScanResult({
           text: `${name} köpt`,
           undo: () => {
@@ -637,7 +648,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
         // before the remove half wrote the second, leaving one where there were
         // two.
         actions.addItem(catalogItemId, undefined, undefined, true);
-        const clientOpId = actions.removeItem(catalogItemId, true);
+        const clientOpId = actions.removeItem(catalogItemId, true, scannedProductId);
         setScanResult({
           text: `${name} tillagd och köpt`,
           undo: () => {
@@ -700,7 +711,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     const resolved = resolveScan(state, ean);
 
     if (resolved.kind === "vara") {
-      actOnVara(resolved.catalogItemId, resolved.name);
+      actOnVara(resolved.catalogItemId, resolved.name, resolved.productId);
       return;
     }
 
@@ -769,7 +780,9 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
           productId: id,
           patch: { catalogItemId: vara.id },
         });
-        actOnVara(vara.id, vara.name);
+        // The auto-map answered "what did I just scan", so the purchase
+        // attributes to the product it answered for.
+        actOnVara(vara.id, vara.name, id);
         return;
       }
     }
@@ -911,7 +924,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
             // Placing is the answer to "what did I just scan", so the scan then
             // completes — the alternative is telling someone at a till that
             // their answer was recorded and their item was not.
-            if (vara) actOnVara(vara.id, vara.name);
+            if (vara) actOnVara(vara.id, vara.name, placing.productId);
           }}
           onCreateAndPlace={(name) => {
             const catalogItemId = actions.createVaraAndPlace(
@@ -919,7 +932,8 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
               name,
             );
             setPlacing(null);
-            if (catalogItemId) actOnVara(catalogItemId, name.trim());
+            if (catalogItemId)
+              actOnVara(catalogItemId, name.trim(), placing.productId);
           }}
           /* Nothing to send back to the queue: this product has no vara to
              leave, which is the entire reason the sheet is open. */

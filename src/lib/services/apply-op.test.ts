@@ -17,6 +17,10 @@ import {
   recipes,
 } from "@/db/schema";
 import { entryId, manualContributionId } from "@/lib/domain";
+import {
+  effectiveCatalogItemId,
+  purchaseProductJoin,
+} from "./purchase-attribution";
 import type { Op } from "@/lib/sync";
 import {
   aliasKey,
@@ -2302,5 +2306,96 @@ describe("a purchase records how much", () => {
       .where(eq(purchases.catalogItemId, unbought));
 
     expect(rows).toHaveLength(0);
+  });
+});
+
+/**
+ * A scanned purchase attributes to the PRODUCT, not to the vara.
+ *
+ * `purchases` has documented two shapes since it was written — a tapped tile
+ * writes `{item, null}`, ANY scan writes `{null, product}` — and nothing ever
+ * supplied the product half, so `product_id` was NULL on every row. The half of
+ * the design that depends on it therefore never ran: placing an unplaced
+ * product could not retro-attribute its history, correcting a wrong auto-map
+ * moved nothing, and /statistik's unplaced-debt banner was unrenderable dead
+ * code while /varor promised those purchases were "banked".
+ */
+describe("a scanned purchase names the product", () => {
+  it("writes {null, product} and still resolves to the vara", async () => {
+    const vara = `test-scanbuy-vara-${RUN}`;
+    const prod = `test-scanbuy-prod-${RUN}`;
+    await seedItem(vara);
+    await seedProduct(prod);
+    await applyOpToDatabase(
+      op("update_product", "2026-06-01T08:00:00.000Z", {
+        productId: prod,
+        patch: { catalogItemId: vara },
+      }),
+      ACTOR,
+    );
+
+    await applyOpToDatabase(
+      op("add_item", "2026-06-01T09:00:00.000Z", { listId, catalogItemId: vara }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-06-01T10:00:00.000Z", {
+        listId,
+        catalogItemId: vara,
+        bought: true,
+        productId: prod,
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db
+      .select({
+        catalogItemId: purchases.catalogItemId,
+        productId: purchases.productId,
+      })
+      .from(purchases)
+      .where(eq(purchases.productId, prod));
+
+    // The vara column is deliberately empty: we know what we scanned, and the
+    // vara is read back through the product so a later re-placement carries the
+    // whole history with it.
+    expect(row).toMatchObject({ catalogItemId: null, productId: prod });
+
+    const [resolved] = await db
+      .select({ item: effectiveCatalogItemId })
+      .from(purchases)
+      .leftJoin(products, purchaseProductJoin)
+      .where(eq(purchases.productId, prod));
+
+    expect(resolved!.item).toBe(vara);
+  });
+
+  it("leaves a tapped tile attributing to the vara", async () => {
+    // The other half of the same rule. A tile tap has no product, and inventing
+    // one would make a split divide history it cannot honestly divide.
+    const tapped = `test-tapbuy-vara-${RUN}`;
+    await seedItem(tapped);
+    await applyOpToDatabase(
+      op("add_item", "2026-06-02T09:00:00.000Z", { listId, catalogItemId: tapped }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-06-02T10:00:00.000Z", {
+        listId,
+        catalogItemId: tapped,
+        bought: true,
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db
+      .select({
+        catalogItemId: purchases.catalogItemId,
+        productId: purchases.productId,
+      })
+      .from(purchases)
+      .where(eq(purchases.catalogItemId, tapped));
+
+    expect(row).toMatchObject({ catalogItemId: tapped, productId: null });
   });
 });

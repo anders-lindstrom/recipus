@@ -217,6 +217,7 @@ const MAXIMAL: { [K in OpKind]: Extract<Op, { kind: K }> } = {
     listId: "hemkop",
     catalogItemId: "mjolk",
     bought: true,
+    productId: "prod:7310865004703",
   },
   set_amount: {
     kind: "set_amount",

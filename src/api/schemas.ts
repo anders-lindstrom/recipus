@@ -389,6 +389,15 @@ const removeItemOpSchema = z.object({
   listId: z.string(),
   catalogItemId: z.string(),
   bought: z.boolean(),
+  /**
+   * Set by scanning, and by nothing else. See the op's own comment for why
+   * `purchases` wants the product rather than the vara for a scan.
+   *
+   * Optional, and absent from every `remove_item` written before scanning
+   * recorded its product — a stored op replayed from the log must parse and
+   * apply exactly as it did the day it was written.
+   */
+  productId: z.string().optional(),
 });
 
 const setAmountOpSchema = z.object({

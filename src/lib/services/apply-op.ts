@@ -1164,7 +1164,21 @@ async function recordPurchaseIfBought(tx: Tx, op: Op, next: SyncState): Promise<
     .insert(purchases)
     .values({
       id: randomUUID(),
-      catalogItemId: op.catalogItemId,
+      /*
+       * Two shapes, exactly as the table has always documented: a tapped tile
+       * writes {item, null}, and a scan writes {null, product}.
+       *
+       * Not denormalising the vara onto a scan-sourced purchase is the whole
+       * point rather than an economy. The vara is read back through
+       * COALESCE(purchases.catalog_item_id, products.catalog_item_id), so
+       * placing an unplaced product retro-attributes its entire history for
+       * free instead of needing a migration, and correcting a wrong auto-map
+       * moves every past purchase with it. We know what we scanned; we do not
+       * know what we tapped, which is why a tile tap stays put and is never
+       * divided by a split.
+       */
+      catalogItemId: op.productId ? null : op.catalogItemId,
+      productId: op.productId ?? null,
       listId: op.listId,
       purchasedAt: new Date(op.at),
       actor: op.actor,
