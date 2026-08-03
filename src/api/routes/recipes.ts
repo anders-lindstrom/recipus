@@ -432,6 +432,54 @@ export function recipesRoutes() {
 
   app.openapi(
     createRoute({
+      method: "delete",
+      path: "/{id}",
+      tags: ["recipes"],
+      description:
+        "Retire a recipe. Soft, like every other deletion in this app: recipe_additions on live lists reference it, and the prune job clears tombstones at 30 days.",
+      request: { params: idParam },
+      responses: {
+        204: { description: "Deleted" },
+        404: jsonRes(errorSchema, "Not found"),
+      },
+    }),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const actor = c.get("actor");
+
+      /*
+       * Soft, and not merely by convention.
+       *
+       * `deletedAt` and the prune job were both built for a delete that was
+       * never wired, so the column has been sitting there unwritten while a
+       * paywalled half-import stayed at the top of the only browse surface
+       * forever. A hard delete is not available even in principle: recipe
+       * additions on live lists carry `recipe_id`, and the breakdown sheet
+       * resolves a tile's "från recept" badge through it — removing the row
+       * would leave contributions pointing at nothing.
+       *
+       * What this deliberately does NOT do is take the recipe off any list.
+       * Its ingredients were added because the household wanted them; retiring
+       * the recipe is a statement about the library, not about tonight's
+       * shopping. `remove_recipe` is the op that means the other thing, and it
+       * goes through the log because it changes a list.
+       */
+      const [updated] = await db
+        .update(recipes)
+        .set({ deletedAt: new Date(), updatedAt: new Date(), updatedBy: actor })
+        .where(and(eq(recipes.id, id), isNull(recipes.deletedAt)))
+        .returning({ id: recipes.id });
+
+      // Already gone reads as 404 rather than 204: deleting twice is a
+      // question about a recipe that is not there, and answering "done" would
+      // hide a stale link the caller is still following.
+      if (!updated) return c.json({ error: "Not found" }, 404);
+      return c.body(null, 204);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "get",
       path: "/{id}",
       tags: ["recipes"],
