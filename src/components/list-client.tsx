@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { toast } from "sonner";
 import { useList } from "@/lib/client/use-list";
 import { useMode } from "@/lib/client/use-mode";
@@ -66,17 +73,32 @@ const shellKey = (listId: Id) => `${SHELL_KEY_PREFIX}${listId}`;
  * that changed the URL and nothing else. The switcher appeared to do nothing,
  * in a shop, which is the one place the choice matters.
  *
- * Read in an effect rather than during render so the first client render still
- * matches the server's HTML. Online the two agree and this changes nothing;
- * offline it costs one re-render and shows the shop you actually asked for.
+ * `useSyncExternalStore` rather than an effect, and the server snapshot is
+ * deliberately null: that is what keeps the first client render identical to
+ * the HTML the server sent, so there is no hydration mismatch. React then reads
+ * the real value. Online the two agree and this changes nothing; offline it
+ * costs one re-render and shows the shop you actually asked for.
  */
+function subscribeToLocation(onChange: () => void): () => void {
+  // A switch is a full navigation today, so this fires for back/forward rather
+  // than for the switcher itself. It costs one listener and means the hook is
+  // still correct if switching ever becomes a pushState.
+  window.addEventListener("popstate", onChange);
+  return () => window.removeEventListener("popstate", onChange);
+}
+
+function readListIdFromLocation(): Id | null {
+  return new URLSearchParams(window.location.search).get("list");
+}
+
 function useListIdFromUrl(): Id | null {
-  const [fromUrl, setFromUrl] = useState<Id | null>(null);
-  useEffect(() => {
-    const requested = new URLSearchParams(window.location.search).get("list");
-    if (requested) setFromUrl(requested);
-  }, []);
-  return fromUrl;
+  return useSyncExternalStore(
+    subscribeToLocation,
+    readListIdFromLocation,
+    // Server render knows nothing about the client's URL, and must not guess:
+    // returning anything else here is a hydration mismatch by construction.
+    () => null,
+  );
 }
 
 /**
