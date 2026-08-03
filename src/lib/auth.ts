@@ -70,7 +70,56 @@ export function authenticate(headers: Headers): AuthedUser {
     throw new AuthError(`Proxy did not supply ${userHeader}.`);
   }
 
+  if (!isHouseholdMember(autheliaUser)) {
+    throw new AuthError(`${autheliaUser} is not a member of this household.`);
+  }
+
   return { autheliaUser };
+}
+
+/**
+ * Who the household actually is.
+ *
+ * Until this existed, the answer was "whoever Authelia authenticated" — and
+ * Authelia fronts every other service on the same box. So an account created
+ * for one unrelated homelab app was, silently, a full member here: it could
+ * read the list, and more to the point it could call `merge_catalog_items`,
+ * which tombstones a vara and permanently re-points future recipe matching.
+ * Membership lived entirely in proxy configuration that no test could see.
+ *
+ * Unset means "anyone Authelia lets through", which is exactly the old
+ * behaviour, and that default is deliberate rather than timid. This app is
+ * already deployed; shipping a list that fails closed would lock the household
+ * out of its own shopping list on the next Watchtower pull, remotely, with the
+ * only fix being an SSH session. A loud warning at the boundary is the honest
+ * trade — but the deployment should set it. See docs/deploy.md.
+ *
+ * Compared case-insensitively and trimmed, because "Anders" and "anders " in an
+ * env var are the same person and a mismatch here is indistinguishable from a
+ * proxy misconfiguration.
+ */
+export function isHouseholdMember(user: string): boolean {
+  const allowlist = process.env.HOUSEHOLD_USERS;
+  if (!allowlist || !allowlist.trim()) {
+    warnOnceAboutOpenMembership();
+    return true;
+  }
+  const members = allowlist
+    .split(",")
+    .map((m) => m.trim().toLowerCase())
+    .filter(Boolean);
+  return members.includes(user.trim().toLowerCase());
+}
+
+let warnedAboutMembership = false;
+function warnOnceAboutOpenMembership(): void {
+  if (warnedAboutMembership || process.env.NODE_ENV !== "production") return;
+  warnedAboutMembership = true;
+  console.warn(
+    "[auth] HOUSEHOLD_USERS is not set: every user Authelia authenticates — " +
+      "including accounts created for other services behind the same proxy — " +
+      "has full read/write access to this household's list and catalog.",
+  );
 }
 
 /**
