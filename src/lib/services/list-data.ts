@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   barcodes,
@@ -8,6 +8,7 @@ import {
   contributions,
   listEntries,
   lists,
+  ops as opsTable,
   products,
   purchases,
   recipeAdditions,
@@ -65,6 +66,23 @@ import { dismissedOn } from "./suggestion-dismissals";
  */
 
 export interface ListSnapshot {
+  /**
+   * The op-log position this snapshot is at least as new as.
+   *
+   * Read BEFORE the rows below, so it is a lower bound rather than an upper
+   * one: anything written after it is included in the rows anyway, and the
+   * worst case is a client re-fetching a handful of ops it already has, which
+   * the reducer is idempotent against. Reading it afterwards would invert that
+   * and let a client skip ops written while the snapshot was being assembled.
+   *
+   * It exists because a snapshot is not always fresh. The service worker caches
+   * the rendered document, so opening the app offline replays whatever server
+   * render was cached — possibly days old — and `applySnapshot` rebuilds state
+   * from it. Without a watermark to compare against, that silently erased every
+   * change that had arrived over SSE since, and the cursor never rewound, so
+   * catch-up could not bring them back either.
+   */
+  seq: number;
   list: List;
   categories: Category[];
   catalog: CatalogItem[];
@@ -138,6 +156,13 @@ export async function loadListSnapshot(
     .where(and(eq(lists.id, listId), isNull(lists.deletedAt)))
     .limit(1);
   if (!listRow) return null;
+
+  // FIRST, before any row is read. See `ListSnapshot.seq` for why the order is
+  // the whole correctness argument.
+  const [seqRow] = await db
+    .select({ seq: sql<number>`coalesce(max(${opsTable.seq}), 0)` })
+    .from(opsTable);
+  const seq = Number(seqRow?.seq ?? 0);
 
   const [
     categoryRows,
@@ -381,6 +406,7 @@ export async function loadListSnapshot(
   }));
 
   return {
+    seq,
     list: {
       id: listRow.id,
       name: listRow.name,
