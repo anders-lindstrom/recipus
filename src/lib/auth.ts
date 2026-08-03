@@ -79,7 +79,7 @@ export function authenticate(headers: Headers): AuthedUser {
  * `===` on secrets leaks their length and prefix through timing. The cost of
  * doing this properly is four lines, so there is no reason to be clever.
  */
-function timingSafeEqual(a: string, b: string): boolean {
+export function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) {
