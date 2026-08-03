@@ -20,6 +20,41 @@ import type { OpDraft } from "./varor-model";
  */
 
 /**
+ * What "Föreslås" still has to offer, given everything that should silence a
+ * suggestion.
+ *
+ * Pure and here rather than inline in the screen because the three exclusions
+ * answer three different questions and only one of them is obvious. The row is
+ * rendered from a SERVER snapshot, so nothing about it reacts to the household
+ * on its own:
+ *
+ * - `onList` is the tap answering for itself. Without it a tapped tile stayed
+ *   put and un-dimmed, which is indistinguishable from a tap that did not
+ *   register — so you tap again and fire a second `add_item`. It is also what
+ *   makes a partner's add, arriving over SSE, stop being offered here.
+ * - `accepted` is the same tap surviving buy mode. Ticking a vara off is
+ *   precisely what removes it from `onList`, so without this the milk already
+ *   in the trolley is offered back the moment it is bought.
+ * - `dismissed` is "inte den här gången", held locally until the next snapshot
+ *   carries the server's own copy of it.
+ *
+ * The server excludes on-list varor too (`list-data.ts`), at query time and
+ * with the same blind spot from the other side: it cannot know what has
+ * happened since it answered.
+ */
+export function visibleSuggestions<T extends { catalogItemId: Id }>(
+  suggestions: readonly T[],
+  silenced: { onList: ReadonlySet<Id>; accepted: ReadonlySet<Id>; dismissed: ReadonlySet<Id> },
+): T[] {
+  return suggestions.filter(
+    (s) =>
+      !silenced.onList.has(s.catalogItemId) &&
+      !silenced.accepted.has(s.catalogItemId) &&
+      !silenced.dismissed.has(s.catalogItemId),
+  );
+}
+
+/**
  * Two kinds of one thing, made into two varor.
  *
  * The problem this solves is structural rather than cosmetic. A list entry's id

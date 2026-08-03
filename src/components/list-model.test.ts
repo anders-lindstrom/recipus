@@ -9,7 +9,7 @@ import {
 import { applyOps } from "@/lib/sync/reducer";
 import type { Op } from "@/lib/sync/ops";
 import { normalizeName } from "@/lib/utils";
-import { newVaraLike, splitSortOps } from "./list-model";
+import { newVaraLike, splitSortOps, visibleSuggestions } from "./list-model";
 import type { OpDraft } from "./varor-model";
 
 /**
@@ -371,5 +371,70 @@ describe("newVaraLike", () => {
     expect(made.hasAtHome).toBe(false);
     expect(made.hidden).toBe(false);
     expect(made.categoryId).toBe("frukt-gront");
+  });
+});
+
+/**
+ * The row that could not see its own taps.
+ *
+ * "Föreslås" is rendered from a server snapshot, so nothing in it reacted to
+ * anything the household did: tapping a tile added the vara and left the tile
+ * exactly where it was, un-dimmed and still offering. That is indistinguishable
+ * from a tap that did not register, and the recovery a person reaches for —
+ * tap it again — fires a second `add_item`.
+ */
+describe("visibleSuggestions", () => {
+  const none = new Set<string>();
+  const offered = [
+    { catalogItemId: "mjolk", reason: "brukar vara slut nu" },
+    { catalogItemId: "gradde", reason: "brukar vara slut nu" },
+  ];
+  const silenced = (over: Partial<Record<"onList" | "accepted" | "dismissed", Set<string>>> = {}) => ({
+    onList: over.onList ?? none,
+    accepted: over.accepted ?? none,
+    dismissed: over.dismissed ?? none,
+  });
+
+  it("offers everything the household has said nothing about", () => {
+    expect(visibleSuggestions(offered, silenced())).toEqual(offered);
+  });
+
+  it("stops offering a vara that is already on the list", () => {
+    // The tap answering for itself. Also the partner's add, arriving over SSE:
+    // the suggestions prop has not changed, and the row still has to react.
+    const left = visibleSuggestions(offered, silenced({ onList: new Set(["mjolk"]) }));
+    expect(left.map((s) => s.catalogItemId)).toEqual(["gradde"]);
+  });
+
+  it("keeps an accepted suggestion silent after it is bought", () => {
+    // The case `onList` cannot cover, and the reason `accepted` exists. Ticking
+    // a vara off is exactly what takes it out of `onList`, so on this input the
+    // naive filter offers back the milk already in the trolley.
+    const boughtInTheShop = silenced({ accepted: new Set(["mjolk"]) });
+    expect(visibleSuggestions(offered, boughtInTheShop).map((s) => s.catalogItemId)).toEqual([
+      "gradde",
+    ]);
+  });
+
+  it("honours a dismissal", () => {
+    const left = visibleSuggestions(offered, silenced({ dismissed: new Set(["gradde"]) }));
+    expect(left.map((s) => s.catalogItemId)).toEqual(["mjolk"]);
+  });
+
+  it("can be silenced down to nothing", () => {
+    // The heading stays mounted while an undo is still offered, so an empty
+    // result is a state the screen renders rather than an impossible one.
+    const all = silenced({ onList: new Set(["mjolk"]), dismissed: new Set(["gradde"]) });
+    expect(visibleSuggestions(offered, all)).toEqual([]);
+  });
+
+  it("keeps the engine's order", () => {
+    // The reason each suggestion is offered is ranked upstream by overdue score;
+    // filtering must not reorder what the cadence engine decided.
+    const left = visibleSuggestions(
+      [...offered, { catalogItemId: "salt", reason: "brukar vara slut nu" }],
+      silenced({ onList: new Set(["gradde"]) }),
+    );
+    expect(left.map((s) => s.catalogItemId)).toEqual(["mjolk", "salt"]);
   });
 });

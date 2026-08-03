@@ -35,6 +35,7 @@ import { AddDetailsSheet } from "./add-details-sheet";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
 import { ListLayoutSheet } from "./list-layout-sheet";
+import { visibleSuggestions as visibleSuggestionsOf } from "./list-model";
 import { MoveSheet } from "./move-sheet";
 import { ItemTile, SectionHeading, TileGrid } from "./item-tile";
 import {
@@ -457,10 +458,34 @@ export function ListScreen({
     [catalogByCategory, categoryName],
   );
 
+  /**
+   * Suggestions taken up in this session, kept hidden for the rest of it.
+   *
+   * `onListIds` below is not enough on its own, and the gap is buy mode: taking
+   * a vara off the list is exactly what makes it leave `live`, so a suggestion
+   * accepted in the car and ticked off in the shop would come straight back
+   * into "Föreslås" — offering to sell you the milk already in the trolley. The
+   * server's own exclusion set (`list-data.ts`) has the same blind spot from
+   * the other side: it filters `removedAt === null` at query time and does not
+   * know what has happened since.
+   *
+   * Session-scoped on purpose. The next snapshot recomputes suggestions from
+   * the purchase that tapping it wrote, at which point this set is redundant
+   * and harmlessly stale — the same shape, and the same reasoning, as
+   * `dismissed` above.
+   */
+  const [accepted, setAccepted] = useState<Set<Id>>(new Set());
+
+  /** See `visibleSuggestions` in list-model.ts for why there are three sets. */
   const visibleSuggestions = useMemo(
-    () => suggestions.filter((s) => !dismissed.has(s.catalogItemId)),
-    [suggestions, dismissed],
+    () => visibleSuggestionsOf(suggestions, { onList: onListIds, accepted, dismissed }),
+    [suggestions, dismissed, accepted, onListIds],
   );
+
+  function acceptSuggestion(id: Id) {
+    setAccepted((prev) => new Set(prev).add(id));
+    actions.addItem(id);
+  }
 
   function dismissSuggestion(id: Id, name: string) {
     setDismissed((prev) => new Set(prev).add(id));
@@ -874,7 +899,7 @@ export function ListScreen({
                     name={item.name}
                     iconRef={item.iconRef}
                     reason={s.reason}
-                    onTap={() => actions.addItem(item.id)}
+                    onTap={() => acceptSuggestion(item.id)}
                     // Long-press ACTS here rather than opening a sheet, which is
                     // a departure from every other tile. A suggestion has only
                     // two possible answers — yes and not today — and a sheet
