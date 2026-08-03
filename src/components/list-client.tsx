@@ -506,6 +506,8 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
       dispatch({ kind: "set_amount", listId, catalogItemId, amount }),
     setModifier: (catalogItemId: Id, modifier: string | null) =>
       dispatch({ kind: "set_modifier", listId, catalogItemId, modifier }),
+    setNote: (catalogItemId: Id, note: string | null) =>
+      dispatch({ kind: "set_note", listId, catalogItemId, note }),
     setPriority: (catalogItemId: Id, priority: Priority) =>
       dispatch({ kind: "set_priority", listId, catalogItemId, priority }),
     /**

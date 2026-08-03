@@ -86,6 +86,8 @@ export interface ListScreenActions {
   removeItem: (catalogItemId: Id, bought: boolean) => string;
   setAmount: (catalogItemId: Id, amount: Amount | null) => void;
   setModifier: (catalogItemId: Id, modifier: string | null) => void;
+  /** Which one on the shelf — "den i blå kartong". Edits the manual share. */
+  setNote: (catalogItemId: Id, note: string | null) => void;
   setPriority: (catalogItemId: Id, priority: Priority) => void;
   /**
    * `likeItem` is the vara a new one should be filed beside — banan, for
@@ -1170,6 +1172,7 @@ export function ListScreen({
           // and a sheet that vanished the moment you finished typing an amount
           // would make setting a sort as well a second long-press.
           onSetModifier={(modifier) => actions.setModifier(openItem.id, modifier)}
+          onSetNote={(note) => actions.setNote(openItem.id, note)}
           onSetPriority={(priority) => actions.setPriority(openItem.id, priority)}
           onSetAmount={(amount) => actions.setAmount(openItem.id, amount)}
           onRemoveRecipe={(id, title) => {

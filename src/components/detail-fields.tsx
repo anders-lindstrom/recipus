@@ -32,6 +32,15 @@ export interface DetailFieldsProps {
   modifier: string | null;
   onModifierChange: (modifier: string | null) => void;
   /**
+   * The free-text note — "den i blå kartong, inte ICA Basic".
+   *
+   * Optional so callers that have no entry to attach one to (the add-details
+   * sheet, before the vara is on a list) can leave the field out entirely
+   * rather than render one that discards what is typed into it.
+   */
+  note?: string | null;
+  onNoteChange?: (note: string | null) => void;
+  /**
    * Every keystroke, for a caller that has to REACT to the sort rather than
    * store it.
    *
@@ -54,12 +63,15 @@ export function DetailFields({
   modifier,
   onModifierChange,
   onModifierInput,
+  note,
+  onNoteChange,
   autoFocus,
 }: DetailFieldsProps) {
   const [amountDraft, setAmountDraft] = useState(
     amount ? formatAmount(amount) : "",
   );
   const [modifierDraft, setModifierDraft] = useState(modifier ?? "");
+  const [noteDraft, setNoteDraft] = useState(note ?? "");
 
   const trimmed = amountDraft.trim();
   const parsed = trimmed === "" ? null : parseAmount(trimmed);
@@ -77,6 +89,11 @@ export function DetailFields({
     // Free text, so there is nothing to fail to parse and no reason to make
     // anyone delete a word twice. Empty clears it.
     onModifierChange(t === "" ? null : t);
+  }
+
+  function commitNote() {
+    const t = noteDraft.trim();
+    onNoteChange?.(t === "" ? null : t);
   }
 
   return (
@@ -142,6 +159,46 @@ export function DetailFields({
           />
         </label>
       </div>
+
+      {/*
+        The note, the last of `set_note`'s pieces to exist.
+
+        Everything else shipped a long time ago — the op, its own clock, the
+        server write, the snapshot round trip, the carry-over in `move_item`,
+        and the renderer in the entry sheet — and nothing ever dispatched it.
+        "Sort" could not stand in: a modifier says what KIND of the thing
+        ("mogna", "laktosfri") and is offered to the matcher, while a note says
+        which one on the shelf, and putting "den i blå kartong, inte ICA Basic"
+        in the sort field would hand that sentence to the vara matcher.
+
+        Full width beneath the pair rather than a third column: it is a
+        sentence, and it is the only one of the three that is.
+      */}
+      {onNoteChange && (
+        <label className="mt-2 flex flex-col gap-1.5">
+          <span className="text-overline text-ink-faint uppercase">Anteckning</span>
+          <input
+            value={noteDraft}
+            onChange={(e) => setNoteDraft(e.target.value)}
+            onBlur={commitNote}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              // Claims the keypress — see the amount field above.
+              e.preventDefault();
+              commitNote();
+              e.currentTarget.blur();
+            }}
+            placeholder="den i blå kartong"
+            // Long enough for the sentence people actually write, short enough
+            // that it stays a note rather than becoming a second recipe.
+            maxLength={120}
+            inputMode="text"
+            autoComplete="off"
+            enterKeyHint="done"
+            className="w-full rounded-control border border-line bg-surface px-3 py-2.5 text-body text-ink outline-none placeholder:text-ink-faint"
+          />
+        </label>
+      )}
 
       {/* One line, always present, so the row cannot change height as you type —
           the sheet twitching under your thumb reads as a bug. */}
