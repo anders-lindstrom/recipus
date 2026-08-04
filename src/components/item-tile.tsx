@@ -100,6 +100,11 @@ export function ItemTile({
       className={cn(
         "group relative flex min-h-[92px] flex-col items-center justify-start",
         "rounded-tile border px-1.5 pt-3 pb-2.5 text-center",
+        // Arrowing up the grid scrolls the tile into view, and the header and
+        // the aisle rail are pinned over the top of it — without this the tile
+        // that just took focus lands underneath them, which reads as focus
+        // having gone nowhere. Same clearance the rail's own jump targets use.
+        "pinned-clearance",
         "transition-[transform,background-color,border-color]",
         onList
           ? "border-brand-line bg-brand-tint"
@@ -202,7 +207,20 @@ export function ItemTile({
 
 /** Three tiles per row is the widest that keeps Swedish item names readable. */
 export function TileGrid({ children }: { children: React.ReactNode }) {
-  return <div className="grid grid-cols-3 gap-2">{children}</div>;
+  /**
+   * `data-tile-grid` is how the list screen finds the stops for its arrow keys.
+   *
+   * A marker rather than a ref, because the grids it has to walk as one are
+   * scattered across the page — "Att handla" is one grid per aisle when the
+   * list is grouped, then "Föreslås", then one per aisle again down the catalog
+   * well — and threading a ref into each would make every caller responsible
+   * for remembering to.
+   */
+  return (
+    <div data-tile-grid className="grid grid-cols-3 gap-2">
+      {children}
+    </div>
+  );
 }
 
 export function SectionHeading({

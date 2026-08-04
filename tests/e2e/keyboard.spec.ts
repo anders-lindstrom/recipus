@@ -1,4 +1,4 @@
-import { expect, onListTile, test } from "./fixtures";
+import { expect, markFrequentlyBought, onListTile, test } from "./fixtures";
 
 /**
  * The app from a keyboard.
@@ -122,6 +122,130 @@ test("the panel does not outlive the focus that opened it", async ({
   // until you came back and cleared the field.
   await field.blur();
   await expect(page.getByRole("listbox", { name: "Sökträffar" })).toHaveCount(0);
+});
+
+test("Escape gets out of the panel, one step at a time", async ({
+  freshPage: page,
+}) => {
+  /**
+   * The bug this pins down: Escape could not dismiss the panel AT ALL.
+   *
+   * The field's own handler blurred on an empty Escape, and the widget-wide
+   * handler above it then asked whether the field still had focus — a question
+   * about state the first handler had just changed — decided it did not, and
+   * focused it back. Focusing the field opens the panel. So the "Vanligast" pane
+   * survived any number of presses, which is how it was reported.
+   *
+   * Asserted as the whole escalation rather than as the one press, because the
+   * steps only mean anything as a sequence: each Escape has to give up exactly
+   * one thing, and the last one has to actually end.
+   */
+  await markFrequentlyBought(["banan", "citron", "gurka"]);
+  await page.reload();
+  await expect(page.getByText("Att handla")).toBeVisible();
+
+  const field = page.getByLabel(FIELD);
+  const frequent = page.getByRole("group", { name: "Vanligast" });
+  const results = page.getByRole("listbox", { name: "Sökträffar" });
+
+  await field.click();
+  await expect(frequent).toBeVisible();
+  await field.pressSequentially("citr");
+  await expect(results).toBeVisible();
+
+  // One: out of the results and back to the field. The panel stays — you are
+  // still in the middle of the errand that opened it.
+  await page.keyboard.press("ArrowDown");
+  await expect(results.getByRole("option").first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(field).toBeFocused();
+  await expect(results).toBeVisible();
+
+  // Two: gives up the query. What is left is what the panel opened as.
+  await page.keyboard.press("Escape");
+  await expect(field).toHaveValue("");
+  await expect(frequent).toBeVisible();
+
+  // Three: and out. This is the press that used to do nothing whatsoever.
+  await page.keyboard.press("Escape");
+  await expect(frequent).toHaveCount(0);
+  await expect(field).not.toBeFocused();
+});
+
+test("Escape dismisses the confirmation strip left behind by an add", async ({
+  freshPage: page,
+}) => {
+  // The same defect on the path a fresh household actually takes: no shopping
+  // history, so nothing is offered until something is added — and the strip that
+  // confirms the add is then the only thing holding the panel open.
+  const field = page.getByLabel(FIELD);
+  await field.click();
+  await field.pressSequentially("ananas");
+  await page.keyboard.press("Enter");
+  await expect(onListTile(page, "ananas")).toBeVisible();
+
+  const strip = page.getByText(/^ananas —/);
+  await expect(strip).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(strip).toHaveCount(0);
+  await expect(field).not.toBeFocused();
+});
+
+test("arrow keys walk the tiles instead of scrolling the page", async ({
+  freshPage: page,
+}) => {
+  /**
+   * The list from a keyboard, which Tab alone does not give you: the catalog
+   * well runs to a few hundred tiles, so "the next tile" has to be one press in
+   * the direction you mean rather than one press per tile in document order.
+   *
+   * Before this the arrows had no handler at all on this screen, so they did
+   * what arrows do to a scroller — a tile could be focused and moving away from
+   * you at the same time.
+   */
+  for (const vara of ["banan", "citron", "gurka"]) {
+    const field = page.getByLabel(FIELD);
+    await field.click();
+    await field.pressSequentially(vara);
+    await page.keyboard.press("Enter");
+    await expect(onListTile(page, vara)).toBeVisible();
+  }
+  // Out of the add bar, so the panel is not over the list and its own arrow
+  // handling is not the thing under test.
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+
+  const listed = page.locator('[data-tile-grid] > button[aria-pressed="true"]');
+  await expect(listed).toHaveCount(3);
+
+  // Relationally, never by name: what order the three sit in belongs to the
+  // walking order and the priorities, and asserting on it here would be
+  // asserting on something else entirely.
+  const first = listed.nth(0);
+  await first.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(listed.nth(1)).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(listed.nth(2)).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(listed.nth(1)).toBeFocused();
+
+  // No wrapping at the end of a row: ArrowLeft off the first tile has nowhere to
+  // go, and must not take the page with it.
+  await first.focus();
+  const scrolled = await page.evaluate(() => window.scrollY);
+  await page.keyboard.press("ArrowLeft");
+  await expect(first).toBeFocused();
+  expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
+
+  // Down out of the list lands in the next grid down the page — the sections are
+  // not walls, because the stepping only knows about boxes.
+  await page.keyboard.press("ArrowDown");
+  await expect(first).not.toBeFocused();
+  await expect(
+    page.locator('[data-tile-grid] > button:focus'),
+  ).toHaveCount(1);
 });
 
 test("Escape out of a sheet that opens onto a field returns focus to the trigger", async ({
