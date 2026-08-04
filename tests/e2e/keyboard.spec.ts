@@ -1,4 +1,10 @@
-import { expect, markFrequentlyBought, onListTile, test } from "./fixtures";
+import {
+  accessibleText,
+  expect,
+  markFrequentlyBought,
+  onListTile,
+  test,
+} from "./fixtures";
 
 /**
  * The app from a keyboard.
@@ -246,6 +252,71 @@ test("arrow keys walk the tiles instead of scrolling the page", async ({
   await expect(
     page.locator('[data-tile-grid] > button:focus'),
   ).toHaveCount(1);
+});
+
+test("Space hands focus to the next tile, so a run of them clears a row", async ({
+  freshPage: page,
+}) => {
+  /**
+   * The core loop, from a keyboard, more than once.
+   *
+   * Space takes the item off the list and the tile it was on stops existing, so
+   * focus fell to `<body>` — where the arrows scroll the page again and the next
+   * Space does nothing. Ticking off three things meant three journeys back in
+   * with Tab, which is not a keyboard story, it is a keyboard demo.
+   */
+  for (const vara of ["banan", "citron", "gurka"]) {
+    const field = page.getByLabel(FIELD);
+    await field.click();
+    await field.pressSequentially(vara);
+    await page.keyboard.press("Enter");
+    await expect(onListTile(page, vara)).toBeVisible();
+  }
+  await page.keyboard.press("Escape");
+
+  const listed = page.locator('[data-tile-grid] > button[aria-pressed="true"]');
+  await expect(listed).toHaveCount(3);
+  // Whatever order the walking rank put them in — the run has to work on the
+  // sequence the screen is actually showing, not on the one it was typed in.
+  const order = await accessibleText(listed);
+
+  await listed.nth(0).focus();
+  await page.keyboard.press("Space");
+
+  // The tile that slid into the gap now has focus, and is the next vara along.
+  await expect(onListTile(page, order[0])).toHaveCount(0);
+  expect(await page.evaluate(focusedVara)).toBe(order[1]);
+
+  // …and the run continues without ever going back for the mouse.
+  await page.keyboard.press("Space");
+  await expect(onListTile(page, order[1])).toHaveCount(0);
+  expect(await page.evaluate(focusedVara)).toBe(order[2]);
+
+  await page.keyboard.press("Space");
+  await expect(listed).toHaveCount(0);
+});
+
+test("a tap with a thumb leaves no focus ring behind on the next tile", async ({
+  freshPage: page,
+}) => {
+  // The other half of the same rule: the hand-off is for keyboards only. Moving
+  // focus after a touch would put a ring on a tile nobody chose, on the surface
+  // where the ring means nothing at all.
+  const field = page.getByLabel(FIELD);
+  for (const vara of ["banan", "citron"]) {
+    await field.click();
+    await field.pressSequentially(vara);
+    await page.keyboard.press("Enter");
+    await expect(onListTile(page, vara)).toBeVisible();
+  }
+  await page.keyboard.press("Escape");
+
+  const listed = page.locator('[data-tile-grid] > button[aria-pressed="true"]');
+  const order = await accessibleText(listed);
+  await listed.first().tap();
+
+  await expect(onListTile(page, order[0])).toHaveCount(0);
+  await expect(onListTile(page, order[1])).not.toBeFocused();
 });
 
 test("Escape out of a sheet that opens onto a field returns focus to the trigger", async ({

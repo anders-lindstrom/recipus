@@ -24,6 +24,26 @@ import { useCallback, useRef, useState } from "react";
  */
 const LONG_PRESS_MS = 500;
 
+/**
+ * What the caller is told about the tap it just received.
+ *
+ * Only one thing so far, and it is the thing a keyboard needs: activating a tile
+ * DESTROYS it — the item leaves the zone it was in — so focus has nowhere to go
+ * and lands on `<body>`, where the arrow keys scroll the page again. A caller
+ * that wants to hand focus on to the next tile has to know the press came from a
+ * keyboard, because doing it after a thumb tap would put a ring on a tile nobody
+ * is looking at.
+ *
+ * `detail` is the click count, and the platform reports 0 for the click it
+ * synthesizes from Enter or Space. That is the honest signal rather than a
+ * `keydown` of our own: Enter fires its click on the way down and Space on the
+ * way up, and a handler that tried to predict which had happened would be wrong
+ * on one of them.
+ */
+export interface Tap {
+  fromKeyboard: boolean;
+}
+
 export interface LongPress {
   /** Spread onto the pressable element. */
   handlers: {
@@ -40,7 +60,7 @@ export interface LongPress {
 }
 
 export function useLongPress(
-  onTap: () => void,
+  onTap: (tap: Tap) => void,
   onLongPress?: () => void,
 ): LongPress {
   // Refs, not render-locals: acting re-renders the caller, and a plain `let`
@@ -77,14 +97,14 @@ export function useLongPress(
   return {
     holding,
     handlers: {
-      onClick: () => {
+      onClick: (e: React.MouseEvent) => {
         // The long-press already acted; the click that follows must not also
         // fire the tap.
         if (longPressed.current) {
           longPressed.current = false;
           return;
         }
-        onTap();
+        onTap({ fromKeyboard: e.detail === 0 });
       },
       onPointerDown: start,
       onPointerUp: cancel,

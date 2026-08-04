@@ -1,7 +1,7 @@
 "use client";
 
 import type { Priority } from "@/lib/domain";
-import { useLongPress } from "@/lib/client/use-long-press";
+import { useLongPress, type Tap } from "@/lib/client/use-long-press";
 import { cn } from "@/lib/utils";
 import { ItemIcon } from "./icon";
 import { UiIcon } from "./ui-icon";
@@ -45,7 +45,12 @@ export interface ItemTileProps {
   pending?: boolean;
   /** Plays the arrival animation. Only the "att handla" zone sets this. */
   animateIn?: boolean;
-  onTap: () => void;
+  /**
+   * Activating a tile takes it out of the grid it is in, so the caller is told
+   * whether the press came from a keyboard — see `Tap`. A caller that does not
+   * care can carry on ignoring the argument.
+   */
+  onTap: (tap: Tap) => void;
   onLongPress?: () => void;
   /**
    * Whether the hold opens a sheet. Set false where it acts instead.

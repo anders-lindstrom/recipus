@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Amount,
   CatalogItem,
@@ -27,6 +27,7 @@ import {
 } from "@/lib/services/entries";
 import type { ShopMode } from "@/lib/client/use-mode";
 import { isArrowKey, stepFocusWithin } from "@/lib/client/spatial-focus";
+import type { Tap } from "@/lib/client/use-long-press";
 import { groupingFor, useListLayout } from "@/lib/client/use-list-layout";
 import { cn } from "@/lib/utils";
 import { useOnce } from "@/lib/client/use-once";
@@ -436,7 +437,10 @@ export function ListScreen({
         modifier={view?.modifier}
         onList
         animateIn
-        onTap={() => tapOnList(item)}
+        onTap={(tap) => {
+          keepFocusAfterTap(tap);
+          tapOnList(item);
+        }}
         onLongPress={() => setOpenEntry(item.id)}
       />
     );
@@ -591,6 +595,60 @@ export function ListScreen({
     e.preventDefault();
     stepFocusWithin(tiles, current, e.key);
   }
+
+  /**
+   * Where focus goes when the tile under it is about to stop existing.
+   *
+   * Activating a tile is the core loop, and from a keyboard it was a loop you
+   * could only run once: Space takes the item off the list, the tile unmounts,
+   * and focus falls to `<body>` — where the arrow keys go back to scrolling the
+   * page and the next Space does nothing at all. Ticking off three things meant
+   * three journeys back in with Tab.
+   *
+   * The NEXT tile in the same grid, so a run of presses walks forward the way
+   * reading does; the previous one when there is no next, so clearing the tail
+   * of an aisle does not dead-end on the last item. When the grid empties there
+   * is nothing left in it to hold focus and it goes where it always went.
+   *
+   * The element itself rather than the item's id, and that is not laziness:
+   * `ItemTile` is keyed by id inside a stable parent, so React keeps the very
+   * same DOM node across the commit that removes its neighbour. `isConnected`
+   * covers the one case where it does not — an item that changes grid entirely,
+   * which happens when a removal empties an aisle and the grouping changes
+   * underneath it.
+   */
+  const handOffFocus = useRef<HTMLElement | null>(null);
+
+  function keepFocusAfterTap(tap: Tap) {
+    handOffFocus.current = null;
+    // A thumb tap must not leave a focus ring on the tile that slides into the
+    // gap. Nobody is looking at the keyboard focus on a touchscreen, and moving
+    // it there would be a visible mark on a tile the user never chose.
+    if (!tap.fromKeyboard) return;
+    const current = document.activeElement;
+    if (!(current instanceof HTMLElement)) return;
+    const grid = current.closest("[data-tile-grid]");
+    if (!grid) return;
+    const tiles = Array.from(grid.querySelectorAll<HTMLElement>(":scope > button"));
+    const i = tiles.indexOf(current);
+    if (i < 0) return;
+    handOffFocus.current = tiles[i + 1] ?? tiles[i - 1] ?? null;
+  }
+
+  /**
+   * On every commit, because the commit that matters is simply the next one.
+   *
+   * The ref is set inside a click handler and the state change it precedes is
+   * batched with it, so the first render after it is the one where the old tile
+   * has gone. Cleared as it is read, so a later commit — a sync arriving, a
+   * sheet opening — cannot pull focus back to a tile the user has since left.
+   */
+  useEffect(() => {
+    const next = handOffFocus.current;
+    if (!next) return;
+    handOffFocus.current = null;
+    if (next.isConnected) next.focus();
+  });
 
   return (
     <div className="min-h-dvh pb-28" onKeyDown={stepTiles}>
@@ -992,7 +1050,10 @@ export function ListScreen({
                     name={item.name}
                     iconRef={item.iconRef}
                     reason={s.reason}
-                    onTap={() => acceptSuggestion(item.id)}
+                    onTap={(tap) => {
+                    keepFocusAfterTap(tap);
+                    acceptSuggestion(item.id);
+                  }}
                     // Long-press ACTS here rather than opening a sheet, which is
                     // a departure from every other tile. A suggestion has only
                     // two possible answers — yes and not today — and a sheet
@@ -1045,7 +1106,14 @@ export function ListScreen({
                   key={item.id}
                   name={item.name}
                   iconRef={item.iconRef}
-                  onTap={() => actions.addItem(item.id)}
+                  // The well has the same problem in reverse: adding a vara
+                  // takes its tile OUT of the well, so filling a list from the
+                  // keyboard dead-ended on the first item exactly as ticking one
+                  // off did.
+                  onTap={(tap) => {
+                    keepFocusAfterTap(tap);
+                    actions.addItem(item.id);
+                  }}
                   // Same 500ms hold as the buy zone, so there is one gesture to
                   // learn rather than two. Adding a bare item was the ONLY thing
                   // a catalog tile could do, so "two mogna mango" meant tapping
