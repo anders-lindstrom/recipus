@@ -352,7 +352,7 @@ export function VarorItemSheet({
             vocabulary had leaked into the copy rather than been translated. */}
         <div className="px-4 pb-1">
           <p className="text-body text-ink-soft">
-            Avdelningsordningen är per lista, så varan hamnar där ni går förbi
+            Kategoriordningen är per lista, så varan hamnar där ni går förbi
             den i varje butik.
           </p>
         </div>
@@ -526,16 +526,17 @@ export function VarorItemSheet({
           Byt ikon
         </SheetButton>
 
-        {/* "Avdelning", not "kategori" — one word for one thing across the app,
-            and this is the one that says what the thing is for. The reasoning
-            lives in aisle-rail.tsx, where the same word is read aloud and never
-            drawn. It also matches the sheet this opens, which has always asked
-            "Var står mjölk?" — a question about a shop, not about a taxonomy. */}
+        {/* "Kategori", one word for one thing across the app — see the note in
+            aisle-rail.tsx, where the same word is read aloud and never drawn.
+            It was "avdelning" on the argument that the thing is a walking order
+            rather than a taxonomy; the household reads it as stilted Swedish,
+            which settles it. The sheet it opens still asks "Var står mjölk?",
+            because where a vara stands is what you are answering. */}
         <SheetButton
           onClick={() => setRefiling(true)}
           icon={<UiIcon name="allAisles" size={16} />}
         >
-          Byt avdelning — nu {categoryName.toLowerCase()}
+          Byt kategori — nu {categoryName.toLowerCase()}
         </SheetButton>
 
         {/* A state with two values, so a switch rather than a button: "Har

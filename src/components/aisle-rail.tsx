@@ -35,20 +35,24 @@ import { UiIcon } from "./ui-icon";
  */
 
 /**
- * Why this says "avdelning" where the schema says "category".
+ * Why this says "kategori" where the code says "aisle".
  *
- * They are one thing wearing two names. `categories.position` is documented as
- * the default aisle order, `lists.category_order` overrides it per shop, and
- * re-filing a vara in the registry is the same act as moving it in the shop —
- * there is no taxonomy here that exists apart from the walk. So the UI settles
- * on one word, and it is the one that says what the thing is FOR: you walk an
- * avdelning. "Kategori" is the column name, and every place it had reached the
- * screen was the trigger for a sheet that then talked about walking a shop.
+ * The UI used to say "avdelning" throughout, argued from what the thing is FOR:
+ * you walk an avdelning, and `lists.category_order` really is a walking order
+ * rather than a taxonomy. The household that reads it overruled that — the word
+ * is stilted Swedish for what is plainly a category — and the household is who
+ * the copy is for. Reasoning about what a word denotes does not outrank a native
+ * speaker saying it reads wrong.
  *
- * It matters most on this file, because these two labels are read aloud and
- * never drawn. A screen reader is the only way to hear them, so a word chosen
- * differently from the visible copy in `ListLayoutSheet` would be a term with
- * nothing on screen to anchor it to — which is what an audit found here.
+ * So: `kategori` on screen, `category` in the schema, and `aisle` left standing
+ * in the code of this file, where it names the thing this rail is genuinely
+ * about — the order you walk the shop in, which is a different fact from which
+ * category a vara belongs to.
+ *
+ * One word on screen matters most HERE, because these two labels are read aloud
+ * and never drawn. A screen reader is the only way to hear them, so a word
+ * chosen differently from the visible copy in `ListLayoutSheet` would be a term
+ * with nothing on screen to anchor it to — which is what an audit found here.
  */
 
 export interface Aisle {
@@ -72,7 +76,7 @@ export interface AisleRailProps {
  * Every control on this rail clears 44px, and that is a floor rather than a
  * preference.
  *
- * An in-store audit measured the chips at 38px and the "alla avdelningar" button
+ * An in-store audit measured the chips at 38px and the "alla kategorier" button
  * at 36px. This is the "where am I in this shop" control — it is used while
  * moving, one-handed, with a basket in the other hand — which is exactly the
  * condition under which a target below the minimum starts costing you taps. The
@@ -229,7 +233,7 @@ export function AisleRail({ aisles }: AisleRailProps) {
         <div className="relative min-w-0 flex-1">
           <div
             role="navigation"
-            aria-label="Hoppa till avdelning"
+            aria-label="Hoppa till kategori"
             // `py-1` is load-bearing, not spacing: a scroll container clips at
             // its PADDING box, so this 4px is the room a chip's focus ring has
             // to be drawn in. Without it the ring is cut off flat on the top and
@@ -281,7 +285,7 @@ export function AisleRail({ aisles }: AisleRailProps) {
         <button
           type="button"
           onClick={() => setPicking(true)}
-          aria-label="Alla avdelningar"
+          aria-label="Alla kategorier"
           className="flex h-11 w-11 flex-none items-center justify-center rounded-full border border-line text-ink-soft"
         >
           <UiIcon name="allAisles" size={16} />

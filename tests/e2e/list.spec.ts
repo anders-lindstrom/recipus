@@ -381,7 +381,7 @@ async function focusInsideDialog(page: Page): Promise<boolean> {
 test("a sheet takes focus, keeps it, and gives it back", async ({
   freshPage: page,
 }) => {
-  const trigger = page.getByRole("button", { name: "Alla avdelningar" });
+  const trigger = page.getByRole("button", { name: "Alla kategorier" });
   await trigger.focus();
   await page.keyboard.press("Enter");
 

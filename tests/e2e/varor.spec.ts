@@ -379,10 +379,10 @@ test("an item you invented can be moved out of Övrigt, and it stays moved", asy
   await page.getByRole("button", { name: new RegExp(varaName) }).click();
 
   const sheet = page.getByRole("dialog");
-  await expect(sheet.getByRole("button", { name: /Byt avdelning/ })).toContainText(
+  await expect(sheet.getByRole("button", { name: /Byt kategori/ })).toContainText(
     "övrigt",
   );
-  await sheet.getByRole("button", { name: /Byt avdelning/ }).click();
+  await sheet.getByRole("button", { name: /Byt kategori/ }).click();
   await page.getByRole("button", { name: /Bröd/ }).first().click();
 
   // Survives a reload, which is the half that matters: the op has to have
@@ -391,7 +391,7 @@ test("an item you invented can be moved out of Övrigt, and it stays moved", asy
   await page.getByRole("button", { name: new RegExp(varaName) }).click();
   const moved = page.getByRole("dialog");
   await expect(
-    moved.getByRole("button", { name: /Byt avdelning/ }),
+    moved.getByRole("button", { name: /Byt kategori/ }),
   ).not.toContainText("övrigt");
 
   // The icon follows the aisle. An add-bar item never had one picked for it — it
@@ -434,7 +434,7 @@ test("a listed item links straight to its own vara", async ({ page, listId }) =>
   await expect(page).toHaveURL(/\/varor\?.*vara=banan/);
   await expect(page.getByRole("dialog")).toContainText("banan");
   await expect(
-    page.getByRole("dialog").getByRole("button", { name: /Byt avdelning/ }),
+    page.getByRole("dialog").getByRole("button", { name: /Byt kategori/ }),
   ).toBeVisible();
 });
 
@@ -480,14 +480,14 @@ test("changing a vara's category keeps the sheet open, ready for the next change
   const sheet = page.getByRole("dialog");
   await expect(sheet).toContainText(varaName);
 
-  await sheet.getByRole("button", { name: /Byt avdelning/ }).click();
+  await sheet.getByRole("button", { name: /Byt kategori/ }).click();
   await sheet.getByRole("button", { name: "Bröd", exact: true }).click();
 
   // Still here, on this vara, with the new aisle showing — not back on a list of
   // everything with the edit to take on trust.
   await expect(sheet).toBeVisible();
   await expect(sheet).toContainText(varaName);
-  await expect(sheet.getByRole("button", { name: /Byt avdelning/ })).toContainText(
+  await expect(sheet.getByRole("button", { name: /Byt kategori/ })).toContainText(
     /bröd/i,
   );
 
@@ -520,7 +520,7 @@ test("renaming a vara returns to the vara, not to the whole registry", async ({
   // name was indistinguishable from abandoning the vara.
   await expect(sheet.getByRole("textbox", { name: "Namn" })).toHaveCount(0);
   await expect(sheet).toContainText(`${varaName}er`);
-  await expect(sheet.getByRole("button", { name: /Byt avdelning/ })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: /Byt kategori/ })).toBeVisible();
 
   await settle(page);
   await dropCatalogItems([varaId]);

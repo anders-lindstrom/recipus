@@ -42,7 +42,7 @@ const LAYOUTS: ReadonlyArray<{
     // behaviour you cannot predict is one you cannot choose between.
     hint: "Rubriker när listan blivit lång",
   },
-  { value: "grouped", label: "Avdelningar", hint: "Alltid rubriker" },
+  { value: "grouped", label: "Kategorier", hint: "Alltid rubriker" },
   { value: "flat", label: "En lång lista", hint: "Samma ordning, utan rubriker" },
 ];
 
@@ -116,7 +116,7 @@ export function ListLayoutSheet({
 
       <div className="px-4 pt-4 pb-1">
         <div className="mb-1 text-overline text-ink-faint uppercase">
-          Avdelningar i gångordning
+          Kategorier i gångordning
         </div>
         <p className="text-caption text-ink-faint">
           Först i listan är det du går förbi först.
