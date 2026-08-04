@@ -92,6 +92,25 @@ export type Op =
       catalogItemId: Id;
       /** True = ticked off in a shop. False = changed your mind; logs no purchase. */
       bought: boolean;
+      /**
+       * The product that was scanned, when this removal came from a scan.
+       *
+       * `purchases` has always documented two shapes — a tapped tile writes
+       * `{item, null}`, and ANY scan writes `{null, product}`, with the vara
+       * read back through `COALESCE(purchases.catalog_item_id,
+       * products.catalog_item_id)`. Nothing ever supplied the product half, so
+       * `product_id` was NULL on every row and the half of the design that
+       * depends on it never ran: placing an unplaced product could not
+       * retro-attribute its history, correcting a wrong guess moved nothing,
+       * and /statistik's unplaced-debt banner was unrenderable dead code while
+       * /varor promised those purchases were "banked".
+       *
+       * Optional, and the reducer ignores it — like `keepsPurchase` and
+       * `undoesClientOpId` beside it, this is a server-side attribution detail,
+       * so an older client receiving this op still applies the removal exactly
+       * as it always did.
+       */
+      productId?: Id;
     })
   | (OpBase & {
       kind: "set_amount";

@@ -17,7 +17,14 @@ import type { Id, SyncState } from "@/lib/domain";
  */
 export type ScanResolution =
   /** A product, placed on a vara the catalog can still show. Act on it. */
-  | { kind: "vara"; catalogItemId: Id; name: string }
+  /**
+   * `productId` travels with it so the purchase can be attributed to the
+   * PRODUCT rather than to the vara — `{null, product}`, the shape
+   * `purchases` has always documented for a scan. Without it every scan
+   * recorded a bare vara, and placing or re-placing a product moved no
+   * history with it.
+   */
+  | { kind: "vara"; catalogItemId: Id; name: string; productId: Id }
   /**
    * A product we know, with no vara anyone can use.
    *
@@ -60,5 +67,10 @@ export function resolveScan(state: SyncState, ean: string): ScanResolution {
   const vara = state.catalog[product.catalogItemId];
   if (!vara) return { kind: "unplaced", productId: product.id };
 
-  return { kind: "vara", catalogItemId: vara.id, name: vara.name };
+  return {
+    kind: "vara",
+    catalogItemId: vara.id,
+    name: vara.name,
+    productId: product.id,
+  };
 }

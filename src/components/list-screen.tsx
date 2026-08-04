@@ -26,6 +26,7 @@ import {
   type RecipeAdditionInfo,
 } from "@/lib/services/entries";
 import type { ShopMode } from "@/lib/client/use-mode";
+import { isArrowKey, stepFocusWithin } from "@/lib/client/spatial-focus";
 import { groupingFor, useListLayout } from "@/lib/client/use-list-layout";
 import { cn } from "@/lib/utils";
 import { useOnce } from "@/lib/client/use-once";
@@ -35,6 +36,7 @@ import { AddDetailsSheet } from "./add-details-sheet";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
 import { ListLayoutSheet } from "./list-layout-sheet";
+import { visibleSuggestions as visibleSuggestionsOf } from "./list-model";
 import { MoveSheet } from "./move-sheet";
 import { ItemTile, SectionHeading, TileGrid } from "./item-tile";
 import {
@@ -85,6 +87,8 @@ export interface ListScreenActions {
   removeItem: (catalogItemId: Id, bought: boolean) => string;
   setAmount: (catalogItemId: Id, amount: Amount | null) => void;
   setModifier: (catalogItemId: Id, modifier: string | null) => void;
+  /** Which one on the shelf — "den i blå kartong". Edits the manual share. */
+  setNote: (catalogItemId: Id, note: string | null) => void;
   setPriority: (catalogItemId: Id, priority: Priority) => void;
   /**
    * `likeItem` is the vara a new one should be filed beside — banan, for
@@ -313,6 +317,19 @@ export function ListScreen({
     // whole reason the mode exists, and it is what makes the purchase history
     // trustworthy enough to build statistics and fridge inference on.
     //
+    /*
+     * Haptic on the buy, for the reason `use-long-press.ts` already writes down
+     * about the hold: "without it a long-press feels like a tap that didn't
+     * register". That argument was never carried across to the gesture it
+     * matters most for — the one that happens twenty-five times a trip, writes
+     * purchase history, and is made while looking at a shelf rather than at the
+     * screen. Buying is the only branch that gets one: in plan mode nothing is
+     * being recorded, so there is nothing to confirm.
+     *
+     * Same 12ms, and optional-chained for the same reason — iOS Safari has no
+     * vibrate at all.
+     */
+    if (mode === "buy") navigator.vibrate?.(12);
     remove(item.id, item.name, mode === "buy");
   }
 
@@ -345,6 +362,7 @@ export function ListScreen({
     // a stack of them would be chrome in the thumb zone, and the mistake people
     // actually make is on the tap they just made.
     setUndoable({ id, name, clientOpId, bought });
+    setAnnouncement(bought ? `${name} köpt` : `${name} borttagen`);
   }
 
   /**
@@ -370,6 +388,7 @@ export function ListScreen({
     // retract the purchase the removal recorded. Re-adding alone left "bought"
     // permanently including things the user had just said they had not bought.
     actions.addItem(undoable.id, undefined, undoable.clientOpId);
+    setAnnouncement(`${undoable.name} tillbaka på listan`);
     setUndoable(null);
   }
 
@@ -457,10 +476,52 @@ export function ListScreen({
     [catalogByCategory, categoryName],
   );
 
+  /**
+   * Suggestions taken up in this session, kept hidden for the rest of it.
+   *
+   * `onListIds` below is not enough on its own, and the gap is buy mode: taking
+   * a vara off the list is exactly what makes it leave `live`, so a suggestion
+   * accepted in the car and ticked off in the shop would come straight back
+   * into "Föreslås" — offering to sell you the milk already in the trolley. The
+   * server's own exclusion set (`list-data.ts`) has the same blind spot from
+   * the other side: it filters `removedAt === null` at query time and does not
+   * know what has happened since.
+   *
+   * Session-scoped on purpose. The next snapshot recomputes suggestions from
+   * the purchase that tapping it wrote, at which point this set is redundant
+   * and harmlessly stale — the same shape, and the same reasoning, as
+   * `dismissed` above.
+   */
+  const [accepted, setAccepted] = useState<Set<Id>>(new Set());
+
+  /**
+   * What just happened, for a screen reader.
+   *
+   * The core loop is silent to assistive tech, and deliberately so for sighted
+   * users: the toast that used to confirm a buy was REMOVED because it covered
+   * the entry sheet's own buttons, on the grounds that "the tile leaves the
+   * zone, the count drops, and both are already on screen". Both of those are
+   * visual. Nothing replaced them for anyone not looking at the screen — not
+   * even "Ångra köp", which is the safety valve for the mistake most worth
+   * catching.
+   *
+   * A live region costs no pixels, so it does not reopen the argument the toast
+   * lost. `polite`, not assertive: it must not interrupt someone mid-way
+   * through the next tile.
+   */
+  const [announcement, setAnnouncement] = useState("");
+
+  /** See `visibleSuggestions` in list-model.ts for why there are three sets. */
   const visibleSuggestions = useMemo(
-    () => suggestions.filter((s) => !dismissed.has(s.catalogItemId)),
-    [suggestions, dismissed],
+    () => visibleSuggestionsOf(suggestions, { onList: onListIds, accepted, dismissed }),
+    [suggestions, dismissed, accepted, onListIds],
   );
+
+  function acceptSuggestion(id: Id) {
+    setAccepted((prev) => new Set(prev).add(id));
+    actions.addItem(id);
+    setAnnouncement(`${byId.get(id)?.name ?? "Varan"} tillagd`);
+  }
 
   function dismissSuggestion(id: Id, name: string) {
     setDismissed((prev) => new Set(prev).add(id));
@@ -494,8 +555,53 @@ export function ListScreen({
   const aisleOf = (item: CatalogItem) =>
     categoryName.get(item.categoryId) ?? "Övrigt";
 
+  /**
+   * Arrow keys walk the tiles, which is the whole screen from a keyboard.
+   *
+   * Tab already reached every tile, one at a time, in document order — which on
+   * a page whose catalog runs to 341 of them is not a route to anything. The
+   * arrows were doing what arrows do with no handler: scrolling the page, so a
+   * tile could be focused and unreachable in the same breath.
+   *
+   * One handler on the page root rather than one per grid, because the grids
+   * this has to cross are not one component: "Att handla" is a grid per aisle
+   * when the list is grouped, "Föreslås" is another, and the catalog well is one
+   * per aisle again. Collected together and stepped by geometry, ArrowDown off
+   * the last row of the list simply lands in the first row of what follows —
+   * nothing here has to know the sections exist.
+   *
+   * TILES ONLY. The headings' own controls — Ordning, Varor, the undo — stay on
+   * Tab, so an arrow pressed mid-grid can never land somewhere that is not a
+   * vara. The add bar is inside this root and runs the same stepping over its
+   * own panel; it stops the event, so the two never both answer one press.
+   */
+  function stepTiles(e: React.KeyboardEvent) {
+    if (!isArrowKey(e.key)) return;
+    const root = e.currentTarget;
+    if (!(root instanceof HTMLElement)) return;
+    const tiles = Array.from(
+      root.querySelectorAll<HTMLElement>("[data-tile-grid] > button"),
+    );
+    const current = document.activeElement;
+    if (!(current instanceof HTMLElement) || !tiles.includes(current)) return;
+    // Prevented whether or not focus moved. At the edges of the grid there is
+    // nowhere to go, and scrolling the page instead is the exact behaviour
+    // being replaced — an arrow that sometimes moves focus and sometimes moves
+    // the page is worse than one that does neither.
+    e.preventDefault();
+    stepFocusWithin(tiles, current, e.key);
+  }
+
   return (
-    <div className="min-h-dvh pb-28">
+    <div className="min-h-dvh pb-28" onKeyDown={stepTiles}>
+      {/* Mounted always, and empty until there is something to say. A region
+          that appears in the same breath as its text is one the platform was
+          not yet watching, so the first announcement — often the only one —
+          is the one that gets lost. The add bar's own region says the same
+          thing about itself, in the same words. */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
       {/* Opaque, not frosted. A translucent bar let high-contrast tile labels
           ghost through it in dark mode, and `backdrop-filter` on a bar pinned
           over a 341-tile scroller costs a GPU repaint every frame on exactly
@@ -520,7 +626,13 @@ export function ListScreen({
             : "border-line bg-surface",
         )}
       >
-        <div className="flex h-12 items-center gap-1 px-3">
+        {/* 3.25rem, not the 3rem it was. The controls in here are 44px and the
+            focus ring is 2px at 2px offset, so a row of 48 left 2px of the 4px
+            a ring needs — and this row is pinned at the very top of the
+            viewport, so the missing 2px was not clipped by anything, it was
+            simply off screen. Every pinned offset in `globals.css` is measured
+            against this height and the rail's; they moved together. */}
+        <div className="flex h-13 items-center gap-1 px-3">
           {/* The list's name is this screen's heading as well as the way to
               switch lists, and it had been neither — a styled span in a button,
               with no <h1> anywhere on the page for a screen reader to orient by.
@@ -762,7 +874,13 @@ export function ListScreen({
               // deliberately reserves a fixed height so a control appearing in
               // it cannot shove the list down, and a plainly taller button would
               // have spent 12px of the first screen to buy the same reach.
-              className="-mr-1 -my-1.5 flex min-h-11 items-center gap-1 rounded-full px-2 text-caption font-semibold text-ink-soft normal-case"
+              //
+              // Vertically only. It used to pull right as well, which left 4px
+              // to the count beside it against the heading's own `gap-2` of 8 —
+              // and 4px is exactly the reach of a focus ring, so the ring was
+              // drawn through the "12". The label moves 4px left; nothing else
+              // about the row does.
+              className="-my-1.5 flex min-h-11 items-center gap-1 rounded-full px-2 text-caption font-semibold text-ink-soft normal-case"
             >
               <UiIcon name="allAisles" size={14} />
               Ordning
@@ -874,7 +992,7 @@ export function ListScreen({
                     name={item.name}
                     iconRef={item.iconRef}
                     reason={s.reason}
-                    onTap={() => actions.addItem(item.id)}
+                    onTap={() => acceptSuggestion(item.id)}
                     // Long-press ACTS here rather than opening a sheet, which is
                     // a departure from every other tile. A suggestion has only
                     // two possible answers — yes and not today — and a sheet
@@ -1104,6 +1222,7 @@ export function ListScreen({
           // and a sheet that vanished the moment you finished typing an amount
           // would make setting a sort as well a second long-press.
           onSetModifier={(modifier) => actions.setModifier(openItem.id, modifier)}
+          onSetNote={(note) => actions.setNote(openItem.id, note)}
           onSetPriority={(priority) => actions.setPriority(openItem.id, priority)}
           onSetAmount={(amount) => actions.setAmount(openItem.id, amount)}
           onRemoveRecipe={(id, title) => {

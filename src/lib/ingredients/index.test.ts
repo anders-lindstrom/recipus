@@ -623,3 +623,45 @@ describe("end-to-end: real recipe lines", () => {
     expect(matchIngredient(parsed.name, catalog)).toEqual({ id: idFor("grädde"), score: 1.0 });
   });
 });
+
+/**
+ * Prep words as recipes actually write them.
+ *
+ * PREP_WORDS was uter-singular only — "hackad", "riven", "kokt" — and no recipe
+ * is written that way. Swedish agrees its adjectives, so a real line says "2
+ * hackade lökar", the prep word survived into the ingredient name, it matched
+ * no vara, and the import offered to create one. That is how a catalog grows a
+ * "hackade lökar" beside the household's real lök, permanently, from a single
+ * import nobody looked at twice.
+ */
+describe("inflected prep words", () => {
+  const nameOf = (line: string) => parseIngredientLine(line).name;
+
+  it("strips the plural form recipes actually use", () => {
+    expect(nameOf("2 hackade lökar")).toBe("lökar");
+    expect(nameOf("500 g rivna morötter")).toBe("morötter");
+    expect(nameOf("2 kokta ägg")).toBe("ägg");
+  });
+
+  it("strips the neuter form", () => {
+    expect(nameOf("1 dl hackat persilja")).toBe("persilja");
+    expect(nameOf("100 g rivet västerbottensost")).toBe("västerbottensost");
+  });
+
+  it("still strips the singular it always did", () => {
+    expect(nameOf("1 msk finhackad persilja")).toBe("persilja");
+    expect(nameOf("2 dl riven ost")).toBe("ost");
+  });
+
+  it("strips inflected adjectives that are not participles", () => {
+    expect(nameOf("2 färska basilikablad")).toBe("basilikablad");
+    expect(nameOf("1 påse frysta ärtor")).toBe("ärtor");
+  });
+
+  it("leaves a word that merely starts like a prep word", () => {
+    // The boundary matters: "hackspett" is not "hackad", and a regex that ate
+    // its prefix would leave "spett" as the thing to buy.
+    expect(nameOf("1 hackspett")).toContain("hackspett");
+    expect(nameOf("2 kokosnötter")).toContain("kokosnötter");
+  });
+});

@@ -199,7 +199,16 @@ export function AisleRail({ aisles }: AisleRailProps) {
 
   return (
     <>
-      <div className="flex h-11 items-center gap-1 border-t border-line px-2">
+      {/* 3.25rem for a row of 44px chips, and the 4px on each side is the point
+          rather than a rounding.
+
+          It was 2.75rem — exactly the height of the chips it holds. They did not
+          merely sit flush against the rule above and the header's border below,
+          they OVERFLOWED the row by 4px at each end, and their focus rings were
+          clipped by the scroller they sit in on top of that. A rail of chips
+          with no air around them reads as a rendering fault whether or not
+          anything is focused, which is how it was reported. */}
+      <div className="flex h-13 items-center gap-1 border-t border-line px-2">
         <button
           type="button"
           onClick={() => jump(TOP)}
@@ -221,6 +230,10 @@ export function AisleRail({ aisles }: AisleRailProps) {
           <div
             role="navigation"
             aria-label="Hoppa till avdelning"
+            // `py-1` is load-bearing, not spacing: a scroll container clips at
+            // its PADDING box, so this 4px is the room a chip's focus ring has
+            // to be drawn in. Without it the ring is cut off flat on the top and
+            // bottom of every chip in the rail.
             className="no-scrollbar flex items-center gap-1.5 overflow-x-auto py-1"
           >
             {aisles.map((aisle) => {

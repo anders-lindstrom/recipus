@@ -1,0 +1,48 @@
+{
+  "manifest": {
+    "manifestVersion": "1.0",
+    "publishingInformation": {
+      "locales": {
+        "en-GB": {
+          "name": "Recipus Shopping List",
+          "summary": "Add things to the household's shopping list by voice.",
+          "description": "Adds items to a self-hosted Recipus shopping list. Say: tell shopping helper to add milk and bread.\n\nThis skill is not published. It runs against a private home server and is only usable by the developer account's own devices.",
+          "examplePhrases": [
+            "Alexa, tell shopping helper to add milk",
+            "Alexa, tell shopping helper to add milk and bread",
+            "Alexa, open shopping helper"
+          ],
+          "keywords": ["shopping", "list", "groceries"],
+          "smallIconUri": "",
+          "largeIconUri": ""
+        }
+      },
+      "isAvailableWorldwide": false,
+      "distributionCountries": ["GB", "SE"],
+      "distributionMode": "PRIVATE",
+      "category": "ORGANIZERS_AND_ASSISTANTS",
+      "testingInstructions": "Private household skill. Endpoint is a self-hosted server behind Nginx Proxy Manager."
+    },
+    "apis": {
+      "custom": {
+        "endpoint": {
+          "uri": "https://recipus.lindstromhome.cc/api/alexa",
+          "sslCertificateType": "Trusted"
+        }
+      }
+    },
+    "privacyAndCompliance": {
+      "allowsPurchases": false,
+      "usesPersonalInfo": false,
+      "isChildDirected": false,
+      "isExportCompliant": true,
+      "containsAds": false,
+      "locales": {
+        "en-GB": {
+          "privacyPolicyUrl": "",
+          "termsOfUseUrl": ""
+        }
+      }
+    }
+  }
+}

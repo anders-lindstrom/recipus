@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { toast } from "sonner";
 import { useList } from "@/lib/client/use-list";
 import { useMode } from "@/lib/client/use-mode";
@@ -45,7 +52,54 @@ import { VarorPlaceSheet } from "./varor-place-sheet";
  * treats being signed out as a banner rather than a different page.
  */
 
-const SHELL_KEY = "recipus:shell";
+/**
+ * Per LIST, not one key for the app.
+ *
+ * A single key held whichever list was opened last, so switching to Bauhaus
+ * offline — where the shell is all there is until IndexedDB answers — drew
+ * Hemköp's name and Hemköp's aisle order over Bauhaus's list. One key per list
+ * costs a few hundred bytes and makes an offline switch show the right shop.
+ */
+const SHELL_KEY_PREFIX = "recipus:shell:";
+const shellKey = (listId: Id) => `${SHELL_KEY_PREFIX}${listId}`;
+
+/**
+ * The list named in the URL, read on the CLIENT.
+ *
+ * The server reads `?list=` too, and online that is the end of it — the
+ * snapshot it renders is already the right list. Offline it is not: the service
+ * worker serves a cached document, which is a render of whatever list was
+ * cached, so `window.location.href = "/?list=bauhaus"` produced a navigation
+ * that changed the URL and nothing else. The switcher appeared to do nothing,
+ * in a shop, which is the one place the choice matters.
+ *
+ * `useSyncExternalStore` rather than an effect, and the server snapshot is
+ * deliberately null: that is what keeps the first client render identical to
+ * the HTML the server sent, so there is no hydration mismatch. React then reads
+ * the real value. Online the two agree and this changes nothing; offline it
+ * costs one re-render and shows the shop you actually asked for.
+ */
+function subscribeToLocation(onChange: () => void): () => void {
+  // A switch is a full navigation today, so this fires for back/forward rather
+  // than for the switcher itself. It costs one listener and means the hook is
+  // still correct if switching ever becomes a pushState.
+  window.addEventListener("popstate", onChange);
+  return () => window.removeEventListener("popstate", onChange);
+}
+
+function readListIdFromLocation(): Id | null {
+  return new URLSearchParams(window.location.search).get("list");
+}
+
+function useListIdFromUrl(): Id | null {
+  return useSyncExternalStore(
+    subscribeToLocation,
+    readListIdFromLocation,
+    // Server render knows nothing about the client's URL, and must not guess:
+    // returning anything else here is a hydration mismatch by construction.
+    () => null,
+  );
+}
 
 /**
  * How long a scan waits for the server before carrying on without it.
@@ -91,11 +145,30 @@ interface ShellContext {
   recipeTitles: Record<Id, string>;
 }
 
-function readShellContext(): ShellContext | null {
+/**
+ * The cached shell for a list, or for whichever list was seen last.
+ *
+ * `listId` is null on the very first offline open, when nothing in the URL or
+ * in a snapshot says which list is wanted — any remembered shell is better than
+ * none there, so the newest one is used. Once a list IS named, only that list's
+ * shell will do: drawing Hemköp's aisle order over Bauhaus is worse than
+ * drawing none.
+ */
+function readShellContext(listId: Id | null): ShellContext | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.localStorage.getItem(SHELL_KEY);
-    return raw ? (JSON.parse(raw) as ShellContext) : null;
+    if (listId) {
+      const raw = window.localStorage.getItem(shellKey(listId));
+      return raw ? (JSON.parse(raw) as ShellContext) : null;
+    }
+    let newest: ShellContext | null = null;
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (!key?.startsWith(SHELL_KEY_PREFIX)) continue;
+      const raw = window.localStorage.getItem(key);
+      if (raw) newest = JSON.parse(raw) as ShellContext;
+    }
+    return newest;
   } catch {
     return null;
   }
@@ -138,10 +211,23 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     null,
   );
 
-  // Read once, on first render, so the offline path has a list name and
-  // category names before anything async resolves.
-  const [cached] = useState<ShellContext | null>(() =>
-    snapshot ? null : readShellContext(),
+  /*
+   * Which list this page is for, client-side.
+   *
+   * The server reads `?list=` as well, so online `snapshot.list.id` already IS
+   * the requested list and this agrees with it. Offline it is the only thing
+   * that knows: the service worker serves a cached document rendered for
+   * whatever list was cached, so without this the switcher changed the URL and
+   * nothing else — in a shop with no signal, which is the one place choosing a
+   * shop matters.
+   */
+  const urlListId = useListIdFromUrl();
+
+  // Re-read whenever the wanted list changes, so an offline switch picks up
+  // that list's own remembered name and aisle order rather than the last one's.
+  const cached = useMemo(
+    () => (snapshot ? null : readShellContext(urlListId)),
+    [snapshot, urlListId],
   );
 
   // Remember enough to render the shell next time the server is unreachable.
@@ -155,13 +241,15 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
         categories: snapshot.categories,
         recipeTitles: snapshot.recipeTitles,
       };
-      window.localStorage.setItem(SHELL_KEY, JSON.stringify(ctx));
+      window.localStorage.setItem(shellKey(snapshot.list.id), JSON.stringify(ctx));
     } catch {
       // A full or disabled localStorage costs offline chrome, nothing more.
     }
   }, [snapshot, actor]);
 
-  const listId = snapshot?.list.id ?? cached?.listId ?? null;
+  // The URL wins. Offline the snapshot is whatever was cached, and deferring
+  // to it is exactly how switching lists became a no-op.
+  const listId = urlListId ?? snapshot?.list.id ?? cached?.listId ?? null;
   const effectiveActor = actor ?? cached?.actor ?? null;
   const categories = snapshot?.categories ?? cached?.categories ?? [];
   // Memoised, not a bare `?? {}`: that allocates a fresh object every render,
@@ -224,25 +312,60 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
   const lastAt = useRef<string | null>(null);
 
   /** Returns the op's `clientOpId`, which undo needs to name what it retracts. */
-  const dispatch = useCallback(
-    (partial: OpDraft): string => {
-      const clientOpId = crypto.randomUUID();
+  /**
+   * Stamp a draft into a real op.
+   *
+   * Lifted out so the fire-and-forget path and the awaitable one below cannot
+   * drift: `nextOpTimestamp` against `lastAt` is what keeps two ops dispatched
+   * in the same tick strictly ordered, and a second copy of that would be a
+   * second clock nobody declared.
+   */
+  const buildOp = useCallback(
+    (partial: OpDraft): Op => {
       const at = nextOpTimestamp(lastAt.current, new Date());
       lastAt.current = at;
-      const op = {
+      return {
         ...partial,
-        clientOpId,
+        clientOpId: crypto.randomUUID(),
         actor: effectiveActor ?? "okand",
         at,
       } as Op;
+    },
+    [effectiveActor],
+  );
+
+  const dispatch = useCallback(
+    (partial: OpDraft): string => {
+      const op = buildOp(partial);
       void dispatchOp(op).catch(() =>
         // A lapsed session is reported through status.signedOut, not thrown —
         // anything reaching here is a genuine failure worth surfacing.
         toast.error("Kunde inte spara ändringen"),
       );
-      return clientOpId;
+      return op.clientOpId;
     },
-    [effectiveActor, dispatchOp],
+    [buildOp, dispatchOp],
+  );
+
+  /**
+   * Dispatch, and resolve once the op is actually written down.
+   *
+   * For the one caller that then tears the page down. `dispatch` above returns
+   * the instant the op is built and lets the outbox write settle whenever it
+   * settles, which is right for every tap that leaves the page standing — but
+   * assigning `window.location.href` can abort an IndexedDB transaction that
+   * has not committed, and an op lost there is lost silently: no outbox row to
+   * retry, no error, just a list you made that is not there after the reload.
+   */
+  const dispatchAndWait = useCallback(
+    async (partial: OpDraft): Promise<void> => {
+      try {
+        await dispatchOp(buildOp(partial));
+      } catch {
+        toast.error("Kunde inte spara ändringen");
+      }
+    },
+    [buildOp, dispatchOp],
   );
 
   // Device-local, never synced and never an op: one of you is in the shop while
@@ -362,16 +485,29 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
         if (amount) dispatch({ kind: "set_amount", listId, catalogItemId, amount });
       }
     },
-    removeItem: (catalogItemId: Id, bought: boolean) => {
+    /**
+     * `productId` is set by scanning and by nothing else — it makes the
+     * purchase attribute to the product rather than to the vara, which is what
+     * lets placing or re-placing that product move its whole history with it.
+     */
+    removeItem: (catalogItemId: Id, bought: boolean, scannedProductId?: Id) => {
       // Buy mode's idle clock measures shopping, not staring at the screen, so
       // it is a removal that counts as activity — not a render or a scroll.
       if (bought) touch();
-      return dispatch({ kind: "remove_item", listId, catalogItemId, bought });
+      return dispatch({
+        kind: "remove_item",
+        listId,
+        catalogItemId,
+        bought,
+        ...(scannedProductId ? { productId: scannedProductId } : {}),
+      });
     },
     setAmount: (catalogItemId: Id, amount: Amount | null) =>
       dispatch({ kind: "set_amount", listId, catalogItemId, amount }),
     setModifier: (catalogItemId: Id, modifier: string | null) =>
       dispatch({ kind: "set_modifier", listId, catalogItemId, modifier }),
+    setNote: (catalogItemId: Id, note: string | null) =>
+      dispatch({ kind: "set_note", listId, catalogItemId, note }),
     setPriority: (catalogItemId: Id, priority: Priority) =>
       dispatch({ kind: "set_priority", listId, catalogItemId, priority }),
     /**
@@ -575,7 +711,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
    * run the same four-cell table. An `add_and_buy` that only some paths could
    * reach is how a scan silently stops recording purchases.
    */
-  function actOnVara(catalogItemId: Id, name: string) {
+  function actOnVara(catalogItemId: Id, name: string, scannedProductId?: Id) {
     if (!listId) return;
     const entry = state.entries[entryId(listId, catalogItemId)];
     const onList = Boolean(entry && entry.removedAt === null);
@@ -584,7 +720,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     // there. This only turns the decision into ops and Swedish.
     switch (scanAction(mode, onList).kind) {
       case "buy": {
-        const clientOpId = actions.removeItem(catalogItemId, true);
+        const clientOpId = actions.removeItem(catalogItemId, true, scannedProductId);
         setScanResult({
           text: `${name} köpt`,
           undo: () => {
@@ -602,7 +738,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
         // before the remove half wrote the second, leaving one where there were
         // two.
         actions.addItem(catalogItemId, undefined, undefined, true);
-        const clientOpId = actions.removeItem(catalogItemId, true);
+        const clientOpId = actions.removeItem(catalogItemId, true, scannedProductId);
         setScanResult({
           text: `${name} tillagd och köpt`,
           undo: () => {
@@ -665,7 +801,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
     const resolved = resolveScan(state, ean);
 
     if (resolved.kind === "vara") {
-      actOnVara(resolved.catalogItemId, resolved.name);
+      actOnVara(resolved.catalogItemId, resolved.name, resolved.productId);
       return;
     }
 
@@ -734,7 +870,9 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
           productId: id,
           patch: { catalogItemId: vara.id },
         });
-        actOnVara(vara.id, vara.name);
+        // The auto-map answered "what did I just scan", so the purchase
+        // attributes to the product it answered for.
+        actOnVara(vara.id, vara.name, id);
         return;
       }
     }
@@ -782,17 +920,57 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
             if (id !== listId) window.location.href = `/?list=${encodeURIComponent(id)}`;
           }}
           onCreate={(name) => {
+            /*
+             * A list's id is `slugify(name)`, so naming a new list what an old
+             * one is already called does not make a second list — it addresses
+             * the first one. And `create_list` in the reducer REPLACES the
+             * whole record on a newer clock: name, icon, position and
+             * `categoryOrder`. So typing "Hemköp" a second time used to
+             * overwrite that shop's walking order with the order of whichever
+             * list happened to be open — destroying, in one tap and with no
+             * warning, the edit this app treats as its most valuable.
+             *
+             * `ensureVara` 400 lines up already answers exactly this question
+             * for varor. Here the honest answer is to open the list you named
+             * rather than to invent a second one that cannot exist.
+             */
             const id = slugify(name);
-            dispatch({
+            if (!id) {
+              // slugify keeps letters and digits, so an emoji-only or
+              // punctuation-only name yields "" — an id that would collide with
+              // itself forever and address nothing.
+              toast.error("Listan behöver ett namn med bokstäver i");
+              return;
+            }
+
+            // `delete_list` omits the list from this map outright, so presence
+            // here means live — a deleted list's id is free to be taken again,
+            // and its own tombstone in `meta` decides whether the new create
+            // wins.
+            const existing = state.lists[id];
+            if (existing) {
+              setSwitching(false);
+              toast.info(`Du har redan «${existing.name}» — öppnar den`);
+              window.location.href = `/?list=${encodeURIComponent(id)}`;
+              return;
+            }
+
+            setSwitching(false);
+            // Awaited: the navigation below tears this page down, and an op
+            // still in flight to IndexedDB goes with it.
+            void dispatchAndWait({
               kind: "create_list",
               listId: id,
               name,
               icon: "1F6D2",
               position: lists.length,
+              // Inherited rather than empty: a new shop with no aisle order
+              // sorts everything into Övrigt, and copying the order you are
+              // standing in is a better first guess than none.
               categoryOrder: list.categoryOrder,
+            }).then(() => {
+              window.location.href = `/?list=${encodeURIComponent(id)}`;
             });
-            setSwitching(false);
-            window.location.href = `/?list=${encodeURIComponent(id)}`;
           }}
           onClose={() => setSwitching(false)}
         />
@@ -836,7 +1014,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
             // Placing is the answer to "what did I just scan", so the scan then
             // completes — the alternative is telling someone at a till that
             // their answer was recorded and their item was not.
-            if (vara) actOnVara(vara.id, vara.name);
+            if (vara) actOnVara(vara.id, vara.name, placing.productId);
           }}
           onCreateAndPlace={(name) => {
             const catalogItemId = actions.createVaraAndPlace(
@@ -844,7 +1022,8 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
               name,
             );
             setPlacing(null);
-            if (catalogItemId) actOnVara(catalogItemId, name.trim());
+            if (catalogItemId)
+              actOnVara(catalogItemId, name.trim(), placing.productId);
           }}
           /* Nothing to send back to the queue: this product has no vara to
              leave, which is the entire reason the sheet is open. */

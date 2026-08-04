@@ -359,3 +359,35 @@ describe("formatAmounts", () => {
     expect(formatAmounts([])).toBe("");
   });
 });
+
+/**
+ * Scaling a count, which is not the same problem as scaling a volume.
+ *
+ * "4,5 st ägg" was reaching the shopping list — from the sheet whose own
+ * comment says getting this wrong is how you come home with half the cream.
+ */
+describe("scaleAmount and count units", () => {
+  it("keeps counts whole", () => {
+    expect(scaleAmount({ value: 3, unit: "st" }, 1.5)).toEqual({ value: 5, unit: "st" });
+    expect(scaleAmount({ value: 4, unit: "st" }, 1.5)).toEqual({ value: 6, unit: "st" });
+  });
+
+  it("rounds a count up rather than to nearest", () => {
+    // Half an egg is not purchasable, so the only question is which way to be
+    // wrong — and one egg too many costs a krona, while one too few means the
+    // dish cannot be made.
+    expect(scaleAmount({ value: 1, unit: "st" }, 1.25)).toEqual({ value: 2, unit: "st" });
+    expect(scaleAmount({ value: 2, unit: "burk" }, 0.6)).toEqual({ value: 2, unit: "burk" });
+  });
+
+  it("never scales a count down to nothing", () => {
+    // "0 st" reads as "do not buy this" for an ingredient the recipe needs.
+    expect(scaleAmount({ value: 1, unit: "st" }, 0.25)).toEqual({ value: 1, unit: "st" });
+    expect(scaleAmount({ value: 2, unit: "påse" }, 0.1)).toEqual({ value: 1, unit: "påse" });
+  });
+
+  it("leaves volumes and masses fractional, because they are measurable", () => {
+    expect(scaleAmount({ value: 3, unit: "dl" }, 0.5)).toEqual({ value: 1.5, unit: "dl" });
+    expect(scaleAmount({ value: 500, unit: "g" }, 1.5)).toEqual({ value: 750, unit: "g" });
+  });
+});

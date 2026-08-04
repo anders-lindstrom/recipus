@@ -366,6 +366,36 @@ export function createListStore(
    * `SyncState.recipes` simply stays whatever it already was.
    */
   async function applySnapshot(snapshot: ListSnapshot): Promise<void> {
+    /*
+     * A snapshot older than what we have already applied is refused outright.
+     *
+     * This function rebuilds state from `emptyState()` and replays only the
+     * OUTBOX on top — which is right when the snapshot is fresh, and silently
+     * destructive when it is not. The service worker caches the rendered
+     * document, so a cold open in a shop replays whatever server render was
+     * cached, possibly days old. Everything that had arrived over SSE since —
+     * every item the other phone added, which is not in this device's outbox
+     * because they are not this device's ops — was rebuilt away.
+     *
+     * And it could not be recovered. The cursor is not lowered by a hydrate, so
+     * catch-up went on asking for ops after a seq those changes were already
+     * behind, and the server had nothing new to send. The list simply lost
+     * them.
+     *
+     * `cursor` is the highest op seq this device has applied; `snapshot.seq` is
+     * a lower bound on what the snapshot contains. If the cursor is ahead, the
+     * local state is a strict superset and the snapshot has nothing to add.
+     * Marked hydrated anyway, so `reconnectCycle` moves on to catch-up rather
+     * than asking for another snapshot it would refuse again.
+     */
+    const cursor = syncMeta.cursor ?? 0;
+    if (snapshot.seq < cursor) {
+      syncMeta = { ...syncMeta, lastHydratedAt: new Date().toISOString() };
+      await saveMeta(syncMeta);
+      emit();
+      return;
+    }
+
     const base = emptyState();
     base.lists[snapshot.list.id] = snapshot.list;
     for (const item of snapshot.catalog) base.catalog[item.id] = item;
@@ -394,7 +424,16 @@ export function createListStore(
     const outboxOps = await outbox.pending();
     state = applyOps(base, outboxOps);
 
-    syncMeta = { ...syncMeta, lastHydratedAt: new Date().toISOString() };
+    syncMeta = {
+      ...syncMeta,
+      // Raised to what the snapshot already contains, never lowered. Catch-up
+      // then asks for ops after this point instead of re-fetching a window the
+      // snapshot has covered — and because `snapshot.seq` is a LOWER bound
+      // (read before the rows), the overlap it leaves is a few redundant ops
+      // the reducer is idempotent against, never a gap.
+      cursor: Math.max(cursor, snapshot.seq),
+      lastHydratedAt: new Date().toISOString(),
+    };
     await Promise.all([saveState(listId, state), saveMeta(syncMeta)]);
     emit();
   }

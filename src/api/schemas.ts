@@ -60,19 +60,53 @@ export const categorySchema = z
   })
   .openapi("Category");
 
+/**
+ * A vara's fields, stated once and shaped twice.
+ *
+ * The two readings differ on exactly one field and cannot be derived from each
+ * other, which is why the field list is lifted out rather than `.partial()`-ed
+ * off the schema below.
+ *
+ * Creating a vara TOLERATES a missing `hidden`, because ops written before
+ * hiding existed are still in the log and must parse and apply as they did the
+ * day they were written — "not hidden" is what they meant.
+ *
+ * Patching a vara must NOT default it, and that is load-bearing rather than
+ * tidy. The reducer stamps a field's clock only when the patch makes a claim
+ * about it (`catalogFieldPatch` returns nothing for a silent field), so a
+ * default firing on a patch would make a rename assert "and it is not hidden"
+ * — letting an op with no opinion about hiding beat one that has one. That is
+ * the moving-clock bug this codebase has already paid for on `note`, `amount`,
+ * `priority` and the four product fields.
+ *
+ * Verified by execution, and the reason this is not one schema: zod applies a
+ * `.default()` THROUGH `.partial()`, so the obvious
+ * `catalogItemSchema.omit({id:true}).partial()` silently reintroduced exactly
+ * that bug. See "stays silent about hiding when the patch is" in
+ * schemas.test.ts.
+ */
+const catalogItemFields = {
+  id: z.string(),
+  name: z.string(),
+  nameNorm: z.string(),
+  categoryId: z.string(),
+  iconRef: z.string(),
+  isCustom: z.boolean(),
+  hasAtHome: z.boolean(),
+  hidden: z.boolean(),
+  useCount: z.number().int(),
+  lastUsedAt: z.string().nullable(),
+};
+
 export const catalogItemSchema = z
-  .object({
-    id: z.string(),
-    name: z.string(),
-    nameNorm: z.string(),
-    categoryId: z.string(),
-    iconRef: z.string(),
-    isCustom: z.boolean(),
-    hasAtHome: z.boolean(),
-    useCount: z.number().int(),
-    lastUsedAt: z.string().nullable(),
-  })
+  .object({ ...catalogItemFields, hidden: z.boolean().optional().default(false) })
   .openapi("CatalogItem");
+
+/** The patch shape: every field optional, and none of them defaulted. */
+const catalogItemPatchSchema = z
+  .object(catalogItemFields)
+  .omit({ id: true })
+  .partial();
 
 export const listSchema = z
   .object({
@@ -319,7 +353,7 @@ const updateCatalogItemOpSchema = z.object({
   ...opBase,
   kind: z.literal("update_catalog_item"),
   itemId: z.string(),
-  patch: catalogItemSchema.omit({ id: true }).partial(),
+  patch: catalogItemPatchSchema,
 });
 
 const addItemOpSchema = z.object({
@@ -333,6 +367,20 @@ const addItemOpSchema = z.object({
    * exactly as it did the day it was created, so this can never become required.
    */
   undoesClientOpId: z.string().optional(),
+  /**
+   * The scanner's opt-out, and absent for the same reason `undoesClientOpId`
+   * is: it was added after ops carrying neither had already been written.
+   *
+   * Missing from this schema until it cost real purchases. `Op` declared it,
+   * `list-client.tsx` sent it and `apply-op.ts` read it, but zod strips what it
+   * does not declare — so the server never saw it, and scanning a second
+   * identical bottle retracted the first one's purchase instead of recording a
+   * second. Nothing failed: the op parsed, applied, and did the opposite of
+   * what was asked. Every test of the behaviour called `applyOp` directly and
+   * so never came in by this door. See `MAXIMAL` in schemas.test.ts, which now
+   * walks every kind for exactly this.
+   */
+  keepsPurchase: z.boolean().optional(),
 });
 
 const removeItemOpSchema = z.object({
@@ -341,6 +389,15 @@ const removeItemOpSchema = z.object({
   listId: z.string(),
   catalogItemId: z.string(),
   bought: z.boolean(),
+  /**
+   * Set by scanning, and by nothing else. See the op's own comment for why
+   * `purchases` wants the product rather than the vara for a scan.
+   *
+   * Optional, and absent from every `remove_item` written before scanning
+   * recorded its product — a stored op replayed from the log must parse and
+   * apply exactly as it did the day it was written.
+   */
+  productId: z.string().optional(),
 });
 
 const setAmountOpSchema = z.object({

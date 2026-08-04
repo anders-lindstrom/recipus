@@ -45,6 +45,11 @@ describe("resolveScan", () => {
       kind: "vara",
       catalogItemId: "mjolk",
       name: "mjölk",
+      // The product travels with the resolution so the purchase can attribute
+      // to it rather than to the vara — {null, product}, the shape `purchases`
+      // has always documented for a scan. Without it, placing or re-placing
+      // this product later moves none of its history.
+      productId: `prod:${EAN}`,
     });
   });
 

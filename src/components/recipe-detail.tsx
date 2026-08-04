@@ -13,7 +13,7 @@ import type {
 } from "@/lib/domain";
 import type { CadenceStats } from "@/lib/cadence";
 import type { Op } from "@/lib/sync";
-import { normalizeName } from "@/lib/utils";
+import { cn, normalizeName } from "@/lib/utils";
 import { ItemIcon } from "./icon";
 import { type PendingVara, resolveRecipeVaror } from "./recipe-model";
 import { RecipeAddSheet } from "./recipe-add-sheet";
@@ -166,6 +166,34 @@ export interface RecipeDetailProps {
 
 export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
   const router = useRouter();
+  const [armedForDelete, setArmedForDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  /**
+   * Retire the recipe.
+   *
+   * `deletedAt` and the prune job were built for this and nothing ever wrote
+   * the column, so a paywalled half-import sat at the top of the only browse
+   * surface forever. Deliberately does NOT take its ingredients off any list:
+   * they were added because the household wanted them, and retiring the recipe
+   * is a statement about the library rather than about tonight's shopping.
+   */
+  async function deleteRecipe() {
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/recipes/${encodeURIComponent(recipeId)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("delete failed");
+      router.push("/recept");
+    } catch {
+      // Needs the network, and says so rather than pretending. Unlike a list
+      // edit there is no op log behind this — recipes never went through it.
+      toast.error("Kunde inte ta bort receptet. Prova igen när du har nät.");
+      setDeleting(false);
+      setArmedForDelete(false);
+    }
+  }
   // As in recipe-list.tsx: `status`/`recipe`/`error` are derived from
   // `result` rather than set directly in the effect, so the effect's body
   // never calls setState outside the fetch's own async continuation. That is
@@ -401,6 +429,33 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
         title={recipe?.title ?? "Recept"}
         backHref="/recept"
         backLabel="Till recepten"
+        action={
+          recipe && (
+            /*
+             * Two taps, not a dialog. The app already answers destructive
+             * questions this way — the long-press "ta bort, kopte inte" acts on
+             * the second gesture rather than raising a sheet — and a recipe is
+             * recoverable in principle (the delete is soft) but not from any
+             * screen, so the confirmation has to be real.
+             *
+             * The armed state says what will happen rather than "Ar du saker?",
+             * which is a question nobody reads.
+             */
+            <button
+              type="button"
+              onClick={() => (armedForDelete ? deleteRecipe() : setArmedForDelete(true))}
+              onBlur={() => setArmedForDelete(false)}
+              disabled={deleting}
+              className={cn(
+                "flex h-11 items-center gap-1.5 rounded-full px-3 text-caption font-semibold",
+                armedForDelete ? "bg-danger text-white" : "text-ink-soft",
+              )}
+            >
+              <UiIcon name="remove" size={16} />
+              {armedForDelete ? "Ta bort receptet" : "Ta bort"}
+            </button>
+          )
+        }
       />
 
       {status === "loading" && <DetailSkeleton />}

@@ -105,6 +105,27 @@ export async function dropRecipes(ids: string[]): Promise<void> {
 }
 
 /**
+ * Give a few varor a shopping history.
+ *
+ * "Vanligast" is built from `use_count`, which counts SHOPS — and `dropTestList`
+ * resets every one of them to zero between tests, deliberately, so a test that
+ * bought something cannot decide what the next test is offered. The panel is
+ * therefore empty on a fresh list, and a test about the panel has to say so out
+ * loud. By name rather than by id: the ids are derived through `slugify`, and a
+ * test naming derived keys is a test that breaks when the derivation changes.
+ *
+ * Takes effect on the next page load — the client gets the catalog in its
+ * snapshot.
+ */
+export async function markFrequentlyBought(names: string[]): Promise<void> {
+  if (names.length === 0) return;
+  await sql`
+    update catalog_items set use_count = 5, last_used_at = now()
+    where name in ${sql(names)}
+  `;
+}
+
+/**
  * What the server actually stored for a scanned barcode.
  *
  * Worth having as its own assertion because "the outbox drained" does NOT mean

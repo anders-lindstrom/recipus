@@ -4,9 +4,14 @@ import { UiIcon } from "./ui-icon";
 /**
  * The header on every screen that is not the list.
  *
- * Same 3rem content height as the list screen's header, because the aisle
+ * Same 3.25rem content height as the list screen's header, because the aisle
  * rail's sticky offset is measured against it and because a header that
  * changes height between routes reads as the page jumping.
+ *
+ * The height is what it is for the list screen's sake — see the note there. A
+ * 44px control needs 4px around it for its focus ring, and this row is pinned
+ * to the top of the viewport, where anything short of that is off screen rather
+ * than merely tight.
  *
  * Paper and ink rather than the old solid green bar: green is reserved for
  * items you still have to buy and for the one primary action per screen, and
@@ -30,11 +35,16 @@ export function ScreenHeader({
 }: ScreenHeaderProps) {
   return (
     <header className="safe-top sticky top-0 z-30 border-b border-line bg-surface">
-      <div className="flex h-12 items-center gap-1 px-2">
+      <div className="flex h-13 items-center gap-1 px-2">
         <Link
           href={backHref}
           aria-label={backLabel}
-          className="flex h-9 w-9 flex-none items-center justify-center rounded-full text-ink-soft"
+          /* 44px, the same floor the outbound links in the app were raised to.
+             That audit grew everything that navigates INTO a screen and never
+             reached the control that navigates back out of one — which is on
+             seven screens, sits under the thumb, and is next to the notch. The
+             icon is unchanged; only the target grew. */
+          className="-ml-1 flex h-11 w-11 flex-none items-center justify-center rounded-full text-ink-soft"
         >
           <UiIcon name="back" size={22} />
         </Link>

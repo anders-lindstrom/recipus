@@ -40,6 +40,45 @@ interface RecipeToPersist {
 }
 
 /**
+ * One recipe with its ingredients, or null if it is gone.
+ *
+ * Lifted out of the GET handler so the import path can answer a duplicate with
+ * the recipe that already exists rather than assembling a second, subtly
+ * different, copy of the same shape.
+ */
+async function loadRecipe(id: string) {
+  const [recipeRow] = await db
+    .select()
+    .from(recipes)
+    .where(and(eq(recipes.id, id), isNull(recipes.deletedAt)))
+    .limit(1);
+  if (!recipeRow) return null;
+
+  const ingredientRows = await db
+    .select()
+    .from(recipeIngredients)
+    .where(eq(recipeIngredients.recipeId, id))
+    .orderBy(asc(recipeIngredients.position));
+
+  return {
+    id: recipeRow.id,
+    title: recipeRow.title,
+    sourceUrl: recipeRow.sourceUrl,
+    servings: recipeRow.servings,
+    servingsUnit: recipeRow.servingsUnit,
+    imageUrl: recipeRow.imageUrl,
+    ingredients: ingredientRows.map((r) => ({
+      id: r.id,
+      recipeId: r.recipeId,
+      position: r.position,
+      rawText: r.rawText,
+      amount: toAmount(r.amountValue, r.amountUnit),
+      catalogItemId: r.catalogItemId,
+    })),
+  };
+}
+
+/**
  * Parse, match, store — everything about an import that does not depend on
  * where the text came from.
  *
@@ -170,6 +209,29 @@ export function recipesRoutes() {
       const { url } = c.req.valid("json");
       const actor = c.get("actor");
 
+      /*
+       * The same URL twice is the same recipe, not two.
+       *
+       * The share target fires an import the moment the page arrives, so
+       * tapping back and re-sharing — which is what anyone does when they are
+       * not sure the first one worked — silently stored a second copy. With no
+       * delete wired anywhere, both then sit at the top of the only browse
+       * surface forever.
+       *
+       * Answered with the existing recipe rather than an error: the household
+       * asked for this recipe and this recipe is what they get. Tombstoned ones
+       * are excluded, so re-importing something deliberately deleted works.
+       */
+      const [existing] = await db
+        .select({ id: recipes.id })
+        .from(recipes)
+        .where(and(eq(recipes.sourceUrl, url), isNull(recipes.deletedAt)))
+        .limit(1);
+      if (existing) {
+        const already = await loadRecipe(existing.id);
+        if (already) return c.json(already, 200);
+      }
+
       let imported: Awaited<ReturnType<typeof importRecipeFromUrl>>;
       try {
         imported = await importRecipeFromUrl(url);
@@ -180,7 +242,44 @@ export function recipesRoutes() {
         );
       }
 
-      return c.json(await persistRecipe(imported, actor), 200);
+      /*
+       * The same tidying the paste path gets, on the lines a page gave us.
+       *
+       * `cleanPastedIngredients` was written for pasted text and called from
+       * exactly one route, but nothing in it is about pasting: it collapses the
+       * non-breaking spaces that hide an amount from `parseQuantityPrefix`,
+       * drops bullets, and skips group headings like "Till servering:" and
+       * "Deg:". JSON-LD carries all three — plenty of sites put their headings
+       * in `recipeIngredient` — so those became ingredient lines, matched
+       * nothing, and were offered as NY VARA. Accepting one mints a catalog
+       * item called "Till servering" that never goes away.
+       *
+       * Idempotent, so the paste route keeping its own call costs nothing.
+       */
+      const ingredientLines = cleanPastedIngredients(
+        imported.ingredientLines.join("\n"),
+      );
+
+      /*
+       * An import that found no ingredients is refused, exactly as the paste
+       * path already refuses one — same wording, same status.
+       *
+       * `buildImportedRecipe` returns on a title alone, so a paywalled or
+       * JS-rendered page produced a 200 and a recipe row with nothing in it.
+       * That is worse than an error: it looks like it worked, it adds nothing
+       * to any list, and until a delete exists it cannot be cleared away.
+       *
+       * Checked AFTER the tidying above, so a page whose every "ingredient" was
+       * a heading is refused too rather than stored as an empty recipe.
+       */
+      if (ingredientLines.length === 0) {
+        return c.json({ error: "Hittade inga ingredienser i texten." }, 400);
+      }
+
+      return c.json(
+        await persistRecipe({ ...imported, ingredientLines }, actor),
+        200,
+      );
     },
   );
 
@@ -333,6 +432,54 @@ export function recipesRoutes() {
 
   app.openapi(
     createRoute({
+      method: "delete",
+      path: "/{id}",
+      tags: ["recipes"],
+      description:
+        "Retire a recipe. Soft, like every other deletion in this app: recipe_additions on live lists reference it, and the prune job clears tombstones at 30 days.",
+      request: { params: idParam },
+      responses: {
+        204: { description: "Deleted" },
+        404: jsonRes(errorSchema, "Not found"),
+      },
+    }),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const actor = c.get("actor");
+
+      /*
+       * Soft, and not merely by convention.
+       *
+       * `deletedAt` and the prune job were both built for a delete that was
+       * never wired, so the column has been sitting there unwritten while a
+       * paywalled half-import stayed at the top of the only browse surface
+       * forever. A hard delete is not available even in principle: recipe
+       * additions on live lists carry `recipe_id`, and the breakdown sheet
+       * resolves a tile's "från recept" badge through it — removing the row
+       * would leave contributions pointing at nothing.
+       *
+       * What this deliberately does NOT do is take the recipe off any list.
+       * Its ingredients were added because the household wanted them; retiring
+       * the recipe is a statement about the library, not about tonight's
+       * shopping. `remove_recipe` is the op that means the other thing, and it
+       * goes through the log because it changes a list.
+       */
+      const [updated] = await db
+        .update(recipes)
+        .set({ deletedAt: new Date(), updatedAt: new Date(), updatedBy: actor })
+        .where(and(eq(recipes.id, id), isNull(recipes.deletedAt)))
+        .returning({ id: recipes.id });
+
+      // Already gone reads as 404 rather than 204: deleting twice is a
+      // question about a recipe that is not there, and answering "done" would
+      // hide a stale link the caller is still following.
+      if (!updated) return c.json({ error: "Not found" }, 404);
+      return c.body(null, 204);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "get",
       path: "/{id}",
       tags: ["recipes"],
@@ -345,39 +492,9 @@ export function recipesRoutes() {
     }),
     async (c) => {
       const { id } = c.req.valid("param");
-
-      const [recipeRow] = await db
-        .select()
-        .from(recipes)
-        .where(and(eq(recipes.id, id), isNull(recipes.deletedAt)))
-        .limit(1);
-      if (!recipeRow) return c.json({ error: "Not found" }, 404);
-
-      const ingredientRows = await db
-        .select()
-        .from(recipeIngredients)
-        .where(eq(recipeIngredients.recipeId, id))
-        .orderBy(asc(recipeIngredients.position));
-
-      return c.json(
-        {
-          id: recipeRow.id,
-          title: recipeRow.title,
-          sourceUrl: recipeRow.sourceUrl,
-          servings: recipeRow.servings,
-          servingsUnit: recipeRow.servingsUnit,
-          imageUrl: recipeRow.imageUrl,
-          ingredients: ingredientRows.map((r) => ({
-            id: r.id,
-            recipeId: r.recipeId,
-            position: r.position,
-            rawText: r.rawText,
-            amount: toAmount(r.amountValue, r.amountUnit),
-            catalogItemId: r.catalogItemId,
-          })),
-        },
-        200,
-      );
+      const recipe = await loadRecipe(id);
+      if (!recipe) return c.json({ error: "Not found" }, 404);
+      return c.json(recipe, 200);
     },
   );
 

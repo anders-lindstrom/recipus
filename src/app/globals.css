@@ -211,7 +211,25 @@ button,
 :focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
-  border-radius: 4px;
+  /* A ring is drawn OUTSIDE the element, so it lands on whatever the next thing
+     in the paint order is — and a later sibling with a background wins. The
+     "Ordning" button is the case: it overhangs its heading on purpose, and the
+     tile grid below it painted over the bottom of its ring, which looks like a
+     ring that is drawn wrong rather than one that is covered.
+
+     `z-index` is ignored on a static element and honoured on a flex or grid
+     item, which is exactly the set of controls this happens to — every row of
+     furniture in this app is a flex row, and every tile is a grid item. So this
+     costs nothing where it does not apply and needs no per-control fix where it
+     does. It is scoped to `:focus-visible`, so nothing is restacked except for
+     as long as it is the thing you are looking at. */
+  z-index: 1;
+  /* No border-radius here. It used to force 4px onto every focused element,
+     which squared off round controls the moment they took focus — the scan FAB
+     visibly morphed from a circle into a rounded square, which reads as a
+     rendering bug rather than as a focus ring. An outline already follows the
+     element's own border-radius, so the correct value is the one the element
+     brought with it. */
 }
 
 /* Respect the notch and the home indicator — this runs as a standalone PWA,
@@ -223,12 +241,25 @@ button,
   padding-bottom: env(safe-area-inset-bottom);
 }
 
-/* Aisle headings are the rail's jump targets, and they land underneath two
-   pinned things. Without this the browser scrolls them to y=0 — behind the
-   header and the rail both — and the tap looks like it did nothing.
-   Header (3rem) + rail (2.75rem) + a little air, on top of the notch. */
+/* Two pinned things sit over the top of this page, so anything scrolled to
+   programmatically — the rail's jump targets, and any tile the arrow keys move
+   focus to — has to stop short of them. Without it the browser scrolls to y=0,
+   behind the header and the rail both, and the jump looks like it did nothing.
+
+   Header (3.25rem) + rail (3.25rem) + a little air, on top of the notch. Both
+   rows grew by 4px when the 44px controls in them were given room for a focus
+   ring; this number is downstream of that and has to move with it. */
+.pinned-clearance,
 .aisle-anchor {
-  scroll-margin-top: calc(env(safe-area-inset-top) + 6.25rem);
+  scroll-margin-top: calc(env(safe-area-inset-top) + 7rem);
+}
+
+/* The bottom half of the same problem, and only tiles have it: the scan button
+   and the undo strip float over the foot of the list, so a tile arrowed down to
+   from the row above can arrive underneath them. The aisle headings never do —
+   they are scrolled to from the rail, which always puts them at the top. */
+.pinned-clearance {
+  scroll-margin-bottom: 6rem;
 }
 
 /* The rail is a horizontal scroller inside a vertical one; hiding its bar keeps

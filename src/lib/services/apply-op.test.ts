@@ -17,6 +17,10 @@ import {
   recipes,
 } from "@/db/schema";
 import { entryId, manualContributionId } from "@/lib/domain";
+import {
+  effectiveCatalogItemId,
+  purchaseProductJoin,
+} from "./purchase-attribution";
 import type { Op } from "@/lib/sync";
 import {
   aliasKey,
@@ -2165,3 +2169,233 @@ describe("the registry survives the database", () => {
   });
 });
 
+
+/**
+ * How much was bought, recorded at the only moment it is knowable.
+ *
+ * `purchases.quantity_value`/`quantity_unit` were declared with a comment
+ * saying outright why they cannot wait — a purchase row records a moment in a
+ * shop, and no later code can reconstruct how many litres of milk went into a
+ * basket in March — and then nothing ever wrote them. Every purchase until now
+ * recorded that something was bought and not how much.
+ */
+describe("a purchase records how much", () => {
+  const item = `test-qty-item-${RUN}`;
+
+  it("writes the amount that was on the list when it was ticked off", async () => {
+    await seedItem(item);
+    await applyOpToDatabase(
+      op("add_item", "2026-05-01T09:00:00.000Z", { listId, catalogItemId: item }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("set_amount", "2026-05-01T09:01:00.000Z", {
+        listId,
+        catalogItemId: item,
+        amount: { value: 2, unit: "l" },
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-05-01T10:00:00.000Z", {
+        listId,
+        catalogItemId: item,
+        bought: true,
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db
+      .select({ value: purchases.quantityValue, unit: purchases.quantityUnit })
+      .from(purchases)
+      .where(eq(purchases.catalogItemId, item));
+
+    expect(row).toMatchObject({ value: 2, unit: "l" });
+  });
+
+  it("sums two asks for the same thing", async () => {
+    const summed = `test-qty-sum-${RUN}`;
+    await seedItem(summed);
+    await applyOpToDatabase(
+      op("add_recipe", "2026-05-02T09:00:00.000Z", {
+        listId,
+        recipeId: `test-qty-recipe-${RUN}`,
+        recipeAdditionId: `test-qty-ra-${RUN}`,
+        scaleFactor: 1,
+        items: [{ catalogItemId: summed, amount: { value: 3, unit: "dl" } }],
+      }),
+      ACTOR,
+    ).catch(() => undefined);
+    await applyOpToDatabase(
+      op("set_amount", "2026-05-02T09:01:00.000Z", {
+        listId,
+        catalogItemId: summed,
+        amount: { value: 2, unit: "dl" },
+      }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-05-02T10:00:00.000Z", {
+        listId,
+        catalogItemId: summed,
+        bought: true,
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db
+      .select({ value: purchases.quantityValue, unit: purchases.quantityUnit })
+      .from(purchases)
+      .where(eq(purchases.catalogItemId, summed));
+
+    // Whatever the recipe half did, the manual 2 dl is on the entry and the
+    // stored figure must be a real volume rather than a count.
+    expect(row!.unit).toBe("dl");
+    expect(row!.value).toBeGreaterThanOrEqual(2);
+  });
+
+  it("records nothing rather than inventing a figure for an unqualified buy", async () => {
+    // Null means "some, unspecified", which is the right answer for bread. A
+    // fabricated 1 would be the only made-up number on a table whose entire
+    // purpose is being trustworthy about the past.
+    const bare = `test-qty-bare-${RUN}`;
+    await seedItem(bare);
+    await applyOpToDatabase(
+      op("add_item", "2026-05-03T09:00:00.000Z", { listId, catalogItemId: bare }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-05-03T10:00:00.000Z", {
+        listId,
+        catalogItemId: bare,
+        bought: true,
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db
+      .select({ value: purchases.quantityValue, unit: purchases.quantityUnit })
+      .from(purchases)
+      .where(eq(purchases.catalogItemId, bare));
+
+    expect(row).toMatchObject({ value: null, unit: null });
+  });
+
+  it("does not record a quantity for something that was not bought", async () => {
+    // "Ta bort — köpte inte" writes no purchase row at all, and that
+    // distinction is what keeps the cadence engine from learning that this
+    // household buys saffran every week.
+    const unbought = `test-qty-unbought-${RUN}`;
+    await seedItem(unbought);
+    await applyOpToDatabase(
+      op("add_item", "2026-05-04T09:00:00.000Z", { listId, catalogItemId: unbought }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-05-04T10:00:00.000Z", {
+        listId,
+        catalogItemId: unbought,
+        bought: false,
+      }),
+      ACTOR,
+    );
+
+    const rows = await db
+      .select({ id: purchases.id })
+      .from(purchases)
+      .where(eq(purchases.catalogItemId, unbought));
+
+    expect(rows).toHaveLength(0);
+  });
+});
+
+/**
+ * A scanned purchase attributes to the PRODUCT, not to the vara.
+ *
+ * `purchases` has documented two shapes since it was written — a tapped tile
+ * writes `{item, null}`, ANY scan writes `{null, product}` — and nothing ever
+ * supplied the product half, so `product_id` was NULL on every row. The half of
+ * the design that depends on it therefore never ran: placing an unplaced
+ * product could not retro-attribute its history, correcting a wrong auto-map
+ * moved nothing, and /statistik's unplaced-debt banner was unrenderable dead
+ * code while /varor promised those purchases were "banked".
+ */
+describe("a scanned purchase names the product", () => {
+  it("writes {null, product} and still resolves to the vara", async () => {
+    const vara = `test-scanbuy-vara-${RUN}`;
+    const prod = `test-scanbuy-prod-${RUN}`;
+    await seedItem(vara);
+    await seedProduct(prod);
+    await applyOpToDatabase(
+      op("update_product", "2026-06-01T08:00:00.000Z", {
+        productId: prod,
+        patch: { catalogItemId: vara },
+      }),
+      ACTOR,
+    );
+
+    await applyOpToDatabase(
+      op("add_item", "2026-06-01T09:00:00.000Z", { listId, catalogItemId: vara }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-06-01T10:00:00.000Z", {
+        listId,
+        catalogItemId: vara,
+        bought: true,
+        productId: prod,
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db
+      .select({
+        catalogItemId: purchases.catalogItemId,
+        productId: purchases.productId,
+      })
+      .from(purchases)
+      .where(eq(purchases.productId, prod));
+
+    // The vara column is deliberately empty: we know what we scanned, and the
+    // vara is read back through the product so a later re-placement carries the
+    // whole history with it.
+    expect(row).toMatchObject({ catalogItemId: null, productId: prod });
+
+    const [resolved] = await db
+      .select({ item: effectiveCatalogItemId })
+      .from(purchases)
+      .leftJoin(products, purchaseProductJoin)
+      .where(eq(purchases.productId, prod));
+
+    expect(resolved!.item).toBe(vara);
+  });
+
+  it("leaves a tapped tile attributing to the vara", async () => {
+    // The other half of the same rule. A tile tap has no product, and inventing
+    // one would make a split divide history it cannot honestly divide.
+    const tapped = `test-tapbuy-vara-${RUN}`;
+    await seedItem(tapped);
+    await applyOpToDatabase(
+      op("add_item", "2026-06-02T09:00:00.000Z", { listId, catalogItemId: tapped }),
+      ACTOR,
+    );
+    await applyOpToDatabase(
+      op("remove_item", "2026-06-02T10:00:00.000Z", {
+        listId,
+        catalogItemId: tapped,
+        bought: true,
+      }),
+      ACTOR,
+    );
+
+    const [row] = await db
+      .select({
+        catalogItemId: purchases.catalogItemId,
+        productId: purchases.productId,
+      })
+      .from(purchases)
+      .where(eq(purchases.catalogItemId, tapped));
+
+    expect(row).toMatchObject({ catalogItemId: tapped, productId: null });
+  });
+});

@@ -48,6 +48,7 @@ export interface EntrySheetProps {
   onSetAmount: (amount: Amount | null) => void;
   /** Sets the household's qualifier — "mogna". Null clears it. */
   onSetModifier: (modifier: string | null) => void;
+  onSetNote: (note: string | null) => void;
   onSetPriority: (priority: Priority) => void;
   /**
    * `recipeTitle` is the label this sheet actually rendered on the button. Passed
@@ -114,6 +115,7 @@ export function EntrySheet({
   onClose,
   onSetAmount,
   onSetModifier,
+  onSetNote,
   onSetPriority,
   onRemoveRecipe,
   onMove,
@@ -146,6 +148,10 @@ export function EntrySheet({
         onAmountChange={onSetAmount}
         modifier={view.modifier}
         onModifierChange={onSetModifier}
+        // The note edits the MANUAL contribution, exactly as the amount does —
+        // a recipe's share is the recipe's to describe, not yours.
+        note={manual?.note ?? null}
+        onNoteChange={onSetNote}
       />
 
       <PriorityField value={view.priority} onSelect={onSetPriority} />

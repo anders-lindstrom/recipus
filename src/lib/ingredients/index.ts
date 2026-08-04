@@ -68,7 +68,45 @@ const PREP_WORDS = [
   "delad",
 ];
 
-const PREP_WORDS_RE = new RegExp(`\\b(?:${PREP_WORDS.join("|")})\\b`, "gi");
+/**
+ * Every form a Swedish adjective actually appears in.
+ *
+ * The list above is uter-singular only, and no recipe is written that way. A
+ * recipe says "2 hackade lökar" and "500 g rivna morötter", never "hackad lök"
+ * — so the prep word survived into the ingredient name, matched no vara, and
+ * the import offered to CREATE one. That is how a catalog grows a "hackade
+ * lökar" beside the household's real lök, permanently, from a single import.
+ *
+ * Derived rather than listed, because listing three forms of twenty-three words
+ * is sixty-nine strings nobody will keep in step. The endings are a closed set:
+ *
+ *   -ad  → -ad / -at / -ade      (hackad, hackat, hackade)
+ *   -en  → -en / -et / -na       (riven, rivet, rivna)
+ *   -t   → -t / -ta              (kokt, kokta)
+ *   else → -Ø / -t / -a          (färsk, färskt, färska)
+ *
+ * A form that is not a real word — "valfrit" for "valfritt" — is a harmless
+ * extra alternative: it costs one branch in the regex and matches nothing.
+ */
+function inflectionsOf(word: string): string[] {
+  if (word.endsWith("ad")) {
+    const stem = word.slice(0, -2);
+    return [`${stem}ad`, `${stem}at`, `${stem}ade`];
+  }
+  if (word.endsWith("en")) {
+    const stem = word.slice(0, -2);
+    return [`${stem}en`, `${stem}et`, `${stem}na`];
+  }
+  if (word.endsWith("t")) return [word, `${word}a`];
+  return [word, `${word}t`, `${word}a`];
+}
+
+const PREP_WORD_FORMS = PREP_WORDS.flatMap(inflectionsOf)
+  // Longest first, so "hackade" is never consumed as "hackad" with a stray "e"
+  // left behind to become part of the vara name.
+  .sort((a, b) => b.length - a.length);
+
+const PREP_WORDS_RE = new RegExp(`\\b(?:${PREP_WORD_FORMS.join("|")})\\b`, "gi");
 
 // Trailing qualifiers describe how/when to use an ingredient, not what it is.
 // Matched with a leading word boundary so e.g. "ca" never matches inside an

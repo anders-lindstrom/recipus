@@ -3,6 +3,11 @@
 import { useMemo, useRef, useState } from "react";
 import type { CatalogItem, Id } from "@/lib/domain";
 import { focusableWithin } from "@/lib/client/use-focus-trap";
+import {
+  isArrowKey,
+  stepFocusWithin,
+  type ArrowKey,
+} from "@/lib/client/spatial-focus";
 import { useLongPress } from "@/lib/client/use-long-press";
 import { resolvePair, resolveQuery } from "@/lib/services/search";
 import { cn, normalizeName } from "@/lib/utils";
@@ -412,73 +417,23 @@ export function AddBar({
   }
 
   /**
-   * Two stops share a row when their tops agree. Grid tiles agree exactly; list
-   * rows are a whole row apart, so a few pixels of slack is enough and cannot
-   * accidentally merge two of them.
-   */
-  const SAME_ROW_PX = 8;
-
-  /**
-   * Step by geometry, not by document order.
+   * Step by geometry, not by document order — see `spatial-focus`, which owns
+   * the rule and is where it is tested. Document order is right for the results
+   * list and wrong for "Vanligast", a three-column `TileGrid` whose consecutive
+   * tiles are side by side on screen.
    *
-   * Document order is the right answer for the results list and the wrong one
-   * for "Vanligast", which is a three-column `TileGrid`: consecutive tiles in
-   * the DOM are side by side on screen, so ArrowDown walked SIDEWAYS along the
-   * first row and ArrowUp could never leave it. That is the identical defect
-   * this lane filed against the list screen's own grid, and it shipped here
-   * first — found in review, not by me.
-   *
-   * Reading the boxes handles both shapes with one rule and needs no column
-   * count: down is the nearest stop starting below this one, tie-broken by
-   * horizontal centre so a grid keeps its column; left and right only consider
-   * stops on the same row, so they do nothing in a single-column list.
+   * All this adds is the one thing that belongs to the add bar rather than to
+   * grids in general: off the top is back to the field, which is where more
+   * typing goes. Off the bottom stays put rather than wrapping — wrapping past
+   * the last result into the confirmation strip reads as the list having moved
+   * under you.
    */
-  function stepWithin(key: "ArrowDown" | "ArrowUp" | "ArrowLeft" | "ArrowRight") {
+  function stepWithin(key: ArrowKey) {
     const stops = panel.current ? focusableWithin(panel.current) : [];
     const current = document.activeElement;
     if (!(current instanceof HTMLElement) || !stops.includes(current)) return;
-
-    const from = current.getBoundingClientRect();
-    const boxed = stops
-      .filter((el) => el !== current)
-      .map((el) => ({ el, r: el.getBoundingClientRect() }));
-
-    if (key === "ArrowLeft" || key === "ArrowRight") {
-      const sameRow = boxed.filter(
-        ({ r }) =>
-          Math.abs(r.top - from.top) < SAME_ROW_PX &&
-          (key === "ArrowRight" ? r.left > from.left : r.left < from.left),
-      );
-      sameRow
-        .sort((a, b) =>
-          key === "ArrowRight" ? a.r.left - b.r.left : b.r.left - a.r.left,
-        )[0]
-        ?.el.focus();
-      return;
-    }
-
-    const down = key === "ArrowDown";
-    const candidates = boxed.filter(({ r }) =>
-      down ? r.top > from.top + SAME_ROW_PX : r.top < from.top - SAME_ROW_PX,
-    );
-
-    // Off the top is back to the field, which is where more typing goes. Off the
-    // bottom stays put rather than wrapping: wrapping past the last result into
-    // the confirmation strip reads as the list having moved under you.
-    if (candidates.length === 0) {
-      if (!down) input.current?.focus();
-      return;
-    }
-
-    const centre = (r: DOMRect) => r.left + r.width / 2;
-    candidates
-      .sort(
-        (a, b) =>
-          (down ? a.r.top - b.r.top : b.r.top - a.r.top) ||
-          Math.abs(centre(a.r) - centre(from)) -
-            Math.abs(centre(b.r) - centre(from)),
-      )[0]
-      .el.focus();
+    if (stepFocusWithin(stops, current, key)) return;
+    if (key === "ArrowUp") input.current?.focus();
   }
 
   const typing = name.length >= 1;
@@ -502,7 +457,18 @@ export function AddBar({
       // a dead end you can only leave with the mouse.
       onKeyDown={(e) => {
         if (e.key !== "Escape") return;
-        if (document.activeElement === input.current) return;
+        /**
+         * The field owns its own Escape, and this must not second-guess it.
+         *
+         * This used to ask `document.activeElement === input.current`, which is
+         * a question about the state the field's handler has ALREADY changed:
+         * an Escape in an empty field blurs, so by the time the event got here
+         * the answer was "no" and this refocused it — and focusing the field
+         * reopens the panel. Measured: the "Vanligast" pane could not be
+         * dismissed by any number of presses. Whose element the event started
+         * on is the fact this actually needs, and nothing can move it.
+         */
+        if (e.target === input.current) return;
         e.preventDefault();
         input.current?.focus();
       }}
@@ -648,15 +614,13 @@ export function AddBar({
             // Left and right join down and up because "Vanligast" is a grid, and
             // a grid you can only walk vertically is half a grid. They are inert
             // in the single-column lists, where nothing shares a row.
-            if (
-              e.key !== "ArrowDown" &&
-              e.key !== "ArrowUp" &&
-              e.key !== "ArrowLeft" &&
-              e.key !== "ArrowRight"
-            ) {
-              return;
-            }
+            if (!isArrowKey(e.key)) return;
             e.preventDefault();
+            // The list screen runs the same stepping over its tiles from a
+            // handler on the page root, and this panel is inside it. Without
+            // this, one press would be answered twice — once here and once by a
+            // handler whose stops are a different set entirely.
+            e.stopPropagation();
             stepWithin(e.key);
           }}
           className="absolute inset-x-0 top-full z-30 mt-1.5 overflow-hidden rounded-card border border-line bg-surface-raised shadow-xl shadow-black/10"

@@ -9,6 +9,8 @@ import { opsRoutes } from "./routes/ops";
 import { recipesRoutes } from "./routes/recipes";
 import { streamRoutes } from "./routes/stream";
 import { suggestionsRoutes } from "./routes/suggestions";
+import { alexaRoutes } from "./routes/alexa";
+import { voiceRoutes } from "./routes/voice";
 
 export type ApiEnv = {
   Variables: {
@@ -88,6 +90,26 @@ export function createApp() {
       return c.json({ status: "degraded", db: "down" }, 503);
     }
   });
+
+  /*
+   * The voice doors, mounted BEFORE the Authelia gate and each carrying its own
+   * lock.
+   *
+   * Registered here for the same structural reason `/health` is: the callers
+   * are machines, not browsers. Home Assistant has no Authelia session and no
+   * way to answer a 2FA challenge; Alexa's request comes from Amazon's servers
+   * and is proved by a signature rather than a cookie. Putting them behind the
+   * proxy gate would mean they simply never work.
+   *
+   * That makes each of these the only unauthenticated-by-Authelia WRITE path in
+   * the app, so neither is allowed to be merely unguarded: `/voice` refuses to
+   * serve at all without `VOICE_INGEST_SECRET`, and `/alexa` verifies Amazon's
+   * request signature and the skill id before it will look at a body. An
+   * accidentally exposed container port must still produce 401s here, not an
+   * open write to the household's shopping list.
+   */
+  app.route("/voice", voiceRoutes());
+  app.route("/alexa", alexaRoutes());
 
   app.route("/", api());
   return app;

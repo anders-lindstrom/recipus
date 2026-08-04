@@ -39,8 +39,12 @@ function htmlResponse(status = 200): Response {
   });
 }
 
-function emptySnapshot(listId: string): ListSnapshot {
+function emptySnapshot(listId: string, seq = Number.MAX_SAFE_INTEGER): ListSnapshot {
   return {
+    // Fresh by default, so every existing test keeps meaning what it meant:
+    // they are all about what a hydrate DOES, not about whether it is refused.
+    // The staleness cases pass an explicit seq.
+    seq,
     list: { id: listId, name: "Hemköp", icon: "1F6D2", position: 0, categoryOrder: [] },
     categories: [],
     catalog: [],
@@ -512,5 +516,96 @@ describe("hydrating the registry", () => {
     expect(state.products["prod:7310865004703"]?.catalogItemId).toBe(MILK);
     expect(state.aliases["kottfars"]?.catalogItemId).toBe("notfars");
     expect(state.barcodes["7310865004703"]?.productId).toBe("prod:7310865004703");
+  });
+});
+
+/**
+ * The cold open that used to eat the other phone's additions.
+ *
+ * `applySnapshot` rebuilds from `emptyState()` and replays only the OUTBOX on
+ * top. That is right when the snapshot is fresh and destructive when it is not
+ * — and the service worker guarantees it sometimes is not, because it caches
+ * the rendered document and a cold open in a shop replays whatever server
+ * render was cached.
+ *
+ * Anything that arrived over SSE is NOT in this device's outbox, because those
+ * are not this device's ops. So they were rebuilt away, and the cursor was
+ * never lowered, so catch-up asked for ops after a seq they were already behind
+ * and the server had nothing to send. The list simply lost them, silently.
+ */
+describe("a stale snapshot cannot overwrite live local state", () => {
+  it("keeps changes that arrived over the stream after the snapshot was built", async () => {
+    let captured: FakeEventSource | null = null;
+    const store = createListStore(LIST, "anders", {
+      fetch: makeFetchMock(),
+      createEventSource: () => {
+        captured = new FakeEventSource();
+        return captured;
+      },
+    });
+
+    await store.hydrate(emptySnapshot(LIST, 10));
+    store.connect();
+    await vi.waitFor(() => expect(captured?.onOp).toBeTruthy());
+
+    // The partner adds milk at home. It arrives here over SSE, so it lands in
+    // local state and in NO outbox — which is exactly what made it fragile.
+    captured!.onOp!({ data: JSON.stringify({ seq: 42, op: addItem("from-partner") }) });
+    await vi.waitFor(() =>
+      expect(store.getState().entries[`${LIST}:${MILK}`]).toBeTruthy(),
+    );
+
+    // Now the shop, offline: the service worker serves a document rendered
+    // before any of that happened.
+    await store.hydrate(emptySnapshot(LIST, 10));
+
+    expect(store.getState().entries[`${LIST}:${MILK}`]).toBeTruthy();
+  });
+
+  it("still rebuilds from a snapshot that is genuinely newer", async () => {
+    // The guard must not turn into "never hydrate again". A fresh snapshot is
+    // still the authoritative bootstrap.
+    const store = createListStore(LIST, "anders", { fetch: makeFetchMock() });
+    await store.hydrate(emptySnapshot(LIST, 10));
+
+    const withMilk = emptySnapshot(LIST, 99);
+    withMilk.entries = [
+      {
+        id: `${LIST}:${MILK}`,
+        listId: LIST,
+        catalogItemId: MILK,
+        createdAt: "2026-03-12T10:00:00.000Z",
+        createdBy: "anders",
+        removedAt: null,
+        priority: "normal",
+        updatedAt: "2026-03-12T10:00:00.000Z",
+        updatedBy: "anders",
+      },
+    ];
+    await store.hydrate(withMilk);
+
+    expect(store.getState().entries[`${LIST}:${MILK}`]).toBeTruthy();
+  });
+
+  it("carries the cursor forward to what the snapshot already contains", async () => {
+    // So catch-up asks for what comes AFTER the snapshot rather than re-walking
+    // a window it has covered. Raised, never lowered.
+    const seen: string[] = [];
+    const store = createListStore(LIST, "anders", {
+      fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (init?.method === "POST") return jsonResponse({ results: [] });
+        if (url.includes("/snapshot")) return jsonResponse(emptySnapshot(LIST, 77));
+        seen.push(url);
+        return jsonResponse([]);
+      }) as unknown as typeof fetch,
+      createEventSource: () => new FakeEventSource(),
+    });
+
+    await store.hydrate(emptySnapshot(LIST, 77));
+    store.connect();
+
+    await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0));
+    expect(seen.some((u) => u.includes("since=77"))).toBe(true);
   });
 });
