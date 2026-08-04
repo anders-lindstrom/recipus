@@ -214,4 +214,70 @@ describe("extractJsonLdRecipe", () => {
       expect(recipe?.ingredientLines).toEqual(["2 dl mjölk", "1 st ägg"]);
     });
   });
+
+  /**
+   * `recipeInstructions` is published in four different shapes, and Swedish
+   * recipe sites use all four. Getting this wrong is not a crash — it is a
+   * recipe screen with an empty method, or one whose first "step" is the word
+   * "Sås".
+   */
+  describe("recipeInstructions shapes", () => {
+    const stepsFrom = (recipeInstructions: unknown) =>
+      extractJsonLdRecipe(
+        wrap({ name: "Test", recipeIngredient: ["1 dl mjölk"], recipeInstructions }),
+        "https://example.com",
+      )?.instructions;
+
+    it("takes a list of HowToStep objects in order", () => {
+      expect(
+        stepsFrom([
+          { "@type": "HowToStep", text: "Smält smöret." },
+          { "@type": "HowToStep", text: "Rör i mjölet." },
+        ]),
+      ).toEqual(["Smält smöret.", "Rör i mjölet."]);
+    });
+
+    it("takes a plain list of strings", () => {
+      expect(stepsFrom(["Koka upp.", "Låt svalna."])).toEqual([
+        "Koka upp.",
+        "Låt svalna.",
+      ]);
+    });
+
+    it("splits a single string on newlines, and not on full stops", () => {
+      // The second line is one step by the author's reckoning. A sentence
+      // splitter would cut it in two — and would also cut "ca 1,5 dl" and every
+      // abbreviation in the language.
+      expect(stepsFrom("Sätt ugnen på 225°.\nHäll i 2 dl grädde. Rör om.")).toEqual([
+        "Sätt ugnen på 225°.",
+        "Häll i 2 dl grädde. Rör om.",
+      ]);
+    });
+
+    it("reaches into a HowToSection and drops its heading", () => {
+      // "Sås" as a step reads as an instruction to do something to the sauce.
+      expect(
+        stepsFrom([
+          {
+            "@type": "HowToSection",
+            name: "Sås",
+            itemListElement: [
+              { "@type": "HowToStep", text: "Fräs löken." },
+              { "@type": "HowToStep", text: "Häll i grädden." },
+            ],
+          },
+        ]),
+      ).toEqual(["Fräs löken.", "Häll i grädden."]);
+    });
+
+    it("decodes entities, collapses whitespace and drops empty steps", () => {
+      expect(
+        stepsFrom(["  Vispa gr&auml;dden  ", "", "   ", "Sila\tav\nvattnet"]),
+      ).toEqual(["Vispa grädden", "Sila av", "vattnet"]);
+    });
+
+    it("is empty when the page publishes no method at all", () => {
+      expect(stepsFrom(undefined)).toEqual([]);
+    });
+  });
 });

@@ -947,6 +947,8 @@ describe("pruneTombstones", () => {
       servings: 4,
       servingsUnit: "portioner",
       imageUrl: null,
+      instructions: [],
+      notes: null,
       ingredients: [],
     };
 

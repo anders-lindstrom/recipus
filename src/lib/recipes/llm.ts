@@ -29,6 +29,7 @@ const RecipeSchema = z.object({
   servingsUnit: z.string(),
   imageUrl: z.string().nullable(),
   ingredientLines: z.array(z.string()),
+  instructions: z.array(z.string()),
 });
 
 const SYSTEM_PROMPT = `Du extraherar ett matrecept från texten på en webbsida.
@@ -40,6 +41,9 @@ Regler:
 - servings och servingsUnit ska spegla vad receptet anger (t.ex. 4 och
   "portioner", eller 12 och "muffins"). Om det inte går att avgöra: 4 och
   "portioner".
+- instructions är tillagningsstegen i ordning, ett steg per element, ordagrant
+  på svenska. Numrera inte om dem — skriv steget som det står, utan "1." först.
+  Hittar du inga steg: tom lista. Hitta aldrig på tillagning.
 - imageUrl är en fullständig bild-URL om en sådan finns på sidan, annars null.
 - title är receptets namn.
 
@@ -87,6 +91,12 @@ export async function extractRecipeWithLlm(html: string, url: string): Promise<I
     servingsUnit,
     imageUrl: parsed.imageUrl,
     ingredientLines: parsed.ingredientLines,
+    // Trimmed and emptied out here rather than trusted: a model asked for "one
+    // step per element" will occasionally hand back a trailing empty string,
+    // and an empty numbered step reads as a bug in the app.
+    instructions: parsed.instructions
+      .map((step) => step.trim())
+      .filter((step) => step.length > 0),
     sourceUrl: url,
     method: "llm",
   };

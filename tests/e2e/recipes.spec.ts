@@ -80,6 +80,65 @@ test("a pasted ingredient list becomes a recipe", async ({ page }) => {
   await expect(ingredients).toHaveText([/3 dl mjöl/, /6 dl mjölk/, /3 ägg/]);
 });
 
+test("a recipe's method and note are written here and survive a reload", async ({
+  page,
+}) => {
+  /**
+   * The half of a recipe this app did not have.
+   *
+   * Everything the importer stores is what to BUY; nothing anywhere said what to
+   * do with it. Most Swedish recipe sites publish their ingredients as
+   * schema.org markup and leave the method in unmarked prose, so "imported, no
+   * steps" is the ordinary case rather than a failure — which makes typing them
+   * the path that has to work, not a fallback.
+   *
+   * The reload is the assertion that matters. An edit that only repainted would
+   * look identical until the next time anyone opened the recipe.
+   */
+  await page.goto("/recept/importera");
+  await page
+    .getByRole("button", { name: "Klistra in ingredienserna i stället" })
+    .click();
+  await page.getByLabel("Vad heter receptet?").fill("E2E Ugnspannkaka");
+  await page.getByLabel("Ingredienser").fill("3 dl mjöl\n6 dl mjölk\n3 ägg");
+  await page.getByRole("button", { name: "Spara receptet" }).click();
+  await expect(page.getByText("3 ingredienser")).toBeVisible();
+
+  // A pasted recipe has no method by construction — the person selected an
+  // ingredient list — so the screen says so rather than showing a blank.
+  await expect(page.getByText("Inga steg än")).toBeVisible();
+
+  await page.getByRole("button", { name: "Redigera recept" }).click();
+  const sheet = page.getByRole("dialog");
+  await sheet
+    .getByLabel("Gör så här")
+    .fill("Sätt ugnen på 225°.\n\nVispa ihop smeten.\nGrädda 20 min.");
+  await sheet.getByLabel("Er anteckning").fill("Dubbla satsen till fyra.");
+  await sheet.getByRole("button", { name: "Spara" }).click();
+
+  // One step per line, blank lines dropped rather than kept as an empty step.
+  const steps = page.getByRole("list", { name: "Gör så här" }).getByRole("listitem");
+  await expect(steps).toHaveText([
+    /Sätt ugnen på 225°/,
+    /Vispa ihop smeten/,
+    /Grädda 20 min/,
+  ]);
+  await expect(page.getByText("Dubbla satsen till fyra.")).toBeVisible();
+
+  await page.reload();
+  await expect(
+    page.getByRole("list", { name: "Gör så här" }).getByRole("listitem"),
+  ).toHaveCount(3);
+  await expect(page.getByText("Dubbla satsen till fyra.")).toBeVisible();
+
+  // And the editor opens on what was saved, so a second edit starts from the
+  // method rather than from a blank field.
+  await page.getByRole("button", { name: "Redigera recept" }).click();
+  await expect(page.getByRole("dialog").getByLabel("Gör så här")).toHaveValue(
+    "Sätt ugnen på 225°.\nVispa ihop smeten.\nGrädda 20 min.",
+  );
+});
+
 test("a failed import offers a way through, not just a way to repeat itself", async ({
   page,
 }) => {

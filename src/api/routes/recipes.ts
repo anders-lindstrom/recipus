@@ -13,6 +13,7 @@ import {
   jsonBody,
   jsonRes,
   recipeImportRequestSchema,
+  recipeEditSchema,
   recipeSchema,
   recipeSummarySchema,
 } from "../schemas";
@@ -36,6 +37,8 @@ interface RecipeToPersist {
   servingsUnit: string;
   imageUrl: string | null;
   ingredientLines: string[];
+  /** The method as the source published it. Empty when it published none. */
+  instructions: string[];
   sourceUrl: string | null;
 }
 
@@ -67,6 +70,8 @@ async function loadRecipe(id: string) {
     servings: recipeRow.servings,
     servingsUnit: recipeRow.servingsUnit,
     imageUrl: recipeRow.imageUrl,
+    instructions: recipeRow.instructions,
+    notes: recipeRow.notes,
     ingredients: ingredientRows.map((r) => ({
       id: r.id,
       recipeId: r.recipeId,
@@ -119,6 +124,7 @@ async function persistRecipe(recipe: RecipeToPersist, actor: string) {
       servings: recipe.servings,
       servingsUnit: recipe.servingsUnit,
       imageUrl: recipe.imageUrl,
+      instructions: recipe.instructions,
       createdBy: actor,
       updatedBy: actor,
     });
@@ -144,6 +150,10 @@ async function persistRecipe(recipe: RecipeToPersist, actor: string) {
     servings: recipe.servings,
     servingsUnit: recipe.servingsUnit,
     imageUrl: recipe.imageUrl,
+    instructions: recipe.instructions,
+    // A brand-new recipe has no household note by construction: this is the
+    // response to the request that created it.
+    notes: null,
     ingredients: ingredientRows.map((r) => ({
       id: r.id,
       recipeId,
@@ -319,6 +329,12 @@ export function recipesRoutes() {
             servingsUnit: "portioner",
             imageUrl: null,
             ingredientLines,
+            // Not asked for either, and for a stronger reason than servingsUnit:
+            // this path exists because someone selected an INGREDIENT LIST and
+            // copied it. Asking them to go back for the method as well would
+            // put a second errand in front of the one they came to do, and the
+            // editor on the recipe screen is where a method gets typed.
+            instructions: [],
             sourceUrl: null,
           },
           actor,
@@ -427,6 +443,80 @@ export function recipesRoutes() {
         rows.map((r) => ({ ...r, ingredientCount: counts.get(r.id) ?? 0 })),
         200,
       );
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "patch",
+      path: "/{id}",
+      tags: ["recipes"],
+      description:
+        "Edit what a household owns about a recipe: its title, what its quantities are for, the method, and their own note. Every field is optional and an absent one is left alone, so two people editing different halves cannot overwrite each other. `notes: null` clears the note; omitting it does not. Ingredient lines are not editable here — a line points at a vara and that pointer is maintained elsewhere; see PATCH /{id}/ingredients.",
+      request: { params: idParam, body: jsonBody(recipeEditSchema) },
+      responses: {
+        200: jsonRes(recipeSchema, "The recipe as it now stands"),
+        404: jsonRes(errorSchema, "Not found"),
+      },
+    }),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const edit = c.req.valid("json");
+      const actor = c.get("actor");
+
+      /*
+       * Straight to the table rather than through the op log, and that is the
+       * same boundary every other recipe write already sits on.
+       *
+       * The op log exists for the SHOPPING LIST: two phones, offline, in
+       * different shops, editing the same entry — which is why entries carry
+       * per-field clocks and last-write-wins. A recipe is not that. It is
+       * imported once, edited rarely, and never while walking round a shop; the
+       * whole library is fetched from the server whenever the screen opens, and
+       * there is no offline copy of it to reconcile. Import, delete and the
+       * ingredient mapping all work this way already, and a recipe edit that
+       * went through the log would be the only one that did.
+       *
+       * The cost is honest and bounded: two people editing the same recipe in
+       * the same minute, the second write wins whole fields. Nobody edits a
+       * recipe in a shop.
+       */
+      const [updated] = await db
+        .update(recipes)
+        .set({
+          // Spread rather than assigned, so "not mentioned" and "set to null"
+          // stay different things all the way down to the SQL. Drizzle omits an
+          // undefined key from the UPDATE; writing `title: edit.title` would
+          // send NULL for a request that never mentioned the title.
+          ...(edit.title !== undefined ? { title: edit.title } : {}),
+          ...(edit.servings !== undefined ? { servings: edit.servings } : {}),
+          ...(edit.servingsUnit !== undefined
+            ? { servingsUnit: edit.servingsUnit }
+            : {}),
+          ...(edit.instructions !== undefined
+            ? { instructions: edit.instructions }
+            : {}),
+          // An empty note is no note. The column is nullable so that "nobody
+          // wrote one" and "someone cleared one" can differ, but nothing in the
+          // app needs to tell them apart, and storing "" would put an empty
+          // heading on the screen.
+          ...(edit.notes !== undefined
+            ? { notes: edit.notes === null || edit.notes === "" ? null : edit.notes }
+            : {}),
+          updatedAt: new Date(),
+          updatedBy: actor,
+        })
+        .where(and(eq(recipes.id, id), isNull(recipes.deletedAt)))
+        .returning({ id: recipes.id });
+
+      if (!updated) return c.json({ error: "Not found" }, 404);
+
+      // Re-read rather than assembled from the patch: the response is what the
+      // recipe now IS, including the fields this request said nothing about,
+      // and the screen replaces its whole copy with it.
+      const recipe = await loadRecipe(id);
+      if (!recipe) return c.json({ error: "Not found" }, 404);
+      return c.json(recipe, 200);
     },
   );
 

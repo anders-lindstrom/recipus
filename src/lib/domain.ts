@@ -240,6 +240,14 @@ export interface Recipe {
   servings: number;
   servingsUnit: string;
   imageUrl: string | null;
+  /**
+   * The method, one step per entry, in order. Empty when nobody has written or
+   * imported one — which is common, and is why the screen has to read well with
+   * no steps at all rather than treating it as a missing field.
+   */
+  instructions: string[];
+  /** The household's own note. Never overwritten by an import — it is theirs. */
+  notes: string | null;
   ingredients: RecipeIngredient[];
 }
 

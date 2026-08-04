@@ -47,6 +47,7 @@ describe("extractRecipeWithLlm", () => {
         servingsUnit: "portioner",
         imageUrl: null,
         ingredientLines: ["2 dl mjölk"],
+        instructions: ["Blanda."],
       },
     });
 
@@ -73,6 +74,7 @@ describe("extractRecipeWithLlm", () => {
         servingsUnit: "portioner",
         imageUrl: null,
         ingredientLines: [],
+        instructions: [],
       },
     });
 
@@ -136,6 +138,10 @@ describe("extractRecipeWithLlm", () => {
         servingsUnit: "bullar",
         imageUrl: "https://example.com/a.jpg",
         ingredientLines: ["5 dl mjölk", "50 g jäst"],
+        // Deliberately ragged. A model told "one step per element" hands back a
+        // trailing blank often enough that an empty numbered step would reach
+        // the screen, and a numbered blank reads as a bug in the app.
+        instructions: ["  Smula jästen.  ", "Baka 12 min.", "   "],
       },
     });
 
@@ -147,6 +153,7 @@ describe("extractRecipeWithLlm", () => {
       servingsUnit: "bullar",
       imageUrl: "https://example.com/a.jpg",
       ingredientLines: ["5 dl mjölk", "50 g jäst"],
+      instructions: ["Smula jästen.", "Baka 12 min."],
       sourceUrl: "https://example.com/recept/kanelbullar",
       method: "llm",
     });

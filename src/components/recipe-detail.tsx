@@ -17,6 +17,7 @@ import { cn, normalizeName } from "@/lib/utils";
 import { ItemIcon } from "./icon";
 import { type PendingVara, resolveRecipeVaror } from "./recipe-model";
 import { RecipeAddSheet } from "./recipe-add-sheet";
+import { RecipeEditSheet, type RecipeEdit } from "./recipe-edit-sheet";
 import { ScreenHeader } from "./screen-header";
 import { Sheet } from "./sheet";
 import { UiIcon } from "./ui-icon";
@@ -47,6 +48,8 @@ interface ApiRecipe {
   servings: number;
   servingsUnit: string;
   imageUrl: string | null;
+  instructions: string[];
+  notes: string | null;
   ingredients: ApiRecipeIngredient[];
 }
 
@@ -56,6 +59,9 @@ function toDomainRecipe(api: ApiRecipe): Recipe {
     ingredients: api.ingredients.map((ing) => ({ ...ing, recipeId: api.id })),
   };
 }
+
+/** Ties the `<ol>` of steps to the heading above it, which is not a heading element. */
+const METHOD_HEADING_ID = "recipe-method-heading";
 
 type LoadStatus = "loading" | "error" | "ready";
 
@@ -168,6 +174,8 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
   const router = useRouter();
   const [armedForDelete, setArmedForDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   /**
    * Retire the recipe.
@@ -237,6 +245,38 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
   }, [recipeId, attempt]);
 
   const retry = () => setAttempt((n) => n + 1);
+
+  /**
+   * Save an edit, and adopt what the server says the recipe now is.
+   *
+   * The response is re-read rather than merged locally, so a field this request
+   * said nothing about cannot be quietly replaced by a stale copy of it — and
+   * so the screen shows what was actually stored rather than what was typed.
+   *
+   * No optimistic update, deliberately, and this is the one place in the app
+   * where that is right: the list is optimistic because it is used in a shop
+   * with no signal, and a recipe is edited at a table. Showing a saved method
+   * that never reached the server would be the worse failure, because nothing
+   * else on this screen would ever contradict it.
+   */
+  async function saveEdit(edit: RecipeEdit) {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/recipes/${encodeURIComponent(recipeId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(edit),
+      });
+      if (!res.ok) throw new Error(await readError(res, "Kunde inte spara."));
+      const data = (await res.json()) as ApiRecipe;
+      setResult({ attempt, kind: "ready", recipe: toDomainRecipe(data) });
+      setEditing(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Kunde inte spara.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const status: LoadStatus = !result || result.attempt !== attempt ? "loading" : result.kind;
   const recipe = result?.kind === "ready" ? result.recipe : null;
@@ -539,6 +579,76 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
               </li>
             ))}
           </ul>
+
+          {/* The half of a recipe this app did not have.
+              Everything above is what to buy; this is what to do with it, and
+              without it the screen answers a question nobody asks twice — you
+              already know what is in pannkakor by the time you are cooking
+              them. An `<ol>` because the order is the instruction. */}
+          <div className="mx-4 mt-7 mb-1 flex items-baseline gap-2">
+            <span
+              id={METHOD_HEADING_ID}
+              className="flex-1 text-overline text-ink-faint uppercase"
+            >
+              Gör så här
+            </span>
+          </div>
+
+          {recipe.instructions.length > 0 ? (
+            <ol
+              aria-labelledby={METHOD_HEADING_ID}
+              className="mx-4 flex flex-col gap-3"
+            >
+              {recipe.instructions.map((step, i) => (
+                <li key={i} className="flex gap-3 text-body text-ink">
+                  {/* The number is drawn rather than left to the list marker, so
+                      it can sit in its own column and the step's second line
+                      lines up under its first rather than under the digit. */}
+                  <span
+                    aria-hidden
+                    className="mt-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-full bg-surface-sunken text-caption font-bold text-ink-soft tabular-nums"
+                  >
+                    {i + 1}
+                  </span>
+                  <span className="flex-1 whitespace-pre-line">{step}</span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            /* Said plainly rather than left blank. Most Swedish recipe sites
+               publish their ingredients as schema.org markup and their method as
+               unmarked prose, so "no steps" is the common case for an import
+               rather than a failure — and the way out of it is one tap away. */
+            <p className="mx-4 text-body-sm text-ink-soft">
+              Inga steg än. Skriv dem själv, eller läs dem på källan.
+            </p>
+          )}
+
+          {/* The household's own note, which is the only part of a recipe that
+              is theirs — "dubbla såsen", "barnen äter inte kapris". Below the
+              method because it is a comment ON it, and visually set apart so it
+              never reads as a step. */}
+          {recipe.notes && (
+            <div className="mx-4 mt-6 rounded-card border-l-[3px] border-brand bg-surface-raised px-3.5 py-3">
+              <p className="text-overline text-ink-faint uppercase">
+                Er anteckning
+              </p>
+              <p className="mt-1 text-body whitespace-pre-line text-ink">
+                {recipe.notes}
+              </p>
+            </div>
+          )}
+
+          <div className="mx-4 mt-6">
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="flex min-h-11 w-full items-center justify-center gap-2 rounded-control bg-surface px-3 text-body font-semibold text-ink"
+            >
+              <UiIcon name="edit" size={16} />
+              Redigera recept
+            </button>
+          </div>
         </>
       )}
 
@@ -563,6 +673,15 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
             )}
           </button>
         </div>
+      )}
+
+      {editing && recipe && (
+        <RecipeEditSheet
+          recipe={recipe}
+          saving={saving}
+          onSave={saveEdit}
+          onClose={() => setEditing(false)}
+        />
       )}
 
       {flow.step === "choosing-list" && (

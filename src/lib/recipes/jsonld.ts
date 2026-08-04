@@ -12,6 +12,12 @@ export interface ImportedRecipe {
   servingsUnit: string; // "portioner", "muffins", "bitar"
   imageUrl: string | null;
   ingredientLines: string[]; // RAW lines, e.g. "2 dl vispgrädde" — not parsed here
+  /**
+   * The method, one step per entry, in order. Empty when the page published
+   * none — which is a real answer rather than a failure: plenty of pages carry
+   * schema.org ingredients and leave the steps in unmarked prose.
+   */
+  instructions: string[];
   sourceUrl: string;
   method: "jsonld" | "llm";
 }
@@ -138,6 +144,57 @@ function extractIngredientLines(value: unknown): string[] {
   return lines;
 }
 
+/**
+ * The steps, out of the four shapes `recipeInstructions` is published in.
+ *
+ * schema.org allows a plain string, a list of strings, a list of `HowToStep`
+ * objects, or a `HowToSection` whose `itemListElement` holds the steps — and
+ * Swedish recipe sites use all four. Anything that yields no text is skipped
+ * rather than kept as an empty step: a numbered blank is worse than a shorter
+ * method.
+ *
+ * A single string is split on newlines, because the sites that publish one
+ * publish the whole method as one field with the steps separated that way. It
+ * is NOT split on full stops: "Häll i 2 dl grädde. Rör om." is one step by the
+ * author's reckoning, and a sentence splitter would also cut "ca 1,5 dl" and
+ * every abbreviation in the language.
+ *
+ * Section names are dropped rather than promoted to a step. "Sås" as a step
+ * reads as an instruction to do something to the sauce; the steps under it
+ * already say what to do.
+ */
+function extractInstructions(value: unknown): string[] {
+  const steps: string[] = [];
+
+  const walk = (node: unknown): void => {
+    if (typeof node === "string") {
+      for (const line of decodeHtmlEntities(node).split(/\r?\n/)) {
+        const collapsed = line.replace(/\s+/g, " ").trim();
+        if (collapsed) steps.push(collapsed);
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+
+    const obj = node as Record<string, unknown>;
+    // A section holds its steps in `itemListElement`; a step holds its words in
+    // `text`. Checked in that order because a section can carry a `name` too,
+    // and taking it would replace the steps with the heading above them.
+    if (obj.itemListElement !== undefined) {
+      walk(obj.itemListElement);
+      return;
+    }
+    walk(obj.text ?? obj.name ?? null);
+  };
+
+  walk(value);
+  return steps;
+}
+
 function firstImageString(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
@@ -218,6 +275,7 @@ function buildImportedRecipe(node: Record<string, unknown>, pageUrl: string): Im
     servingsUnit,
     imageUrl: extractImageUrl(node.image, pageUrl),
     ingredientLines: extractIngredientLines(node.recipeIngredient),
+    instructions: extractInstructions(node.recipeInstructions),
     sourceUrl: pageUrl,
     method: "jsonld",
   };

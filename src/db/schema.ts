@@ -329,6 +329,32 @@ export const recipes = pgTable("recipes", {
   servings: real("servings").notNull().default(4),
   servingsUnit: text("servings_unit").notNull().default("portioner"),
   imageUrl: text("image_url"),
+  /**
+   * The method, one step per entry, in order.
+   *
+   * `jsonb` rather than a `recipe_steps` table, and that is a decision rather
+   * than a shortcut. A step has no identity of its own — nothing points at one,
+   * nothing is scheduled against one, and no query ever asks for the third step
+   * of anything. What the app does with them is show all of them and replace
+   * all of them, which is exactly one value under one clock. `lists.category_order`
+   * is here for the same reason and reads the same way.
+   *
+   * Contrast `recipe_ingredients`, which IS a table: an ingredient line points
+   * at a vara, that pointer is corrected by merges, and the whole two-level
+   * model hangs off it.
+   *
+   * Empty is a real and common answer. Plenty of pages publish schema.org
+   * ingredients and leave the method in unmarked prose.
+   */
+  instructions: jsonb("instructions").$type<string[]>().notNull().default([]),
+  /**
+   * The household's own note — "dubbla såsen", "barnen äter inte kapris".
+   *
+   * Separate from the steps because it does not come from the source and must
+   * never be overwritten by re-importing it. It is the one part of a recipe
+   * that is theirs.
+   */
+  notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

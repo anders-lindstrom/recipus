@@ -183,9 +183,37 @@ export const recipeSchema = z
     servings: z.number(),
     servingsUnit: z.string(),
     imageUrl: z.string().nullable(),
+    instructions: z.array(z.string()),
+    notes: z.string().nullable(),
     ingredients: z.array(recipeIngredientSchema),
   })
   .openapi("Recipe");
+
+/**
+ * What a household may change about a recipe after it is stored.
+ *
+ * Every field optional, and absent means "leave it alone" — so the editor can
+ * send only the thing it changed and two people editing different halves do not
+ * overwrite each other. `notes` is nullable BECAUSE clearing it has to be
+ * expressible: `undefined` is "not mentioned" and `null` is "there is no note".
+ *
+ * The ingredients are deliberately not here. A line points at a vara, that
+ * pointer is maintained by merges and by the add-to-list flow, and editing the
+ * text of one would silently orphan it — see `PATCH /{id}/ingredients`, which
+ * is the narrow thing that route exists to do. Correcting a bad import means
+ * re-importing it; correcting a bad METHOD is what this is for.
+ */
+export const recipeEditSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200).optional(),
+    servings: z.number().positive().max(999).optional(),
+    servingsUnit: z.string().trim().min(1).max(40).optional(),
+    // Bounded because a method is a method, not a document. 60 steps is well
+    // past any real recipe and well short of a way to fill a column.
+    instructions: z.array(z.string().trim().min(1).max(2000)).max(60).optional(),
+    notes: z.string().trim().max(4000).nullable().optional(),
+  })
+  .openapi("RecipeEdit");
 
 /** GET /api/recipes row — the list view, without the full ingredient bodies. */
 export const recipeSummarySchema = z
