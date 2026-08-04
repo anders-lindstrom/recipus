@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import {
   catalogTile,
+  dismissAddBar,
   dropCatalogItems,
   expect,
   longPressTile,
@@ -102,6 +103,10 @@ test("a split-off sort is findable and addable again afterwards", async ({
   await expect(onListTile(page, "blåbär mogna")).toBeVisible();
 
   // Buy it, so it leaves the list and goes back to being vocabulary.
+  //
+  // The panel is still open on the confirmation of the add, and a press outside
+  // it is spent dismissing it rather than delivered to whatever is underneath.
+  await dismissAddBar(page);
   await onListTile(page, "blåbär mogna").click();
   await expect(onListTile(page, "blåbär mogna")).toHaveCount(0);
 
@@ -164,7 +169,10 @@ test("a sort you regret can be hidden, and typing its name brings it back", asyn
   await page.getByRole("option", { name: /som egen vara/ }).click();
   await expect(onListTile(page, "gurka inlagd")).toBeVisible();
 
-  // Off the list, so it is back in the catalog well where it clutters.
+  // Off the list, so it is back in the catalog well where it clutters. The
+  // panel is still up on the confirmation of the create, and a press outside it
+  // now dismisses rather than acts — see the note in the split test above.
+  await dismissAddBar(page);
   await onListTile(page, "gurka inlagd").click();
   const tile = catalogTile(page, "gurka inlagd");
   await expect(tile).toBeVisible();

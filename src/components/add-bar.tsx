@@ -9,6 +9,7 @@ import {
   type ArrowKey,
 } from "@/lib/client/spatial-focus";
 import { useLongPress } from "@/lib/client/use-long-press";
+import { useDismissOnOutsidePress } from "@/lib/client/use-outside-press";
 import { resolvePair, resolveQuery } from "@/lib/services/search";
 import { cn, normalizeName } from "@/lib/utils";
 import { ItemIcon } from "./icon";
@@ -446,7 +447,25 @@ export function AddBar({
     open && typing && (matches.length > 0 || canCreate || pair),
   );
   const showFrequent = open && !typing && frequent.length > 0;
-  const showPanel = showSuggestions || showFrequent || (open && justAdded);
+  const showPanel = Boolean(
+    showSuggestions || showFrequent || (open && justAdded),
+  );
+
+  /**
+   * Pressing away from the panel dismisses it and does nothing else.
+   *
+   * Blur already closed the panel, so this looked like it worked — but the
+   * press went through to whatever was under it, and what is under it is a grid
+   * where one tap takes an item off the list and, in buy mode, records buying
+   * it. Getting rid of the panel and buying the milk were the same gesture.
+   */
+  useDismissOnOutsidePress(showPanel, wrap, () => {
+    closePanel();
+    // The panel is gone, so the field must not still look like the thing you
+    // are in the middle of using — and leaving it focused on a phone leaves the
+    // on-screen keyboard up over a list you just asked to see.
+    input.current?.blur();
+  });
 
   return (
     <div

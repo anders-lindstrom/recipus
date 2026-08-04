@@ -105,6 +105,28 @@ export async function dropRecipes(ids: string[]): Promise<void> {
 }
 
 /**
+ * Put the add bar's panel away without spending a press on it.
+ *
+ * A press outside the panel dismisses it and is swallowed rather than delivered
+ * to whatever was underneath — see `useDismissOnOutsidePress`, and the report
+ * that asked for it: pressing away from the panel was taking items off the list
+ * and, in buy mode, buying them. So a test that adds THROUGH the panel and then
+ * wants to press something on the list has to dismiss it first, or spend its
+ * first press doing so and obscure what it is actually asserting.
+ *
+ * A REAL press, on the header's own empty corner, rather than a `blur()`.
+ * Blurring only closes the panel if something inside it still has focus, and
+ * after a sheet opened from a search row closes there are paths where focus has
+ * already landed on `<body>` — no focus to lose, no blur event, panel still up.
+ * The dismissal is a document-level pointer handler, so a press is the one thing
+ * that always works. It is swallowed by design and so changes nothing else, and
+ * it is harmless when the panel is already shut: there is no control up there.
+ */
+export async function dismissAddBar(page: Page): Promise<void> {
+  await page.locator("header").first().click({ position: { x: 2, y: 2 } });
+}
+
+/**
  * Give a few varor a shopping history.
  *
  * "Vanligast" is built from `use_count`, which counts SHOPS — and `dropTestList`

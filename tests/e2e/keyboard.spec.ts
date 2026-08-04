@@ -1,5 +1,6 @@
 import {
   accessibleText,
+  catalogTile,
   expect,
   markFrequentlyBought,
   onListTile,
@@ -317,6 +318,45 @@ test("a tap with a thumb leaves no focus ring behind on the next tile", async ({
 
   await expect(onListTile(page, order[0])).toHaveCount(0);
   await expect(onListTile(page, order[1])).not.toBeFocused();
+});
+
+test("pressing away from the panel dismisses it without touching the list", async ({
+  freshPage: page,
+}) => {
+  /**
+   * "I pressed outside to get rid of the panel and it took an item off my
+   * list." Blur closed the panel, so it LOOKED like a dismissal — but the press
+   * carried on through to the tile underneath, and a tile is the one control on
+   * this screen that both mutates the list and, in buy mode, records a purchase.
+   *
+   * The panel is opened here with nothing typed, which is the state it is in
+   * when someone opens the field, changes their mind, and presses away.
+   */
+  await markFrequentlyBought(["banan", "citron", "gurka"]);
+  await page.reload();
+
+  const field = page.getByLabel(FIELD);
+  const frequent = page.getByRole("group", { name: "Vanligast" });
+  await field.click();
+  await expect(frequent).toBeVisible();
+
+  /**
+   * A tile the panel is NOT covering, which is the only kind this can happen
+   * to. A press inside the panel's own box lands on the panel and always did;
+   * the tiles that took the stray press are the ones below it, and any tile far
+   * enough down the page stands for all of them.
+   */
+  const tile = catalogTile(page, "ost");
+  await tile.tap();
+
+  await expect(frequent).toHaveCount(0);
+  // The finding: "ost" used to be on the list now, put there by a press that
+  // meant "go away".
+  await expect(onListTile(page, "ost")).toHaveCount(0);
+
+  // And the press after it works normally — one dismissal, not a mode.
+  await tile.tap();
+  await expect(onListTile(page, "ost")).toBeVisible();
 });
 
 test("Escape out of a sheet that opens onto a field returns focus to the trigger", async ({
