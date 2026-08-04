@@ -388,11 +388,23 @@ export function VarorClient({
         catalogItemId,
         bought: false,
       }),
+    /**
+     * The same op the list screen's own tiles dispatch, with no amount.
+     *
+     * Nothing about the registry makes this a different kind of add: an entry
+     * is `(listId, catalogItemId)` wherever it is created, and `add_item` is
+     * idempotent on that pair — so adding something already there changes
+     * nothing, which is what lets the button say "Står på Hemköp" rather than
+     * having to guard.
+     */
+    addToList: (targetListId, catalogItemId) =>
+      dispatch({ kind: "add_item", listId: targetListId, catalogItemId }),
   };
 
   return (
     <VarorScreen
       varor={varor}
+      listId={listId}
       queue={queue}
       catalog={state.catalog}
       categories={categories}

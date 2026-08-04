@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { slugify } from "@/lib/utils";
 import {
   catalogTile,
@@ -154,6 +154,18 @@ async function settle(page: Page): Promise<void> {
   await expect.poll(() => outboxSize(page), { timeout: 5000 }).toBe(0);
 }
 
+/**
+ * Open the vara sheet's "Avancerat" disclosure.
+ *
+ * Hiding, splitting, merging and deleting live behind it: they repair the
+ * catalog rather than use it, a few times a year each, and they were four of the
+ * seven full-width rows standing in front of "lägg till i listan". A test that
+ * exercises one of them has to open it, exactly as a person does.
+ */
+async function openAdvanced(sheet: Locator): Promise<void> {
+  await sheet.getByText("Avancerat").click();
+}
+
 test("a scanned product is placed on a vara from the review queue", async ({
   page,
   listId,
@@ -168,9 +180,14 @@ test("a scanned product is placed on a vara from the review queue", async ({
 
   // What the screen is, before anything else on it. The same things, with the
   // same pictures and the same names, are tiles on the list — where a tap BUYS
-  // one — and rows here, where a tap edits. The screen said nothing at all
-  // about which of the two it was, and this is the sentence that says it.
-  await expect(page.getByText(/Inget läggs på listan härifrån/)).toBeVisible();
+  // one — and rows here, where a tap opens a sheet. The screen said nothing at
+  // all about which of the two it was, and this is the sentence that says it.
+  //
+  // It used to end "Inget läggs på listan härifrån", which was true rather than
+  // reassuring: you could stand here looking at mjölk, want mjölk, and be sent
+  // back to the list to type its name. The sheet adds to the list now, so the
+  // copy says what a tap DOES.
+  await expect(page.getByText(/lägga den på listan/)).toBeVisible();
 
   // The debt is advertised rather than tucked away — the entire argument for
   // the queue being prominent is that these purchases are already recorded and
@@ -220,6 +237,43 @@ test("a scanned product is placed on a vara from the review queue", async ({
   await dropCatalogItems([varaId]);
 });
 
+test("a vara can be put on the current list from the registry", async ({
+  page,
+  listId,
+}) => {
+  /**
+   * The registry used to say, in writing, that it could not do this — on the
+   * position that this screen is where you edit the WORD and the list is where
+   * you shop. From inside the errand it reads differently: you are standing
+   * here looking straight at the vara, you want it, and the answer was to go
+   * back and type its name again.
+   *
+   * Which list it goes on is not asked. You arrive here FROM a list, and the
+   * button names the one it means so that is never a guess.
+   */
+  const varaName = `Filmjolk${unique().replace(/-/g, "")}`;
+  const varaId = await createVara(page, varaName);
+
+  await page.goto(`/varor?list=${listId}&vara=${varaId}`);
+  const sheet = page.getByRole("dialog");
+
+  const add = sheet.getByRole("button", { name: `Lägg till i E2E` });
+  await expect(add).toBeVisible();
+  await add.click();
+
+  // Says so where you are, rather than only on the screen you are not looking
+  // at — and stops offering, because it is done.
+  await expect(sheet).toContainText("Står på E2E");
+  await expect(sheet.getByRole("button", { name: /^Lägg till i/ })).toHaveCount(0);
+
+  // And it is really on the list, not merely claimed to be.
+  await page.goto(`/?list=${listId}`);
+  await expect(onListTile(page, varaName)).toBeVisible();
+
+  await settle(page);
+  await dropCatalogItems([varaId]);
+});
+
 test("merging keeps the merged-away word finding the survivor", async ({
   page,
   listId,
@@ -234,6 +288,7 @@ test("merging keeps the merged-away word finding the survivor", async ({
 
   await page.getByRole("button", { name: new RegExp(goneName) }).click();
   const sheet = page.getByRole("dialog");
+  await openAdvanced(sheet);
   await sheet.getByRole("button", { name: "Slå samman med annan vara" }).click();
 
   // Said before the choice, not after: none of a merge's consequences are
@@ -278,6 +333,7 @@ test("a split moves only the ticked products, and the source vara stays", async 
   await source.click();
 
   const sheet = page.getByRole("dialog");
+  await openAdvanced(sheet);
   await sheet.getByRole("button", { name: "Dela upp" }).click();
   await sheet.getByLabel("Ny vara").fill(splitName);
 
@@ -339,6 +395,7 @@ test("a vara on the list cannot be deleted until it is taken off it", async ({
   // The blocker clears without the sheet closing, so the fix and the thing it
   // unblocks are one continuous action.
   await expect(sheet.getByText("Går inte att ta bort än")).toHaveCount(0);
+  await openAdvanced(sheet);
   await sheet.getByRole("button", { name: `Ta bort ${varaName}` }).click();
 
   await expect(page.getByText(varaName, { exact: true })).toHaveCount(0);
@@ -379,9 +436,9 @@ test("an item you invented can be moved out of Övrigt, and it stays moved", asy
   await page.getByRole("button", { name: new RegExp(varaName) }).click();
 
   const sheet = page.getByRole("dialog");
-  await expect(sheet.getByRole("button", { name: /Byt kategori/ })).toContainText(
-    "övrigt",
-  );
+  // The category is named in the sheet's header rather than on the control that
+  // changes it — which is what let that control shrink to a third of a row.
+  await expect(sheet).toContainText(/övrigt/i);
   await sheet.getByRole("button", { name: /Byt kategori/ }).click();
   await page.getByRole("button", { name: /Bröd/ }).first().click();
 
@@ -390,9 +447,7 @@ test("an item you invented can be moved out of Övrigt, and it stays moved", asy
   await page.reload();
   await page.getByRole("button", { name: new RegExp(varaName) }).click();
   const moved = page.getByRole("dialog");
-  await expect(
-    moved.getByRole("button", { name: /Byt kategori/ }),
-  ).not.toContainText("övrigt");
+  await expect(moved).not.toContainText(/övrigt/i);
 
   // The icon follows the aisle. An add-bar item never had one picked for it — it
   // inherited Övrigt's box — so leaving it as a box after re-filing would make
@@ -487,9 +542,7 @@ test("changing a vara's category keeps the sheet open, ready for the next change
   // everything with the edit to take on trust.
   await expect(sheet).toBeVisible();
   await expect(sheet).toContainText(varaName);
-  await expect(sheet.getByRole("button", { name: /Byt kategori/ })).toContainText(
-    /bröd/i,
-  );
+  await expect(sheet).toContainText(/bröd/i);
 
   // And the second edit is reachable without navigating back, which is the whole
   // point of not closing.
@@ -571,6 +624,7 @@ test("merging a vara that is on the list moves the shopping to the survivor", as
   // The consequence is stated before the choice, as every consequence on this
   // screen is. It used to promise the item would disappear off the list, which
   // was true of the tile and not of the row underneath it.
+  await openAdvanced(sheet);
   await sheet.getByRole("button", { name: "Slå samman med annan vara" }).click();
   await expect(sheet.getByText(/flyttas över till varan du väljer/)).toBeVisible();
 
@@ -715,6 +769,7 @@ test("a merged recipe ingredient keeps its recipe, and adding the recipe again d
   await page.goto(`/varor?list=${listId}`);
   await page.getByRole("button", { name: new RegExp(lineName) }).click();
   const sheet = page.getByRole("dialog");
+  await openAdvanced(sheet);
   await sheet.getByRole("button", { name: "Slå samman med annan vara" }).click();
   await sheet.getByLabel("Sök vara att slå samman med").fill(survivorName);
   await sheet.getByRole("button", { name: new RegExp(survivorName) }).click();

@@ -3,6 +3,7 @@
 import { useRef } from "react";
 import { useFocusTrap } from "@/lib/client/use-focus-trap";
 import { cn } from "@/lib/utils";
+import { UiIcon } from "./ui-icon";
 
 /**
  * The bottom sheet.
@@ -188,9 +189,59 @@ export function SheetButton({
   tone = "neutral",
   icon,
   onClick,
+  disabled = false,
   children,
 }: {
-  tone?: "neutral" | "danger";
+  /**
+   * `primary` is the one action a sheet exists to make easy, and there is at
+   * most one per sheet — green, because green means "on the list" in this app
+   * and the only sheet using it is putting something there.
+   */
+  tone?: "neutral" | "danger" | "primary";
+  icon?: React.ReactNode;
+  onClick: () => void;
+  /** For a primary action that is already done — see the vara sheet. */
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "flex w-full items-center justify-center gap-2 rounded-control px-3 py-3",
+        "text-body font-semibold transition-transform duration-100 active:scale-[0.98]",
+        tone === "neutral" && "bg-surface text-ink",
+        tone === "danger" && "bg-danger-tint text-danger",
+        tone === "primary" && "bg-brand text-on-brand",
+        disabled && "opacity-45 active:scale-100",
+      )}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Three small controls on one line, where three full-width rows would say the
+ * same thing three times as loudly.
+ *
+ * For the edits that are one tap and one word — rename, icon, category. They
+ * were three of the seven full-width rows in the vara sheet, which pushed the
+ * things people actually come to that sheet for below the fold. Still 44px tall,
+ * because a smaller target is not what was wrong with them.
+ */
+export function SheetButtonRow({ children }: { children: React.ReactNode }) {
+  return <div className="flex gap-2">{children}</div>;
+}
+
+export function SheetChipButton({
+  icon,
+  onClick,
+  children,
+}: {
   icon?: React.ReactNode;
   onClick: () => void;
   children: React.ReactNode;
@@ -200,14 +251,63 @@ export function SheetButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center justify-center gap-2 rounded-control px-3 py-3",
-        "text-body font-semibold transition-transform duration-100 active:scale-[0.98]",
-        tone === "neutral" && "bg-surface text-ink",
-        tone === "danger" && "bg-danger-tint text-danger",
+        "flex min-h-11 flex-1 basis-0 flex-col items-center justify-center gap-0.5",
+        "rounded-control bg-surface px-2 py-2 text-caption font-semibold text-ink",
+        "transition-transform duration-100 active:scale-[0.98]",
       )}
     >
       {icon}
-      {children}
+      <span className="max-w-full truncate">{children}</span>
     </button>
+  );
+}
+
+/**
+ * The rest of what you can do, folded away until asked for.
+ *
+ * A native `<details>`, so it is a disclosure the platform already knows how to
+ * announce and operate — closed is the honest default for controls a household
+ * reaches for a few times a year, and there is nothing here to teach.
+ */
+export function SheetAdvanced({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  const self = useRef<HTMLDetailsElement>(null);
+
+  return (
+    <details
+      ref={self}
+      /**
+       * Bring what was just revealed into view.
+       *
+       * This sits at the very bottom of a sheet that is already scrolled to its
+       * own end — the whole point of it is to be last — so opening it puts every
+       * control it contains below the fold. Measured on a vara with products and
+       * a delete blocker: the summary rotated its chevron and nothing else
+       * appeared to happen, which reads as a control that does not work.
+       *
+       * `nearest` rather than `center`: scroll the least that makes it visible,
+       * so a disclosure opened on a short sheet does not lurch.
+       */
+      onToggle={(e) => {
+        if (!e.currentTarget.open) return;
+        self.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }}
+      className="group rounded-control bg-surface"
+    >
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-center gap-1.5 px-3 py-3 text-body font-semibold text-ink-soft [&::-webkit-details-marker]:hidden">
+        {label}
+        <UiIcon
+          name="chevronDown"
+          size={15}
+          className="flex-none transition-transform duration-150 group-open:rotate-180"
+        />
+      </summary>
+      <div className="flex flex-col gap-2 px-2 pb-2">{children}</div>
+    </details>
   );
 }

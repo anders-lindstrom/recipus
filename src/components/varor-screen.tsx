@@ -75,6 +75,16 @@ export interface VarorScreenActions {
   deleteVara: (varaId: Id) => void;
   /** Takes a vara off a shopping list WITHOUT recording a purchase. */
   takeOffList: (listId: Id, catalogItemId: Id) => void;
+  /**
+   * Puts a vara on a shopping list from here.
+   *
+   * This screen used to say in writing that it could not — "Inget läggs på
+   * listan härifrån" — on the design position that the registry is where you
+   * edit the word and the list is where you shop. It reads differently from
+   * inside the errand: you are looking straight at mjölk, you want mjölk, and
+   * the answer was to go back and type its name again.
+   */
+  addToList: (listId: Id, catalogItemId: Id) => void;
 }
 
 export interface VarorScreenProps {
@@ -87,6 +97,8 @@ export interface VarorScreenProps {
    * point of the link.
    */
   openVaraId?: Id | null;
+  /** The list the household was last on — where "lägg till" puts things. */
+  listId: Id;
   /** Products nobody has placed yet. The count is the debt. */
   queue: Product[];
   catalog: Record<Id, CatalogItem>;
@@ -108,6 +120,7 @@ type OpenSheet =
 export function VarorScreen({
   varor,
   openVaraId = null,
+  listId,
   queue,
   catalog,
   categories,
@@ -224,9 +237,14 @@ export function VarorScreen({
           nobody dares do while they suspect a tap might put ananas on tonight's
           shopping. It sits above the sync banner because it is what the screen
           IS rather than how it is feeling today. */}
+      {/* "Inget läggs på listan härifrån" used to be the second sentence, and
+          it was true rather than reassuring: you could stand here looking at
+          mjölk, want mjölk, and be sent back to type its name. The sheet adds
+          to the list now, so the copy says what a tap does instead of what it
+          refuses to do. */}
       <p className="mx-3 mt-3 text-body-sm text-ink-soft">
         Era egna ord för allt ni brukar köpa — vad de heter, hur de ser ut och
-        var de står. Inget läggs på listan härifrån.
+        var de står. Tryck på en för att ändra den eller lägga den på listan.
       </p>
 
       {/* Same shape and same wording as the list screen's banner, because being
@@ -471,6 +489,19 @@ export function VarorScreen({
           onTakeOffList={(listId) =>
             actions.takeOffList(listId, openVara.item.id)
           }
+          /**
+           * Straight onto the list the household was last on.
+           *
+           * No list picker, deliberately, even for a household with several.
+           * The registry is reached FROM a list — the header's back link says
+           * "Till handlingslistan", and `?vara=` arrives from a tile on one —
+           * so which list you mean is not in doubt while you are standing here.
+           * A picker would charge every add a decision that has one plausible
+           * answer. Moving it afterwards is one long-press away on the list
+           * itself, which is where you can see the consequence.
+           */
+          targetListId={listId}
+          onAddToList={() => actions.addToList(listId, openVara.item.id)}
           onUnplaceProducts={() => {
             for (const product of openVara.products) {
               actions.placeProduct(product.id, null);

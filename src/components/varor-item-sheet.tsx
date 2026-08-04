@@ -4,7 +4,14 @@ import { useState } from "react";
 import type { Category, Id, Product } from "@/lib/domain";
 import { cn, emojiToCodepoint } from "@/lib/utils";
 import { ItemIcon } from "./icon";
-import { Sheet, SheetActions, SheetButton } from "./sheet";
+import {
+  Sheet,
+  SheetActions,
+  SheetAdvanced,
+  SheetButton,
+  SheetButtonRow,
+  SheetChipButton,
+} from "./sheet";
 import { UiIcon } from "./ui-icon";
 import { deletionBlockers, productSubtitle, type VaraView } from "./varor-model";
 
@@ -46,6 +53,21 @@ export interface VarorItemSheetProps {
   categories: Category[];
   /** Names a list this vara sits on. Falls back to the id when the list is unknown here. */
   listName: (listId: Id) => string;
+  /**
+   * Put it on the list the household was last shopping from.
+   *
+   * Absent when this screen has no list to add to — offline before the shell
+   * has ever been cached, or a household with none yet. The registry is
+   * reachable in both states, so the action has to be able to not exist rather
+   * than to fail.
+   */
+  onAddToList?: () => void;
+  /**
+   * Which list that is. The id rather than the name, so "is it already there"
+   * is decided by identity — two shops can be called the same thing, and a
+   * household that has two Willys would otherwise see one answer for both.
+   */
+  targetListId: Id;
   onRename: (name: string) => void;
   /**
    * Re-file into another aisle.
@@ -146,6 +168,8 @@ export function VarorItemSheet({
   categoryName,
   categories,
   listName,
+  onAddToList,
+  targetListId,
   onRename,
   onRecategorize,
   onSetHasAtHome,
@@ -167,6 +191,22 @@ export function VarorItemSheet({
 
   const blockers = deletionBlockers(vara);
   const onLists = [...new Set(vara.onList.map((e) => e.listId))];
+  /**
+   * The lists this vara is on OTHER than the one the add button targets.
+   *
+   * Kept separate because the two facts have different jobs: the button answers
+   * "can I add it to the list I came from", and this answers "is it already on
+   * some other shop's list" — which is the one nothing else on this screen can
+   * tell you, and the reason a household with two lists needs the line at all.
+   *
+   * Falls back to every list when there is no add button, since then nothing
+   * else says any of it.
+   */
+  const otherLists = onAddToList
+    ? onLists.filter((id) => id !== targetListId)
+    : onLists;
+  const alreadyOnTargetList = onLists.includes(targetListId);
+  const targetListName = listName(targetListId);
 
   const trimmed = draft.trim();
   const nameOk = trimmed.length >= 1 && trimmed !== vara.item.name;
@@ -417,9 +457,15 @@ export function VarorItemSheet({
         </p>
       )}
 
-      {vara.onList.length > 0 && (
+      {/* Only when it says something the action below does not.
+          The add button reads "Står på Hemköp" once the vara is there, so on a
+          single-list household this line was the same sentence twice, one
+          screenful apart. It earns its place the moment another list is
+          involved — that is a fact about a shop you are not standing in, and
+          nothing else on this screen carries it. */}
+      {otherLists.length > 0 && (
         <p className="px-4 pb-2 text-body-sm text-brand-ink">
-          Står på {onLists.map(listName).join(" och ")} just nu.
+          Står på {otherLists.map(listName).join(" och ")} just nu.
         </p>
       )}
 
@@ -512,37 +558,77 @@ export function VarorItemSheet({
       )}
 
       <SheetActions>
-        <SheetButton onClick={startRename} icon={<UiIcon name="edit" size={16} />}>
-          Byt namn
-        </SheetButton>
+        {/* The reason to open this sheet, at the top of it and in the one colour
+            that means "on the list".
 
-        <SheetButton
-          onClick={() => {
-            setIconDraft("");
-            setPickingIcon(true);
-          }}
-          icon={<ItemIcon iconRef={vara.item.iconRef} className="text-base" />}
-        >
-          Byt ikon
-        </SheetButton>
+            This screen used to say, in writing, "Inget läggs på listan
+            härifrån" — and that was a real design position: the registry is
+            where you edit the WORD, the list is where you shop. It reads
+            differently from inside the errand. You are standing in the registry
+            looking straight at mjölk, you want mjölk, and the app's answer was
+            to go back to the list and type its name again. Nothing about
+            renaming a vara makes adding it a category error; the screens simply
+            each owned half of the same object. */}
+        {onAddToList && (
+          <SheetButton
+            tone="primary"
+            disabled={alreadyOnTargetList}
+            icon={<UiIcon name={alreadyOnTargetList ? "check" : "plus"} size={16} />}
+            onClick={onAddToList}
+          >
+            {alreadyOnTargetList
+              ? `Står på ${targetListName}`
+              : `Lägg till i ${targetListName}`}
+          </SheetButton>
+        )}
 
-        {/* "Kategori", one word for one thing across the app — see the note in
-            aisle-rail.tsx, where the same word is read aloud and never drawn.
-            It was "avdelning" on the argument that the thing is a walking order
-            rather than a taxonomy; the household reads it as stilted Swedish,
-            which settles it. The sheet it opens still asks "Var står mjölk?",
-            because where a vara stands is what you are answering. */}
-        <SheetButton
-          onClick={() => setRefiling(true)}
-          icon={<UiIcon name="allAisles" size={16} />}
-        >
-          Byt kategori — nu {categoryName.toLowerCase()}
-        </SheetButton>
+        {/* Three edits that are one tap and one word, on one line.
+            They were three full-width rows out of seven, which put the things
+            people actually come here for below the fold on a phone. */}
+        <SheetButtonRow>
+          <SheetChipButton
+            onClick={startRename}
+            icon={<UiIcon name="edit" size={16} />}
+          >
+            Byt namn
+          </SheetChipButton>
+
+          <SheetChipButton
+            onClick={() => {
+              setIconDraft("");
+              setPickingIcon(true);
+            }}
+            icon={<ItemIcon iconRef={vara.item.iconRef} className="text-base" />}
+          >
+            Byt ikon
+          </SheetChipButton>
+
+          {/* "Kategori", one word for one thing across the app — see the note in
+              aisle-rail.tsx, where the same word is read aloud and never drawn.
+              It was "avdelning" on the argument that the thing is a walking order
+              rather than a taxonomy; the household reads it as stilted Swedish,
+              which settles it. The sheet it opens still asks "Var står mjölk?",
+              because where a vara stands is what you are answering.
+
+              The current category is not repeated here — the sheet's own header
+              already carries it, one line up, which is what freed this control
+              to be a third of a row. */}
+          <SheetChipButton
+            onClick={() => setRefiling(true)}
+            icon={<UiIcon name="allAisles" size={16} />}
+          >
+            Byt kategori
+          </SheetChipButton>
+        </SheetButtonRow>
 
         {/* A state with two values, so a switch rather than a button: "Har
             alltid hemma" as a command would read as an instruction to go and
             buy some. Nothing else in the app could set this, which meant the
-            recipe sheet's staple exclusion had no way to ever be true. */}
+            recipe sheet's staple exclusion had no way to ever be true.
+
+            Stays in the open, unlike the other switch: it is a fact about the
+            household's kitchen that anyone might set on any vara, not a repair
+            to the catalog. */}
         <SwitchRow
           label="Har alltid hemma"
           icon="check"
@@ -555,44 +641,47 @@ export function VarorItemSheet({
           onToggle={() => onSetHasAtHome(!vara.item.hasAtHome)}
         />
 
-        {/* The other half of being able to invent varor freely.
-            Splitting "mogna blåbär" off as its own thing is now one tap from
-            three different screens, which is right — and it means the catalog
-            grows with kinds that were true once. This is how one goes back out
-            of the way without taking its purchases, its products or its recipe
-            matches with it. Above "Ta bort" and untinted, because it is the
-            gentle one and has to be the one people reach for first. */}
-        <SwitchRow
-          label="Dold i sök och katalog"
-          icon="clear"
-          checked={vara.item.hidden}
-          hint={
-            vara.item.hidden
-              ? "Syns bara här. Sök på namnet för att lägga till den ändå."
-              : undefined
-          }
-          onToggle={() => onSetHidden(!vara.item.hidden)}
-        />
+        {/* Everything that repairs the CATALOG rather than uses it.
+            Hiding, splitting, merging and deleting are all a household tidying
+            its own vocabulary — a few times a year each, against an add that
+            happens weekly. They were four of the seven rows in front of it.
 
-        <SheetButton onClick={onSplit} icon={<UiIcon name="plus" size={16} />}>
-          Dela upp
-        </SheetButton>
+            "Dold" stays first and stays a switch, which is what keeps it
+            visibly distinct from "Ta bort" further down: they are the pair
+            people confuse, and hiding is the harmless one. */}
+        <SheetAdvanced label="Avancerat">
+          <SwitchRow
+            label="Dold i sök och katalog"
+            icon="clear"
+            checked={vara.item.hidden}
+            hint={
+              vara.item.hidden
+                ? "Syns bara här. Sök på namnet för att lägga till den ändå."
+                : undefined
+            }
+            onToggle={() => onSetHidden(!vara.item.hidden)}
+          />
 
-        <SheetButton onClick={onMerge} icon={<UiIcon name="toList" size={16} />}>
-          Slå samman med annan vara
-        </SheetButton>
-
-        {/* Rendered only when it would work. A disabled button that explains
-            itself elsewhere is a dead control you tap twice before reading. */}
-        {blockers.length === 0 && (
-          <SheetButton
-            tone="danger"
-            icon={<UiIcon name="remove" size={16} />}
-            onClick={onDelete}
-          >
-            Ta bort {vara.item.name}
+          <SheetButton onClick={onSplit} icon={<UiIcon name="plus" size={16} />}>
+            Dela upp
           </SheetButton>
-        )}
+
+          <SheetButton onClick={onMerge} icon={<UiIcon name="toList" size={16} />}>
+            Slå samman med annan vara
+          </SheetButton>
+
+          {/* Rendered only when it would work. A disabled button that explains
+              itself elsewhere is a dead control you tap twice before reading. */}
+          {blockers.length === 0 && (
+            <SheetButton
+              tone="danger"
+              icon={<UiIcon name="remove" size={16} />}
+              onClick={onDelete}
+            >
+              Ta bort {vara.item.name}
+            </SheetButton>
+          )}
+        </SheetAdvanced>
       </SheetActions>
     </Sheet>
   );
