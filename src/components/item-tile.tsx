@@ -46,6 +46,21 @@ export interface ItemTileProps {
   /** Plays the arrival animation. Only the "att handla" zone sets this. */
   animateIn?: boolean;
   /**
+   * On its way out, having just been added — the catalog well's confirmation.
+   *
+   * The tile is INERT while this is true: aria-hidden, unfocusable, and deaf to
+   * pointers. It is a 420ms picture of something that has already happened, and
+   * everything that could treat it as real has to not. A second tap would land
+   * on a control whose vara is no longer here; the arrow keys would step onto a
+   * stop that is about to vanish; a screen reader would be told about a tile
+   * nobody can reach, moments after the same vara was announced as added.
+   *
+   * Dropping `aria-pressed` with it is deliberate and load-bearing: it is what
+   * keeps the ghost out of "on the list" and "in the well" alike, for the whole
+   * app and for the e2e suite, which locates tiles by exactly that attribute.
+   */
+  leaving?: boolean;
+  /**
    * Activating a tile takes it out of the grid it is in, so the caller is told
    * whether the press came from a keyboard — see `Tap`. A caller that does not
    * care can carry on ignoring the argument.
@@ -81,6 +96,7 @@ export function ItemTile({
   actorColor,
   pending = false,
   animateIn = false,
+  leaving = false,
   onTap,
   onLongPress,
   longPressOpensDialog = true,
@@ -93,7 +109,9 @@ export function ItemTile({
   return (
     <button
       type="button"
-      aria-pressed={onList}
+      aria-pressed={leaving ? undefined : onList}
+      aria-hidden={leaving || undefined}
+      tabIndex={leaving ? -1 : undefined}
       // Announces that there is a second tier here at all. Its only other
       // advertisement is a hint that waits for a third item, is dismissible, and
       // is then said once ever per device — which is nothing for anyone who is
@@ -111,7 +129,10 @@ export function ItemTile({
         // having gone nowhere. Same clearance the rail's own jump targets use.
         "pinned-clearance",
         "transition-[transform,background-color,border-color]",
-        onList
+        // A tile on its way out is drawn as one that IS on the list, because
+        // that is what just became true of it. The colour change is the whole
+        // message; the animation only buys time to read it.
+        onList || leaving
           ? "border-brand-line bg-brand-tint"
           : "border-line bg-surface-raised",
         // Two different durations off one state: the slow squeeze is the
@@ -121,6 +142,7 @@ export function ItemTile({
           : "duration-100 active:scale-[0.95]",
         pending && "opacity-55",
         animateIn && "animate-tile-in",
+        leaving && "pointer-events-none animate-tile-added",
       )}
       /*
        * Tap, hold, right-click and the two keyboard conventions, all from
@@ -135,7 +157,19 @@ export function ItemTile({
        */
       {...handlers}
     >
-      {fromRecipe && (
+      {/* The one explicit word in the confirmation: a tick, in the corner the
+          recipe badge already uses, so the tile grows nothing new — it swaps
+          what it is already able to show. Green plus a tick is the same
+          sentence twice, which is what a 420ms glance needs. */}
+      {leaving && (
+        <span
+          aria-hidden
+          className="absolute top-1.5 right-1.5 flex h-[17px] w-[17px] items-center justify-center rounded-full bg-brand text-on-brand"
+        >
+          <UiIcon name="check" size={10} />
+        </span>
+      )}
+      {!leaving && fromRecipe && (
         <span
           aria-hidden
           className="absolute top-1.5 right-1.5 flex h-[17px] w-[17px] items-center justify-center rounded-full bg-brand text-on-brand"
@@ -157,7 +191,7 @@ export function ItemTile({
           "text-[26px] leading-none transition-[filter] duration-150",
           // Catalog art is muted rather than hidden — enough to let the green
           // zone win the eye, not so much that a red pepper stops being red.
-          !onList && "saturate-[0.55] dark:saturate-[0.75]",
+          !onList && !leaving && "saturate-[0.55] dark:saturate-[0.75]",
         )}
       />
 

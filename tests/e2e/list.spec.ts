@@ -28,6 +28,37 @@ test("tapping a catalog tile moves it onto the list", async ({ freshPage: page }
   await expect(catalogTile(page, "citron")).toHaveCount(0);
 });
 
+test("a vara added from the well says so before it goes", async ({
+  freshPage: page,
+}) => {
+  /**
+   * Adding from the well used to say nothing at all — the tile vanished, and
+   * the only confirmation was a tile arriving in "Att handla", which is off the
+   * top of the screen for anyone scrolled down among the 341 varor. So the tile
+   * holds its place for one beat, wearing the green that means "on the list"
+   * everywhere else in this app, and then leaves.
+   *
+   * The assertion that matters is not that it is drawn — it is that what is
+   * drawn is INERT. It is a picture of something that already happened, and a
+   * second tap on it would be aimed at a control whose vara has moved.
+   */
+  await catalogTile(page, "gurka").click();
+
+  // The tile you tapped, still drawn — and no longer a catalog tile, which is
+  // what keeps it out of every locator in this suite. Its box is deliberately
+  // not asserted: it is scaling while this runs, which is the point of it.
+  const ghost = page.locator('[data-tile-grid] > button[aria-hidden="true"]');
+  await expect(ghost).toHaveCount(1);
+  await expect(ghost).toContainText("gurka");
+  await expect(ghost).toHaveJSProperty("tabIndex", -1);
+
+  // And it goes on its own, leaving one vara on the list rather than two taps'
+  // worth. The tile is gone from the well for good.
+  await expect(ghost).toHaveCount(0);
+  await expect(onListTile(page, "gurka")).toHaveCount(1);
+  await expect(catalogTile(page, "gurka")).toHaveCount(0);
+});
+
 test("tapping an item on the list buys it and it can be undone", async ({
   freshPage: page,
 }) => {

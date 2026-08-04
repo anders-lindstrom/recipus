@@ -67,6 +67,18 @@ import { UiIcon } from "./ui-icon";
  * a heading you have to read.
  */
 
+/**
+ * What the arrow keys and the focus hand-off count as a tile.
+ *
+ * The `aria-hidden` exclusion is the whole reason this is a constant rather than
+ * two string literals: a tile on its way out of the well after being added is
+ * still in the DOM for 420ms, and it must never be a place focus can land — not
+ * as an arrow key's destination, and not as the neighbour a tap hands off to.
+ * It is a picture of something that has already happened.
+ */
+const TILE_BUTTON = 'button:not([aria-hidden="true"])';
+const TILE_STOPS = `[data-tile-grid] > ${TILE_BUTTON}`;
+
 export interface ListScreenActions {
   /**
    * `amountText` is the raw trailing quantity the add bar split off ("2 l").
@@ -446,22 +458,73 @@ export function ListScreen({
     );
   }
 
+  /**
+   * Varor added from the well in the last few hundred milliseconds.
+   *
+   * The well is the surface where an add says nothing: the tile vanishes, and
+   * the confirmation — a tile arriving in "Att handla" — is off the top of the
+   * screen for anyone scrolled down among the 341 varor, which is everyone
+   * doing this. Reported as "I don't see any indication of change other than
+   * the thing disappearing".
+   *
+   * So the tile stays where it is for one beat, turns green, and then goes. It
+   * cannot animate on the way out without being rendered on the way out, and
+   * the app has already dropped it from the well by then — hence a set of ids
+   * held here rather than a class on a node. The add itself is not delayed by a
+   * millisecond; only the picture of it lingers.
+   */
+  const [justAddedFromWell, setJustAddedFromWell] = useState<Set<Id>>(new Set());
+  const addedTimers = useRef(new Map<Id, ReturnType<typeof setTimeout>>());
+
+  /** Slightly past `.animate-tile-added`, so the grid reflows after the fade. */
+  const ADDED_GHOST_MS = 460;
+
+  function showAddedInWell(id: Id) {
+    clearTimeout(addedTimers.current.get(id));
+    setJustAddedFromWell((was) => new Set(was).add(id));
+    addedTimers.current.set(
+      id,
+      setTimeout(() => {
+        addedTimers.current.delete(id);
+        setJustAddedFromWell((was) => {
+          const next = new Set(was);
+          next.delete(id);
+          return next;
+        });
+      }, ADDED_GHOST_MS),
+    );
+  }
+
+  // Leaving the screen mid-animation must not leave a timer holding a setState.
+  useEffect(() => {
+    const timers = addedTimers.current;
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
+
   const catalogByCategory = useMemo(
     () =>
       groupByCategory(
         // Anything already on the list is shown above; repeating it below is
-        // just a second place to tap the same thing.
+        // just a second place to tap the same thing — except for the one that
+        // was added a moment ago, which is held here just long enough to say so
+        // and is inert while it is.
         //
         // Hidden varor are out of the well entirely, which is most of what
         // hiding is FOR: the well is 341 tiles you scroll past on the way to
         // something, and a household's own one-off kinds accumulate there faster
         // than anywhere else. They stay reachable by typing the name — see
         // `rankMatches`, which demotes rather than drops.
-        catalog.filter((c) => !c.hidden && !onListIds.has(c.id)),
+        catalog.filter(
+          (c) =>
+            !c.hidden && (!onListIds.has(c.id) || justAddedFromWell.has(c.id)),
+        ),
         (c) => c.categoryId,
         list.categoryOrder,
       ),
-    [catalog, onListIds, list.categoryOrder],
+    [catalog, onListIds, list.categoryOrder, justAddedFromWell],
   );
 
   const categoryName = useMemo(
@@ -584,7 +647,7 @@ export function ListScreen({
     const root = e.currentTarget;
     if (!(root instanceof HTMLElement)) return;
     const tiles = Array.from(
-      root.querySelectorAll<HTMLElement>("[data-tile-grid] > button"),
+      root.querySelectorAll<HTMLElement>(TILE_STOPS),
     );
     const current = document.activeElement;
     if (!(current instanceof HTMLElement) || !tiles.includes(current)) return;
@@ -629,7 +692,9 @@ export function ListScreen({
     if (!(current instanceof HTMLElement)) return;
     const grid = current.closest("[data-tile-grid]");
     if (!grid) return;
-    const tiles = Array.from(grid.querySelectorAll<HTMLElement>(":scope > button"));
+    const tiles = Array.from(
+      grid.querySelectorAll<HTMLElement>(`:scope > ${TILE_BUTTON}`),
+    );
     const i = tiles.indexOf(current);
     if (i < 0) return;
     handOffFocus.current = tiles[i + 1] ?? tiles[i - 1] ?? null;
@@ -1106,6 +1171,7 @@ export function ListScreen({
                   key={item.id}
                   name={item.name}
                   iconRef={item.iconRef}
+                  leaving={justAddedFromWell.has(item.id)}
                   // The well has the same problem in reverse: adding a vara
                   // takes its tile OUT of the well, so filling a list from the
                   // keyboard dead-ended on the first item exactly as ticking one
@@ -1113,6 +1179,7 @@ export function ListScreen({
                   onTap={(tap) => {
                     keepFocusAfterTap(tap);
                     actions.addItem(item.id);
+                    showAddedInWell(item.id);
                   }}
                   // Same 500ms hold as the buy zone, so there is one gesture to
                   // learn rather than two. Adding a bare item was the ONLY thing

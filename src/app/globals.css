@@ -297,6 +297,34 @@ button,
   }
 }
 
+/*
+ * A tile leaving the catalog well because it was just added.
+ *
+ * Adding from the well said nothing at all: the tile vanished, and the only
+ * confirmation was a tile appearing in "Att handla" — which is off the top of
+ * the screen for anyone scrolled down among the 341 varor, i.e. for everyone
+ * doing the thing this animation is about. Reported as "I see no indication of
+ * change other than the thing disappearing".
+ *
+ * It holds still for the first 40% ON PURPOSE. The tile turns green in that
+ * window — `ItemTile` transitions its background over 100ms — so the sequence
+ * reads "it went green, then it left" rather than "something flickered". Green
+ * already means on the list everywhere else in this app, so the confirmation
+ * needs no new vocabulary and no toast: the toast is exactly what was taken out
+ * of this screen once already, for covering the next thing you wanted to tap.
+ */
+@keyframes tile-added {
+  0%,
+  40% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;
@@ -308,6 +336,12 @@ button,
 
 .animate-tile-in {
   animation: tile-in 0.22s var(--ease-out-soft) both;
+}
+/* Long enough to be read as a sequence, short enough that a second tap on the
+   tile beside it is never waiting on it. The grid does not reflow until it is
+   over, so nothing moves under a thumb that is already travelling. */
+.animate-tile-added {
+  animation: tile-added 0.42s var(--ease-out-soft) both;
 }
 .animate-sheet-in {
   animation: sheet-in 0.26s var(--ease-out-soft) both;
