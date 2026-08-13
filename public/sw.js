@@ -23,7 +23,7 @@
  * lets a bad cached shell be discarded rather than lingering.
  */
 
-const CACHE_TAG = "recipus-v3";
+const CACHE_TAG = "recipus-v4";
 const OFFLINE_URL = "/offline.html";
 
 // The shell is everything needed to render an empty app that then fills itself
@@ -89,10 +89,26 @@ async function handleNavigation(request) {
       ),
     ]);
 
+    /*
+     * A document that is only true once is not a shell.
+     *
+     * Some navigations carry a token in the query string — a share hands the
+     * app "/?ai=…" and the page renders that token into the HTML. The query is
+     * deliberately ignored on lookup below, so caching one of these would make
+     * the share THE shell every later cold start on "/" is served: offline, in
+     * the shop, the app would open into a dialog reading an image that was
+     * consumed an hour ago, on top of the list somebody came to read. Nothing
+     * in the response says so — Cache Storage does not read no-store — so the
+     * worker has to know it by the address, the same way it knows not to keep
+     * an Authelia login page.
+     */
+    const oneShot = url.searchParams.has("ai");
+
     // Only cache real, same-origin HTML. An Authelia redirect to a login page
     // must never become the thing we serve on every future cold start.
     if (
       response.ok &&
+      !oneShot &&
       response.type === "basic" &&
       (response.headers.get("content-type") || "").includes("text/html")
     ) {
