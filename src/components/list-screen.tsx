@@ -647,12 +647,21 @@ export function ListScreen({
   /**
    * Shut the AI dialog and retire the share that opened it.
    *
-   * Both halves are needed. Clearing the state stops a reopen from presenting a
-   * token the server has already emptied; `router.replace` takes it out of the
-   * address bar as well, so a reload cannot resurrect it after this component's
-   * state is gone. Every other parameter is preserved — `?list=` decides which
-   * list this page is, and dropping it would switch shops on the way out of a
-   * dialog.
+   * Both halves are needed, and they answer different questions. Clearing the
+   * state stops a reopen in THIS session from presenting a token the server has
+   * already emptied; taking it out of the address bar stops a reload from
+   * resurrecting it once that state is gone.
+   *
+   * `history.replaceState` rather than `router.replace`, and that is not a
+   * detail. This page is `force-dynamic`, so `router.replace` buys a whole
+   * server round trip for a cosmetic tidy-up — and with no signal it degrades to
+   * a hard navigation, on an app whose entire premise is working in a shop
+   * basement. Next supports a shallow update for exactly this. Correctness rides
+   * on the state clear above; this half only has to change what is written in
+   * the bar, and it does that with no network at all.
+   *
+   * Every other parameter is preserved — `?list=` decides which list this page
+   * is, and dropping it would switch shops on the way out of a dialog.
    */
   function closeAi() {
     setAiOpen(false);
@@ -661,7 +670,7 @@ export function ListScreen({
     const url = new URL(window.location.href);
     url.searchParams.delete("ai");
     url.searchParams.delete("t");
-    router.replace(`${url.pathname}${url.search}`, { scroll: false });
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
   }
 
   const openItem = openEntry ? byId.get(openEntry) : undefined;
