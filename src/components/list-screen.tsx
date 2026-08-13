@@ -331,10 +331,23 @@ export function ListScreen({
     () => new Set(live.map((e) => e.catalogItemId)),
     [live],
   );
-  // The AI sheet indexes its catalog rather than `.get()`-ing it, so it takes a
-  // record. Derived from the same `byId` every other lookup on this screen uses,
-  // rather than from `catalog`, so the two can never disagree about a vara.
-  const catalogById = useMemo(() => Object.fromEntries(byId), [byId]);
+  /*
+   * The registry as the AI sheet asks it one question: does this vara exist?
+   *
+   * A record rather than a Map because the sheet indexes it, and built from
+   * `catalog` rather than from the `byId` every other lookup on this screen
+   * uses, which is the part worth stating. `byId` answers "what do I draw for
+   * this entry" and therefore holds a stand-in for every vara that has been
+   * deleted or merged away — right for a tile, wrong here, because
+   * `planAdditions` reads a hit as "this word already has a vara, do not mint
+   * one". Photograph a list naming a vara that is only on this one as a
+   * tombstone and the sheet would put the tombstone back rather than the vara
+   * the person was looking at.
+   */
+  const catalogById = useMemo(
+    () => Object.fromEntries(catalog.map((c) => [c.id, c])),
+    [catalog],
+  );
 
   const views = useMemo(() => {
     const map = new Map<Id, EntryView>();
