@@ -95,12 +95,26 @@ export function AiAddSheet({
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const fileInput = useRef<HTMLInputElement>(null);
   const sharedTried = useRef(false);
+  /**
+   * What was in the textarea when this dictation started.
+   *
+   * `useSpeech` reports the whole spoken segment on every hypothesis, so the
+   * sink has to REPLACE that segment rather than add to it — appending each
+   * report is what turned one sentence into a list of its own prefixes. What it
+   * must not replace is everything typed before, so the field is rebuilt as
+   * "what was already here" + "what is being said", and only the second half
+   * moves while somebody talks.
+   *
+   * Captured at the press rather than held in the hook, which is what keeps
+   * dictate-edit-dictate working: the second session's base is whatever the
+   * first one produced INCLUDING the corrections made by hand in between.
+   */
+  const spokenBase = useRef("");
 
   const speech = useSpeech(
-    useCallback((heard: string) => {
-      // Appended rather than replacing: you can say a few things, stop, and say
-      // a few more, and you can fix a misheard word by hand in between.
-      setText((current) => (current ? `${current}, ${heard}` : heard));
+    useCallback((segment: string) => {
+      const base = spokenBase.current;
+      setText(base ? `${base}, ${segment}` : segment);
     }, []),
   );
 
@@ -128,19 +142,33 @@ export function AiAddSheet({
     [show],
   );
 
-  // A share opens straight into the parse — the person already chose the image
-  // in another app, and asking them to press a second button here would be
-  // asking them to confirm the thing they just did.
+  /**
+   * A share opens straight into the parse — the person already chose the image
+   * in another app, and asking them to press a second button here would be
+   * asking them to confirm the thing they just did.
+   *
+   * The run-once ref and a cancellation flag cannot both be here, and the ref is
+   * the one that has to stay. `recipe-import.tsx` pairs them safely because its
+   * guard is re-derivable — a cancelled share can simply be imported again. This
+   * token cannot: it is one-shot and consumed on first read, so a second fetch
+   * gets a 404.
+   *
+   * Together they deadlock under StrictMode, which the App Router turns on:
+   * setup marks the ref and starts the fetch, the simulated cleanup sets
+   * `cancelled`, the second setup finds the ref already marked and starts
+   * nothing — and the first fetch then resolves into a closure that has been
+   * told to discard its result. `phase` starts at `parsing`, so the sheet sat on
+   * the spinner for ever, every time, in dev.
+   *
+   * So there is no cleanup. Resolving after unmount sets state on a component
+   * that is gone, which React 18+ treats as the no-op it is; the warning that
+   * made this pattern feel obligatory was removed precisely because guarding
+   * against it costs more than it saves.
+   */
   useEffect(() => {
     if (!shareToken || sharedTried.current) return;
     sharedTried.current = true;
-    let cancelled = false;
-    void runParse({ kind: "share", token: shareToken }).then((result) => {
-      if (!cancelled) show(result);
-    });
-    return () => {
-      cancelled = true;
-    };
+    void runParse({ kind: "share", token: shareToken }).then(show);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -275,7 +303,13 @@ export function AiAddSheet({
             {speech.supported && (
               <button
                 type="button"
-                onClick={speech.toggle}
+                onClick={() => {
+                  // The base is whatever is in the field at the moment the
+                  // microphone opens — read here, in the event, because that is
+                  // the only moment it means anything.
+                  if (!speech.listening) spokenBase.current = text;
+                  speech.toggle();
+                }}
                 aria-pressed={speech.listening}
                 className={cn(
                   "mt-5 flex w-full items-center justify-center gap-3 rounded-card py-5 text-body font-semibold transition-transform duration-100 active:scale-[0.99]",

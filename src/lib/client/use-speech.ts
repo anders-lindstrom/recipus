@@ -22,6 +22,10 @@ import {
  * Whatever is heard lands in the textarea, which means a misheard word is
  * editable before anything is parsed, and the transcript then goes through the
  * same model pass as a paste. No audio leaves as a file.
+ *
+ * `onTranscript` receives the WHOLE spoken segment each time, not the newest
+ * fragment, and the caller is expected to replace rather than append — see
+ * `onresult`. One dictation is one segment however many times it is reported.
  */
 
 interface SpeechRecognitionLike {
@@ -89,6 +93,8 @@ export function useSpeech(onTranscript: (text: string) => void): {
   );
   const [listening, setListening] = useState(false);
   const recognition = useRef<SpeechRecognitionLike | null>(null);
+  /** The words this session has settled on. See `onresult` below. */
+  const finals = useRef("");
   /**
    * The callback through a ref, so restarting recognition is not a dependency
    * of every keystroke in the textarea above it.
@@ -123,13 +129,37 @@ export function useSpeech(onTranscript: (text: string) => void): {
     // The words appear as they are said. A silent five seconds followed by a
     // paragraph reads as a hang.
     rec.interimResults = true;
+    // A fresh session says a fresh sentence; last session's words are already in
+    // the textarea and must not be said again.
+    finals.current = "";
+    /**
+     * The whole segment said so far — settled words plus the tail still being
+     * guessed at — reported every time, and it REPLACES rather than appends.
+     *
+     * `interimResults` means this fires on every hypothesis, re-reporting the
+     * same result index with a longer transcript each time: "två", "två liter",
+     * "två liter mjölk". A sink that appended each of those turned one sentence
+     * into a list of its own prefixes, which is why `isFinal` was declared on
+     * the event type and then never read.
+     *
+     * Skipping the non-final results is the obvious repair and the wrong one: it
+     * would take back the live transcript, and a silent five seconds followed by
+     * a paragraph reads as a hang. So the settled words accumulate here instead,
+     * and only the unsettled tail is rebuilt on each event. A result before
+     * `resultIndex` cannot change, and an index goes final exactly once, so
+     * every word is counted exactly once.
+     */
     rec.onresult = (event) => {
-      let heard = "";
+      let tail = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        if (result?.[0]) heard += result[0].transcript;
+        const alternative = result?.[0];
+        if (!alternative) continue;
+        if (result.isFinal) finals.current += alternative.transcript;
+        else tail += alternative.transcript;
       }
-      if (heard.trim()) sink.current(heard.trim());
+      const segment = `${finals.current}${tail}`.trim();
+      if (segment) sink.current(segment);
     };
     rec.onend = () => {
       recognition.current = null;
