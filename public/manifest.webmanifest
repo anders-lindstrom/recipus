@@ -43,12 +43,19 @@
     }
   ],
   "share_target": {
-    "action": "/recept/importera",
-    "method": "GET",
+    "action": "/dela",
+    "method": "POST",
+    "enctype": "multipart/form-data",
     "params": {
       "title": "title",
       "text": "text",
-      "url": "url"
+      "url": "url",
+      "files": [
+        {
+          "name": "image",
+          "accept": ["image/jpeg", "image/png", "image/webp"]
+        }
+      ]
     }
   }
 }
