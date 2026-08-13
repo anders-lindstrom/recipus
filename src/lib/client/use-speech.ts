@@ -93,8 +93,6 @@ export function useSpeech(onTranscript: (text: string) => void): {
   );
   const [listening, setListening] = useState(false);
   const recognition = useRef<SpeechRecognitionLike | null>(null);
-  /** The words this session has settled on. See `onresult` below. */
-  const finals = useRef("");
   /**
    * The callback through a ref, so restarting recognition is not a dependency
    * of every keystroke in the textarea above it.
@@ -109,8 +107,16 @@ export function useSpeech(onTranscript: (text: string) => void): {
   });
 
   // Whatever is still listening when the sheet closes must stop listening. The
-  // microphone does not belong to a component that no longer exists.
-  useEffect(() => () => recognition.current?.stop(), []);
+  // microphone does not belong to a component that no longer exists. Nulled as
+  // well as stopped, so the guard below also retires the last instance's late
+  // events rather than letting them reach a sink that is gone.
+  useEffect(
+    () => () => {
+      recognition.current?.stop();
+      recognition.current = null;
+    },
+    [],
+  );
 
   const toggle = useCallback(() => {
     if (recognition.current) {
@@ -124,14 +130,52 @@ export function useSpeech(onTranscript: (text: string) => void): {
     if (!Recognition) return;
 
     const rec = new Recognition();
+
+    /**
+     * Is `rec` still the instance the hook is driving?
+     *
+     * Every handler below asks before it touches anything shared, because a
+     * stopped `SpeechRecognition` is not a finished one: `stop()` with audio
+     * still pending fires one last `onresult` and then `onend`, asynchronously,
+     * after the call has returned. So the ordinary stop-and-start-again gesture
+     * leaves a retired instance holding live callbacks while a new one runs.
+     *
+     * Unguarded, everything those callbacks touched was shared by every
+     * instance. `finals` was one accumulator for the whole hook, so session
+     * one's trailing words landed in session two's tally and the sink overwrote
+     * the textarea with the mixture — the same bug as the prefix pile-up,
+     * arriving by instance-crossing instead of result-index-crossing. And
+     * `onend` nulled `recognition.current` unconditionally, so a late one from
+     * the OLD instance dropped the reference to the new, still-listening one and
+     * flipped the button back to "not listening" while the microphone was open.
+     * `finals` is now per-session (below); this is what covers the rest.
+     *
+     * Identity rather than a session counter: `recognition.current` is already
+     * the single answer to "which one is live", every path that retires an
+     * instance clears or replaces it, and a counter would be a second thing to
+     * keep in step with it. Declared here rather than in the component body so
+     * it closes over `rec` directly and cannot be captured from a stale render.
+     */
+    const isCurrent = () => recognition.current === rec;
+
+    /**
+     * The words THIS session has settled on.
+     *
+     * A closure variable rather than a ref on the hook, which is what makes the
+     * isolation structural instead of disciplinary: one accumulator shared by
+     * every instance is what let a retired session's trailing words land in its
+     * successor's tally, and there is no reset to remember or to get wrong,
+     * because a new session simply gets a new binding. The guard above still
+     * matters — a retired instance must not call the sink or claim the slot —
+     * but it is no longer the only thing keeping two sessions apart.
+     */
+    let finals = "";
+
     rec.lang = "sv-SE";
     rec.continuous = true;
     // The words appear as they are said. A silent five seconds followed by a
     // paragraph reads as a hang.
     rec.interimResults = true;
-    // A fresh session says a fresh sentence; last session's words are already in
-    // the textarea and must not be said again.
-    finals.current = "";
     /**
      * The whole segment said so far — settled words plus the tail still being
      * guessed at — reported every time, and it REPLACES rather than appends.
@@ -150,22 +194,25 @@ export function useSpeech(onTranscript: (text: string) => void): {
      * every word is counted exactly once.
      */
     rec.onresult = (event) => {
+      if (!isCurrent()) return;
       let tail = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const alternative = result?.[0];
         if (!alternative) continue;
-        if (result.isFinal) finals.current += alternative.transcript;
+        if (result.isFinal) finals += alternative.transcript;
         else tail += alternative.transcript;
       }
-      const segment = `${finals.current}${tail}`.trim();
+      const segment = `${finals}${tail}`.trim();
       if (segment) sink.current(segment);
     };
     rec.onend = () => {
+      if (!isCurrent()) return;
       recognition.current = null;
       setListening(false);
     };
     rec.onerror = () => {
+      if (!isCurrent()) return;
       recognition.current = null;
       setListening(false);
     };
