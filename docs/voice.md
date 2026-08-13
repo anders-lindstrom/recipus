@@ -114,6 +114,11 @@ Utan den:
 - **Bild** svarar **503**. Det finns ingen tolkning av en skärmdump som inte
   går genom en modell, och ett tomt resultat hade sett ut som en bugg.
 
+Med nyckeln på plats svarar en bild **503** även när själva anropet misslyckas —
+kvotspärr, avslag, död uppkoppling, en bild Anthropic inte tar emot. Meningen är
+en annan än den som pekar på nyckeln, för det är inget som ska konfigureras:
+*"Kunde inte tolka bilden just nu. Försök igen, eller skriv in listan."*
+
 > **Skärmdumpar skickas till Anthropic.** Precis som receptsidor redan gör.
 > Bilden är en inköpslista, men den kan råka innehålla annat som stod på
 > skärmen — värt att veta innan man fotar hela mobilskärmen.
@@ -324,8 +329,10 @@ interaktionsmodellen och deploya om.
 | Svenska ord kommer fram som nonsens via Alexa | Förväntat, och inte lagbart. Använd Home Assistant |
 | Mikrofonknappen i dialogen finns inte | Firefox har ingen `SpeechRecognition`. Skriv i stället |
 | Dialogen säger "Lästes utan AI" | `ANTHROPIC_API_KEY` är inte satt i containerns miljö |
-| En bild svarar 503 | Samma sak — bild kan inte läsas utan modellen |
+| En bild svarar 503 om nyckeln nämns | Samma sak — bild kan inte läsas utan modellen |
+| "Kunde inte tolka bilden just nu" | Nyckeln finns, anropet gick fel. Kvotspärr, avslag, eller en bild över 5 MB |
 | "Den delade bilden är borta" | Mer än tio minuter, fem delningar senare, eller en omstart. Dela igen |
+| En delad bild öppnar listan utan dialog | Filen är över 6 MB och parkerades aldrig. Använd *Läs av en bild i stället* |
 | Appen syns inte i iOS delningsmeny | Förväntat. Öppna appen och välj *Läs av en bild i stället* |
 
 [locales]: https://developer.amazon.com/en-US/docs/alexa/custom-skills/develop-skills-in-multiple-languages.html

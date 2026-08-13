@@ -114,7 +114,10 @@ av klienten efter att du tryckt, vilket är skillnaden mot `/api/voice`: den har
 ingen skärm och måste därför både bestämma och utföra.
 
 Bilden krymps på telefonen före uppladdning — max 1600 px, JPEG — så en 12 MP
-skärmdump inte blir en 8 MB POST i en butiksuppkoppling.
+skärmdump inte blir en 8 MB POST i en butiksuppkoppling. Det gäller bildväljaren.
+En delad bild kommer in färdig från en annan app och krymps inte alls, så `/dela`
+sätter ett tak i stället: över det parkeras ingenting och delningen landar på en
+vanlig lista, för vägen vidare är väljaren.
 
 Klienten renderar namn, ikon, `hasAtHome` och "på listan" ur **sin egen**
 katalog, som redan ligger i IndexedDB. Servern skickar bara id:n.

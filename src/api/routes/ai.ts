@@ -17,6 +17,26 @@ import { amountSchema, errorSchema, jsonBody, jsonRes } from "../schemas";
 /** ~8 MB of base64 is ~6 MB of JPEG; the client sends far less. See §3. */
 const MAX_IMAGE_CHARS = 8_000_000;
 
+const KEY_MISSING = "Bildtolkning är inte konfigurerad (ANTHROPIC_API_KEY).";
+
+/**
+ * The model was reachable in principle and the image still did not come back.
+ *
+ * `parseForList` reports `usedModel: false` for an image only when the call
+ * itself failed — a rate limit, a refusal, a dead network, a photo Anthropic
+ * would not take — because the key check below has already run by the time it
+ * is called. That used to leave here as 200 with no rows, which the dialog
+ * states as "found no varor": a sentence that is not true, that invites the
+ * same photo to be sent again, and that on the share path arrives after the
+ * token is spent, so there is nothing left to retry with.
+ *
+ * Worded away from the missing-key sentence deliberately. Nothing needs
+ * configuring, the trouble is very likely temporary, and the way on is another
+ * picture or the text field rather than a deploy.
+ */
+const IMAGE_UNREADABLE =
+  "Kunde inte tolka bilden just nu. Försök igen, eller skriv in listan.";
+
 const parseBody = z
   .discriminatedUnion("kind", [
     z.object({ kind: z.literal("text"), text: z.string().min(1).max(8000) }),
@@ -61,7 +81,10 @@ export function aiRoutes() {
       responses: {
         200: jsonRes(parseResult, "What was understood"),
         404: jsonRes(errorSchema, "The shared image is gone"),
-        503: jsonRes(errorSchema, "ANTHROPIC_API_KEY is not configured"),
+        503: jsonRes(
+          errorSchema,
+          "The image could not be read: no ANTHROPIC_API_KEY, or the call failed",
+        ),
       },
     }),
     async (c) => {
@@ -76,17 +99,26 @@ export function aiRoutes() {
           );
         }
         if (!process.env.ANTHROPIC_API_KEY) {
-          return c.json({ error: "Bildtolkning är inte konfigurerad (ANTHROPIC_API_KEY)." }, 503);
+          return c.json({ error: KEY_MISSING }, 503);
         }
-        return c.json(await parseForList({ kind: "image", ...image }), 200);
+        const shared = await parseForList({ kind: "image", ...image });
+        if (!shared.usedModel) return c.json({ error: IMAGE_UNREADABLE }, 503);
+        return c.json(shared, 200);
       }
 
-      if (body.kind === "image" && !process.env.ANTHROPIC_API_KEY) {
-        // Text has a way through without a key; an image does not, and saying
-        // which knob is missing beats an empty result that looks like a bug.
-        return c.json({ error: "Bildtolkning är inte konfigurerad (ANTHROPIC_API_KEY)." }, 503);
+      if (body.kind === "image") {
+        if (!process.env.ANTHROPIC_API_KEY) {
+          // Text has a way through without a key; an image does not, and saying
+          // which knob is missing beats an empty result that looks like a bug.
+          return c.json({ error: KEY_MISSING }, 503);
+        }
+        const read = await parseForList(body);
+        if (!read.usedModel) return c.json({ error: IMAGE_UNREADABLE }, 503);
+        return c.json(read, 200);
       }
 
+      // Text, which has an answer either way: with a key the model reads it,
+      // without one the deterministic parser does and the dialog says so.
       return c.json(await parseForList(body), 200);
     },
   );

@@ -54,7 +54,14 @@ export async function parseForList(input: AiAddInput): Promise<AiAddResult> {
     return { rows, usedModel: false };
   }
 
-  // An image without a model is simply unreadable. The route turns this into a
-  // 503 with a sentence that says which knob is missing.
+  /*
+   * An image without a model is simply unreadable, and no empty list of rows
+   * would tell the truth about that.
+   *
+   * The route turns this into a 503 rather than an answer. It can, because it
+   * has already checked the key by the time it calls this: a missing knob gets
+   * the sentence naming the knob, and `usedModel: false` reaching it any other
+   * way can only mean the call failed, which gets the sentence saying so.
+   */
   return { rows: [], usedModel: false };
 }

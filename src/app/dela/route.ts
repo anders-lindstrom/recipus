@@ -25,6 +25,23 @@ import { putSharedImage } from "@/lib/services/share-inbox";
 
 const ACCEPTED = new Set(["image/jpeg", "image/png", "image/webp"]);
 
+/**
+ * A ceiling on what gets parked, not on what a photo may weigh.
+ *
+ * `shareInbox` counts its capacity in five slots and no bytes, so this is the
+ * only thing bounding what the process is holding — and unlike the file picker,
+ * which shrinks a photo to a few hundred KB before it uploads, whatever another
+ * app hands over arrives here whole.
+ *
+ * Six megabytes is above every screenshot and above Anthropic's own limit, so
+ * this is not the model's cap in disguise: a file that clears this one and is
+ * still too big to read comes back as the dialog's "could not read the image",
+ * which is a sentence a person can act on. Over it there is no dialog at all —
+ * the share lands on a plain list, because the way on is the picker, and
+ * opening a dialog to say "too big" would only be in the way of finding it.
+ */
+const MAX_SHARE_BYTES = 6 * 1024 * 1024;
+
 function seeOther(path: string): Response {
   return new Response(null, { status: 303, headers: { Location: path } });
 }
@@ -50,6 +67,10 @@ export async function POST(request: Request): Promise<Response> {
 
   const file = form.get("image");
   if (actor && file instanceof File && file.size > 0 && ACCEPTED.has(file.type)) {
+    // Checked before the branch below can see it: a shared image usually comes
+    // with a title as well, and falling through would send an oversized photo
+    // to the recipe importer.
+    if (file.size > MAX_SHARE_BYTES) return seeOther("/");
     const data = Buffer.from(await file.arrayBuffer()).toString("base64");
     const token = putSharedImage({ data, mediaType: file.type, actor });
     return seeOther(`/?ai=share&t=${encodeURIComponent(token)}`);
