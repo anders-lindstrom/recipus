@@ -196,6 +196,22 @@ export function AiAddSheet({
   const otherRows = rows.filter((r) => r.group === "other");
   const chosen = rows.filter((r) => ticked.has(r.id)).length;
 
+  /**
+   * A parse that found nothing is a question, not an answer.
+   *
+   * Reviewing zero rows used to end the dialog: the sentence stood alone with
+   * the textarea gone and the primary button offering to add nothing, so the
+   * text somebody had just typed was thrown away and a photo the model could
+   * not read had no second attempt. On the share path there was not even that,
+   * since the token is spent by the time the answer arrives.
+   *
+   * So the collect block comes back and the sentence sits above it. "Found
+   * nothing" and "try it another way" are the same screen.
+   */
+  const emptyParse = phase.step === "reviewing" && rows.length === 0;
+  const collecting =
+    phase.step === "collecting" || phase.step === "error" || emptyParse;
+
   function toggle(id: string) {
     setTicked((prev) => {
       const next = new Set(prev);
@@ -293,7 +309,13 @@ export function AiAddSheet({
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pt-4 pb-4">
-        {(phase.step === "collecting" || phase.step === "error") && (
+        {emptyParse && (
+          <p className="mb-4 rounded-card border border-line bg-surface-sunken px-3.5 py-2.5 text-caption text-ink-soft">
+            Hittade inga varor att lägga till.
+          </p>
+        )}
+
+        {collecting && (
           <>
             <p className="max-w-[42ch] text-body text-ink-soft">
               Säg vad ni behöver, klistra in en hel lista, eller ta en bild av
@@ -375,15 +397,9 @@ export function AiAddSheet({
           </div>
         )}
 
-        {phase.step === "reviewing" && (
+        {phase.step === "reviewing" && rows.length > 0 && (
           <>
-            {rows.length === 0 && (
-              <p className="py-10 text-center text-body text-ink-soft">
-                Hittade inga varor att lägga till.
-              </p>
-            )}
-
-            {!phase.usedModel && rows.length > 0 && (
+            {!phase.usedModel && (
               /* Said out loud rather than hidden: without a key the loose
                  phrasing a model would have tidied is simply not read, and a
                  person who does not know that will blame the app. */
@@ -443,7 +459,7 @@ export function AiAddSheet({
       </div>
 
       <div className="safe-bottom flex-none border-t border-line bg-surface p-3">
-        {phase.step === "reviewing" ? (
+        {phase.step === "reviewing" && rows.length > 0 ? (
           <button
             type="button"
             disabled={chosen === 0}

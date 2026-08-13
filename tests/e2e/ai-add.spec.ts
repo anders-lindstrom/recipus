@@ -102,6 +102,41 @@ test("reads a list, lets you untick, and adds the rest", async ({
 });
 
 /**
+ * A parse that found nothing must not end the dialog.
+ *
+ * The sentence used to stand on its own with the textarea gone, so the text
+ * just typed was thrown away and the only way on was to close the dialog and
+ * start again — and on the share path not even that, since the token is spent
+ * by the time the answer arrives. What is asserted is the way back, not the
+ * sentence: both have to be on screen at once.
+ */
+test("an empty read leaves you somewhere to try again", async ({
+  freshPage: page,
+}) => {
+  await page.route("**/api/ai/parse", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ usedModel: true, rows: [] }),
+    });
+  });
+
+  await page.getByRole("button", { name: "Lägg till flera med AI" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByRole("textbox", { name: /skriv och klistra in/i })
+    .fill("obegripligt");
+  await dialog.getByRole("button", { name: "Läs listan" }).click();
+
+  await expect(dialog.getByText("Hittade inga varor att lägga till.")).toBeVisible();
+  // The typed text is still there, and the button that reads it still is too.
+  await expect(
+    dialog.getByRole("textbox", { name: /skriv och klistra in/i }),
+  ).toHaveValue("obegripligt");
+  await expect(dialog.getByRole("button", { name: "Läs listan" })).toBeVisible();
+});
+
+/**
  * The share path, which is the one that has actually broken.
  *
  * `?ai=share&t=…` has to reach the sheet AND the sheet's mount effect has to
