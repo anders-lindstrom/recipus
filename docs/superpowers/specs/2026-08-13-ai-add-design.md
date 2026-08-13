@@ -96,6 +96,7 @@ anledning till en egen nyckel.
 // in
 { kind: "text",  text: string }
 { kind: "image", data: string /* base64 */, mediaType: string }
+{ kind: "share", token: string }   // bilden ligger i shareInbox, se §5.1
 
 // ut
 { rows: Array<{
@@ -168,11 +169,35 @@ Ett manifest får ha **ett** `share_target`. Ert är upptaget av
 `/recept/importera`. Bilder kräver dessutom `method: "POST"` med
 `multipart/form-data`, och en App Router-sida kan inte ta emot POST.
 
-Lösningen är ett POST-mål på `/dela` som **service workern** triagerar: fånga
-POST:en i `fetch`, lägg en eventuell fil i IndexedDB, och svara med en
-omdirigering — till `/?ai=share` när det kom en fil, till
-`/recept/importera?url=…&text=…` när det var en länk. Receptdelningen fungerar
-alltså precis som förut, bara via ett annat rör. `CACHE_TAG` bumpas.
+Lösningen är ett POST-mål på `/dela` — en **route handler**, `src/app/dela/route.ts`,
+inte en sida. Route handlers tar POST, och en delning som följer en 303 landar
+där den ska:
+
+- Kom det en fil: lägg den i `shareInbox` (§5.1) och skicka vidare till
+  `/?ai=share&t=<token>`.
+- Kom det en länk: skicka vidare till `/recept/importera?url=…&text=…`.
+
+Receptdelningen fungerar alltså precis som förut, bara via ett annat rör.
+
+**Service workern rörs inte.** Det första utkastet lade triagen i `fetch`-
+hanteraren med filen i IndexedDB, och det var fel instrument. `sw.js` egen
+kommentar beskriver hur en dålig worker blir "a self-inflicted,
+unrecoverable-from-inside state" — appens kod kör aldrig, så den kan inte ens
+avregistrera sig. Att lägga delningsvägen där hade satt en ny, sällan körd
+kodväg i den enda fil i repot som kan låsa hela appen. En route handler kan
+felas om, testas rakt av, och kräver ingen aktiv worker för att delning ska
+fungera första gången appen installeras.
+
+### 5.1 `shareInbox`
+
+`src/lib/services/share-inbox.ts`: en `Map` från slumptoken till
+`{ data, mediaType, actor, createdAt }`, med tio minuters livslängd och plats
+för fem poster (äldst ryker först). Processlokal, vilket räcker — hushållet kör
+en container, och en token som inte överlever en omstart kostar en ny delning.
+
+`take(token, actor)` **tömmer** posten och vägrar lämna ut den till en annan
+användare än den som delade. Bilden når alltså aldrig disken, och kan inte hämtas
+två gånger.
 
 Det här gäller **bara Android**. iOS har inget stöd för Web Share Target över
 huvud taget — en installerad PWA kan inte dyka upp i iOS delningsmeny. Därför är
