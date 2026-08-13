@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import { db } from "@/db";
 import { AuthError, authenticate } from "@/lib/auth";
+import { aiRoutes } from "./routes/ai";
 import { barcodeRoutes } from "./routes/barcode";
 import { listsRoutes } from "./routes/lists";
 import { opsRoutes } from "./routes/ops";
@@ -45,6 +46,7 @@ export function api() {
   app.route("/recipes", recipesRoutes());
   app.route("/barcode", barcodeRoutes());
   app.route("/suggestions", suggestionsRoutes());
+  app.route("/ai", aiRoutes());
 
   app.onError((err, c) => {
     if (err instanceof HTTPException) {
