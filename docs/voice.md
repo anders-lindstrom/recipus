@@ -1,8 +1,11 @@
 # Rösten — lägga till varor genom att säga dem
 
-Två vägar in, en motor. Det här dokumentet är körschemat för båda.
+Tre vägar in. Två går genom en högtalare som står i huset, delar en motor och
+skriver rakt på listan. Den tredje går genom telefonen du redan håller i, tar
+även en bild och en inklistrad klump, och visar vad den läste innan något
+händer. Det här dokumentet är körschemat för alla tre.
 
-## Varför två vägar, och inte en
+## Varför två vägar genom högtalare, och inte en
 
 Det korta svaret: **Alexa kan inte svenska.**
 
@@ -59,6 +62,80 @@ avgöra att ett ord är nytt — en felstavning som löser sig är återställba
 som skapar en 343:e katalogvara är permanent. Tal är brusigare än en tumme och
 har ingen skärm att fånga misstaget på. Det som inte matchar rapporteras och
 sägs högt.
+
+## Den tredje vägen: appen i handen
+
+Gnistan i sökraden — **Lägg till flera med AI** — öppnar en dialog som tar tre
+sorters indata och landar i **samma** granskningslista:
+
+| Vad du gör | Vad som händer |
+|---|---|
+| Trycker på mikrofonen och pratar | Texten hamnar i fältet, redigerbar |
+| Klistrar in en klump text | Ligger kvar i fältet tills du trycker *Läs listan* |
+| Väljer en bild, eller delar en till appen | Läses direkt |
+
+En dialog och inte tre, för att de ställer samma fråga: *är det här vad du
+menade?* Ingenting skrivs förrän du trycker på knappen längst ned, och då går
+det genom listans vanliga optimistiska väg — samma ops som ett tryck på en
+bricka, samma köphistorik, samma utskick till hushållets andra telefon.
+
+Rader som redan står på listan kommer med **oikryssade**. Det är inte en
+snygghetsdetalj: servern drar tillbaka ett köp av samma vara från den senaste
+halvtimmen när den läggs på igen, så ett bockat "PÅ LISTAN" hade raderat en
+handling som skedde för tjugo minuter sedan.
+
+### Rösten i webbläsaren
+
+Mikrofonen använder `SpeechRecognition` med `lang = "sv-SE"` —
+`src/lib/client/use-speech.ts`. Igenkänningen sker i webbläsaren och
+**ingen ljudfil lämnar telefonen**; det som skickas vidare är samma text som du
+kan läsa och rätta i fältet innan du trycker.
+
+Chrome på Android och Safari på iOS har den. **Firefox har den inte, och där
+ritas knappen inte alls** — en kontroll som inte kan fungera är sämre än en som
+saknas, för den lär dig att appen är trasig i stället för att funktionen ligger
+någon annanstans. Skriv och klistra in fungerar överallt.
+
+### Nyckeln, och vad som händer utan den
+
+`/api/ai/parse` läser med Claude (`ANTHROPIC_API_KEY`, samma nyckel som
+receptimporten):
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Utan den:
+
+- **Text och tal** faller tillbaka på den deterministiska rösttolken — samma
+  `interpretUtterance` som Home Assistant-vägen. Bara rader som redan liknar
+  varor kommer med, och dialogen säger det rakt ut: *"Lästes utan AI — bara
+  rader som redan liknar varor kom med."*
+- **Bild** svarar **503**. Det finns ingen tolkning av en skärmdump som inte
+  går genom en modell, och ett tomt resultat hade sett ut som en bugg.
+
+> **Skärmdumpar skickas till Anthropic.** Precis som receptsidor redan gör.
+> Bilden är en inköpslista, men den kan råka innehålla annat som stod på
+> skärmen — värt att veta innan man fotar hela mobilskärmen.
+
+### Att dela en bild till appen
+
+Manifestet deklarerar **ett** `share_target`, och filer kräver `POST` med
+`multipart/form-data`. Så allt delande går till `/dela`
+(`src/app/dela/route.ts`), som triagerar: en fil skickas vidare till listans
+AI-dialog, en länk till receptimporten. Receptimporten förlorade alltså sitt
+egna GET-mål men gör exakt samma sak som förut — den får sina `url`/`text`/
+`title` återuppbyggda som frågeparametrar.
+
+**Delningsmålet är i praktiken Android.** iOS visar inte installerade PWA:er i
+delningsmenyn; där är vägen in att öppna appen och välja *Läs av en bild i
+stället*, vilket ger systemets vanliga bildväljare. Samma dialog, ett steg till.
+
+Den delade bilden hamnar **i minnet** i tio minuter (`SHARE_TTL_MS`, fem
+platser) och **läses en gång** — `takeSharedImage` tömmer platsen och
+kontrollerar dessutom vem som frågar. Ingen skärmdump av vad hushållet ska
+handla skrivs till disk eller till Postgres. Kostnaden är att en omstart mellan
+delning och öppning betyder en omdelning; det är rätt pris.
 
 ## Miljövariabler
 
@@ -245,6 +322,11 @@ interaktionsmodellen och deploya om.
 | Allt hamnar i `unresolved` | Aliastabellen är inte seedad — se `pnpm db:seed` |
 | Rätt ord, fel vara | Ett alias pekar fel. Fixa raden i `catalog_item_aliases` |
 | Svenska ord kommer fram som nonsens via Alexa | Förväntat, och inte lagbart. Använd Home Assistant |
+| Mikrofonknappen i dialogen finns inte | Firefox har ingen `SpeechRecognition`. Skriv i stället |
+| Dialogen säger "Lästes utan AI" | `ANTHROPIC_API_KEY` är inte satt i containerns miljö |
+| En bild svarar 503 | Samma sak — bild kan inte läsas utan modellen |
+| "Den delade bilden är borta" | Mer än tio minuter, fem delningar senare, eller en omstart. Dela igen |
+| Appen syns inte i iOS delningsmeny | Förväntat. Öppna appen och välj *Läs av en bild i stället* |
 
 [locales]: https://developer.amazon.com/en-US/docs/alexa/custom-skills/develop-skills-in-multiple-languages.html
 [deprecated]: https://developer.amazon.com/en-US/docs/alexa/ask-overviews/deprecated-features.html

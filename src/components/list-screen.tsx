@@ -34,6 +34,8 @@ import { useOnce } from "@/lib/client/use-once";
 import { useSustained } from "@/lib/client/use-sustained";
 import { AddBar } from "./add-bar";
 import { AddDetailsSheet } from "./add-details-sheet";
+import { AiAddSheet } from "./ai-add-sheet";
+import type { AiAddPlan } from "./ai-add-model";
 import { AisleRail, aisleAnchorId } from "./aisle-rail";
 import { EntrySheet } from "./entry-sheet";
 import { ListLayoutSheet } from "./list-layout-sheet";
@@ -160,6 +162,11 @@ export interface ListScreenActions {
    * arranged. See `moveCategory`.
    */
   setCategoryOrder: (categoryOrder: Id[]) => void;
+  /**
+   * Everything one AI read decided, applied as one gesture. The varor it
+   * invented are created first, because the adds below name them.
+   */
+  addManyFromAi: (plan: AiAddPlan) => void;
 }
 
 export interface ListScreenProps {
@@ -175,6 +182,8 @@ export interface ListScreenProps {
   members: Array<{ id: string; initials: string; color: string }>;
   sync: { online: boolean; pendingCount: number; signedOut: boolean };
   onReauthenticate?: () => void;
+  /** Set when a share opened the app — the sheet parses that image on mount. */
+  aiShareToken?: string;
   /** Planning at home vs shopping in the shop. See lib/client/use-mode.ts. */
   mode: ShopMode;
   onModeChange: (mode: ShopMode) => void;
@@ -193,6 +202,7 @@ export function ListScreen({
   members,
   sync,
   onReauthenticate,
+  aiShareToken,
   mode,
   onModeChange,
   actions,
@@ -265,6 +275,28 @@ export function ListScreen({
   const [addingDetails, setAddingDetails] = useState<Id | null>(null);
   const [layoutOpen, setLayoutOpen] = useState(false);
   /**
+   * The AI dialog — a photo, a paste, or a sentence.
+   *
+   * Open from the first render when a share brought us here, rather than opened
+   * by an effect afterwards: the person picked the image in another app and is
+   * already waiting, and a frame of empty list before the sheet appears reads as
+   * the share having gone nowhere.
+   */
+  const [aiOpen, setAiOpen] = useState(Boolean(aiShareToken));
+  /**
+   * The share token, held in state rather than read straight off the prop.
+   *
+   * It is one-shot: `takeSharedImage` empties the slot on first read, so a
+   * second read of the same token is a 404 and the sheet opens into its error
+   * card instead of its text field. The prop comes from the URL and nothing
+   * rewrites the URL, so without this, closing the dialog and tapping the
+   * sparkle again re-fires a read that cannot succeed — and reloading the same
+   * address is worse, because `aiOpen` starts true and the error is then the
+   * first thing the app says. Pull-to-refresh in the installed PWA reproduces
+   * it rather than clearing it.
+   */
+  const [aiShare, setAiShare] = useState(aiShareToken);
+  /**
    * Suggestions dismissed on THIS device since the last hydrate.
    *
    * Held locally as well as written to the server so the tile disappears under
@@ -299,6 +331,10 @@ export function ListScreen({
     () => new Set(live.map((e) => e.catalogItemId)),
     [live],
   );
+  // The AI sheet indexes its catalog rather than `.get()`-ing it, so it takes a
+  // record. Derived from the same `byId` every other lookup on this screen uses,
+  // rather than from `catalog`, so the two can never disagree about a vara.
+  const catalogById = useMemo(() => Object.fromEntries(byId), [byId]);
 
   const views = useMemo(() => {
     const map = new Map<Id, EntryView>();
@@ -606,6 +642,26 @@ export function ListScreen({
     });
     setUndoableDismissal(null);
     actions.restoreSuggestion(id);
+  }
+
+  /**
+   * Shut the AI dialog and retire the share that opened it.
+   *
+   * Both halves are needed. Clearing the state stops a reopen from presenting a
+   * token the server has already emptied; `router.replace` takes it out of the
+   * address bar as well, so a reload cannot resurrect it after this component's
+   * state is gone. Every other parameter is preserved — `?list=` decides which
+   * list this page is, and dropping it would switch shops on the way out of a
+   * dialog.
+   */
+  function closeAi() {
+    setAiOpen(false);
+    if (!aiShare) return;
+    setAiShare(undefined);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("ai");
+    url.searchParams.delete("t");
+    router.replace(`${url.pathname}${url.search}`, { scroll: false });
   }
 
   const openItem = openEntry ? byId.get(openEntry) : undefined;
@@ -977,6 +1033,7 @@ export function ListScreen({
           onLongPressItem={setAddingDetails}
           onUnhide={(id) => actions.setHidden(id, false)}
           categoryNames={categoryName}
+          onAiAdd={() => setAiOpen(true)}
         />
 
         <SectionHeading
@@ -1489,6 +1546,20 @@ export function ListScreen({
             setMoving(null);
           }}
           onClose={() => setMoving(null)}
+        />
+      )}
+
+      {aiOpen && (
+        <AiAddSheet
+          listName={list.name}
+          catalog={catalogById}
+          onListItemIds={onListIds}
+          shareToken={aiShare}
+          onCancel={closeAi}
+          onConfirm={(plan) => {
+            actions.addManyFromAi(plan);
+            closeAi();
+          }}
         />
       )}
     </div>

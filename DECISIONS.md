@@ -2242,3 +2242,79 @@ before the remove half wrote the second, leaving one where there were two.
 Six tests. Four fail without the rule; the other two — the 31-minute case and
 the scan exemption — pass either way and are regression guards rather than
 evidence for the change.
+
+---
+
+# A photo, a paste or a sentence, read into the list, 2026-08-13
+
+The add bar takes one vara at a time, typed. Everything else people actually
+have — a screenshot of a partner's list, a clump pasted out of a chat, twelve
+things said out loud while unpacking — had no way in that was faster than
+typing them one by one. The sparkle in the add bar opens one dialog that takes
+all three and shows what it read before anything is written.
+
+**The model is never asked which vara a word is.** It is asked to turn messy
+input into clean Swedish lines and to say which of them stood on the list
+itself; `matchIngredient` against `loadMatchCandidates()` decides what each line
+means, which is the same matcher the add bar, the recipe importer and the voice
+path already use. Handing it 341 varor and asking for ids would put a second
+reading of "which vara is this" in a codebase whose entire sync story rests on
+there being one of everything — and the second reading would be the
+non-deterministic one, unversioned, unable to see an alias, and impossible to
+argue with in a test. It would also drift the moment somebody renames a vara on
+/varor. The split means the expensive, flaky half is confined to reading, and
+every claim about the catalog is still made by code.
+
+**A row already on the list arrives unticked.** Not tidiness: `apply-op.ts`
+retracts a purchase of the same vara from the last `RETRACT_WINDOW_MS` — thirty
+minutes — when it comes back on, which is the decision recorded above it. A
+photographed list naming mjölk you bought twenty minutes ago would therefore
+have *erased* that shop's record if the row arrived ticked and the button was
+pressed without reading, and pressing that button without reading is the normal
+case for twelve rows. The row is still shown, badged PÅ LISTAN, so re-adding
+stays available to anyone who genuinely means it.
+
+For the opposite reason, a row the model read out of a suggestion grid ("senast
+använda", greyed rows, an advert) is grouped under *Också på bilden* and also
+arrives unticked: nobody put it on a list. It is not dropped, because a
+boundary the model judged wrongly has to be visible rather than silently
+applied.
+
+**The share target is a route handler, not service-worker code.** The first
+design put it in `sw.js`'s fetch handler with the file stashed in IndexedDB.
+`sw.js`'s own comments explain why that is the wrong address for a rarely-run
+path: a bad worker is a self-inflicted state you cannot recover from inside,
+because the app's code never runs to fix it. `/dela` can be tested, deployed and
+rolled back like any other route, and it works the first time the app is
+installed, before any worker is active. A manifest may declare exactly one
+`share_target` and files require POST with `multipart/form-data`, so the recipe
+importer's GET target had to go — it is rebuilt out of the form fields and
+redirected to, and the importer itself is untouched. The image waits in memory
+for ten minutes under a one-shot token rather than on disk: a screenshot of what
+a household is about to buy is not something to keep, and the cost of losing one
+to a restart is one re-share.
+
+**`/api/voice` and `/api/alexa` were left deterministic, deliberately.** They
+were the obvious next customers for the model and they get nothing. A speaker
+writes straight to the list with no screen to catch a mistake on, so a wrong
+reading there is silent and permanent, whereas every reading in the dialog is
+looked at before it becomes an op. They are also the two paths that must keep
+working when a third party is down or a key is missing. The dialog's own text
+path degrades to `interpretUtterance` — the very parser those endpoints use — so
+the fallback is not a lesser feature nobody maintains; it is the thing two other
+callers exercise every day.
+
+**Rejected: writing the plan through `/api/ops` like the recipe screen.** The
+parse already needed the network, but the ops afterwards are twelve taps' worth
+of work the outbox has always carried, and routing them through the server would
+make a dozen varor land slower than one — and fail entirely in a shop with no
+signal, which is the situation this app is built around. `addManyFromAi`
+dispatches creates, then adds, then amounts, in that order, because an
+`add_item` naming a vara that does not exist yet is an add of nothing.
+
+**Rejected: uploading audio for transcription.** The microphone is
+`SpeechRecognition` at `sv-SE`, recognised in the browser, and no audio file
+leaves the phone. Firefox has no such API and there the button is not drawn at
+all rather than drawn dead. The transcript lands in the textarea, editable, and
+goes through exactly the same pass as a paste — so a misheard word is a typo you
+can fix rather than a vara you have to hunt down afterwards.

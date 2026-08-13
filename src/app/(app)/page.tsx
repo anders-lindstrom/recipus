@@ -22,9 +22,12 @@ function initials(user: string): string {
 export default async function ListPage({
   searchParams,
 }: {
-  searchParams: Promise<{ list?: string }>;
+  searchParams: Promise<{ list?: string; ai?: string; t?: string }>;
 }) {
-  const { list: requestedList } = await searchParams;
+  // `?ai=share&t=…` is what `/dela` redirects to after parking a shared image.
+  // Read here and handed to the client, because nothing reads a query parameter
+  // by itself — the manifest's `?scan=1` shortcut has never been read at all.
+  const { list: requestedList, ai, t } = await searchParams;
   // Auth failure must NOT render a different page. The service worker caches
   // this HTML, so an auth-gated render bakes "not logged in" into the cache and
   // serves it forever — which is exactly how an app that works offline stops
@@ -61,6 +64,7 @@ export default async function ListPage({
             ? [{ id: actor, initials: initials(actor), color: "#b4551f" }]
             : []
         }
+        aiShareToken={ai === "share" && t ? t : undefined}
       />
     </main>
   );

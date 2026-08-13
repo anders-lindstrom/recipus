@@ -95,6 +95,8 @@ export interface AddBarProps {
   onUnhide: (itemId: Id) => void;
   /** Aisle names by id, so the create row can say where the vara will land. */
   categoryNames: Map<Id, string>;
+  /** Opens the AI dialog — a photo, a paste, or a spoken sentence. */
+  onAiAdd: () => void;
 }
 
 /**
@@ -235,6 +237,7 @@ export function AddBar({
   onLongPressItem,
   onUnhide,
   categoryNames,
+  onAiAdd,
 }: AddBarProps) {
   const [raw, setRaw] = useState("");
   const [open, setOpen] = useState(false);
@@ -623,6 +626,21 @@ export function AddBar({
             <UiIcon name="clear" size={16} />
           </button>
         )}
+        {/* The way in for everything that is not one vara typed by hand: a
+            screenshot of somebody else's list, a paste, or a sentence said out
+            loud. It sits in the field's own row because it answers the same
+            question the field does — "get this onto the list" — and a person
+            with twelve things to add should not have to find a second surface
+            to say so. */}
+        <button
+          type="button"
+          onClick={onAiAdd}
+          aria-label="Lägg till flera med AI"
+          aria-haspopup="dialog"
+          className="flex h-11 w-11 flex-none items-center justify-center rounded-full text-brand"
+        >
+          <UiIcon name="sparkle" size={20} />
+        </button>
       </div>
 
       {showPanel && (

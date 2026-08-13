@@ -59,6 +59,7 @@ src/lib/ingredients/  receptrad → mängd + vara, matchad mot katalogen
 src/lib/cadence/      köphistorik → medianintervall → "brukar vara slut nu"
 src/lib/sync/         op-typer och reduceraren — körs på BÅDA sidor
 src/lib/recipes/      URL-import via JSON-LD, LLM som reserv
+src/lib/ai-add/       bild/text/röst → rader, matchade med röstmotorn
 src/lib/barcode/      EAN-validering och Open Food Facts
 src/lib/services/     delad affärslogik (läsvägar, op-tillämpning på servern)
 src/lib/client/       IndexedDB, utkorg, SSE, streckkodsuppslag utan nät

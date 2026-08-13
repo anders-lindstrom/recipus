@@ -29,6 +29,7 @@ import {
 import type { ListSnapshot } from "@/lib/services/list-data";
 import { parseAmount } from "@/lib/units";
 import { normalizeName, slugify } from "@/lib/utils";
+import type { AiAddPlan } from "./ai-add-model";
 import { splitSortOps, newVaraLike } from "./list-model";
 import { ListScreen } from "./list-screen";
 import { ListSwitcher } from "./list-switcher";
@@ -193,9 +194,24 @@ export interface ListClientProps {
   lists: List[];
   actor: string | null;
   members: Array<{ id: string; initials: string; color: string }>;
+  /**
+   * The one-shot token a share left in `?ai=share&t=…`, read on the server.
+   *
+   * Passed down rather than read here because the share target redirects to
+   * this page and nothing else would look: `?scan=1` is in the manifest as a
+   * shortcut and is read by nothing at all, which is exactly the mistake worth
+   * not repeating.
+   */
+  aiShareToken?: string;
 }
 
-export function ListClient({ snapshot, lists, actor, members }: ListClientProps) {
+export function ListClient({
+  snapshot,
+  lists,
+  actor,
+  members,
+  aiShareToken,
+}: ListClientProps) {
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<ScanOutcome | null>(null);
   const [switching, setSwitching] = useState(false);
@@ -701,6 +717,39 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
       });
       return catalogItemId;
     },
+    /**
+     * One AI read, applied.
+     *
+     * Creates first, then adds, then amounts — the order matters because an
+     * `add_item` naming a vara that does not exist yet is an add of nothing.
+     * `dispatch` stamps each op through `buildOp`, and the client clock it uses
+     * is strictly increasing, so a dozen ops born inside one millisecond still
+     * order.
+     *
+     * Deliberately the ordinary optimistic path rather than the recipe screen's
+     * `/api/ops` round trip: the parse already needed the network, and once it
+     * has answered, putting twelve varor on a list is twelve taps' worth of
+     * work that the outbox has always been able to carry.
+     */
+    addManyFromAi: (plan: AiAddPlan) => {
+      for (const item of plan.creates) {
+        dispatch({ kind: "create_catalog_item", item });
+      }
+      for (const add of plan.adds) {
+        dispatch({ kind: "add_item", listId, catalogItemId: add.catalogItemId });
+        if (add.amount) {
+          dispatch({
+            kind: "set_amount",
+            listId,
+            catalogItemId: add.catalogItemId,
+            amount: add.amount,
+          });
+        }
+      }
+      toast(
+        `${plan.adds.length} ${plan.adds.length === 1 ? "vara" : "varor"} tillagda`,
+      );
+    },
   };
 
   /**
@@ -907,6 +956,7 @@ export function ListClient({ snapshot, lists, actor, members }: ListClientProps)
           signedOut: status.signedOut,
         }}
         onReauthenticate={() => location.reload()}
+        aiShareToken={aiShareToken}
         actions={actions}
       />
       {switching && (
