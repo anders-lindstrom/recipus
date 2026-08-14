@@ -1,5 +1,5 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiEnv } from "..";
 
 /**
@@ -7,13 +7,13 @@ import type { ApiEnv } from "..";
  *
  * The parse itself is covered by `src/lib/ai-add/*.test.ts`; what is pinned
  * here is the one inference this file makes on its own. `parseForList` cannot
- * say WHY it failed — it reports `usedModel: false` for a missing key and for a
- * dead call alike — so the route reads the difference from the fact that it
- * checked the key first. Get that wrong and either a working parse 503s or a
- * failed one comes back as "found no varor", which is the bug this test exists
- * to keep fixed.
+ * say WHY it failed — the shim unreachable, unconfigured, or a call that came
+ * back empty all report `usedModel: false` alike — so the route treats every
+ * such failure the same way rather than guessing at a cause. Get that wrong
+ * and a failed parse comes back as "found no varor", which is the bug this
+ * test exists to keep fixed.
  *
- * Both services are mocked, so nothing here touches Anthropic or the database.
+ * Both services are mocked, so nothing here touches Claude or the database.
  */
 
 const { parseForList, takeSharedImage } = vi.hoisted(() => ({
@@ -48,17 +48,9 @@ function post(body: unknown) {
 const PHOTO = { kind: "image", data: "abc", mediaType: "image/jpeg" };
 
 describe("POST /ai/parse", () => {
-  const originalKey = process.env.ANTHROPIC_API_KEY;
-
   beforeEach(() => {
     parseForList.mockReset();
     takeSharedImage.mockReset();
-    process.env.ANTHROPIC_API_KEY = "test-key";
-  });
-
-  afterEach(() => {
-    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = originalKey;
   });
 
   it("says the image could not be read when the call failed", async () => {
@@ -68,8 +60,6 @@ describe("POST /ai/parse", () => {
 
     expect(res.status).toBe(503);
     const { error } = (await res.json()) as { error: string };
-    // Not the missing-knob sentence: the knob is there, the reading failed.
-    expect(error).not.toMatch(/ANTHROPIC_API_KEY/);
     expect(error).toMatch(/bilden/i);
   });
 
@@ -80,21 +70,7 @@ describe("POST /ai/parse", () => {
     const res = await post({ kind: "share", token: "t0" });
 
     expect(res.status).toBe(503);
-    expect(((await res.json()) as { error: string }).error).not.toMatch(
-      /ANTHROPIC_API_KEY/,
-    );
-  });
-
-  it("names the missing knob instead, and does not call the model", async () => {
-    delete process.env.ANTHROPIC_API_KEY;
-
-    const res = await post(PHOTO);
-
-    expect(res.status).toBe(503);
-    expect(((await res.json()) as { error: string }).error).toMatch(
-      /ANTHROPIC_API_KEY/,
-    );
-    expect(parseForList).not.toHaveBeenCalled();
+    expect(((await res.json()) as { error: string }).error).toMatch(/bilden/i);
   });
 
   it("passes an image the model DID read, even with nothing on it", async () => {
