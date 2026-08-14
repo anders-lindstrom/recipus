@@ -69,7 +69,15 @@ describe("parseInput", () => {
   });
 
   it("returns null on a non-2xx answer", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 503 }));
+    // The body is deliberately one that WOULD validate. A 503 carrying junk
+    // would be refused by the schema check anyway, and this test would pass
+    // with the status guard deleted — pinning nothing.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ lines: [{ text: "2 l mjölk", group: "list" }] }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
     expect(await parseInput({ kind: "text", text: "x" })).toBeNull();
   });
 

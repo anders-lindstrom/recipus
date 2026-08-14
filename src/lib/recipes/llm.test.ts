@@ -132,7 +132,24 @@ describe("extractRecipeWithLlm", () => {
   });
 
   it("returns null on a non-2xx answer", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 503 }));
+    // The body is deliberately one that WOULD validate. A 503 carrying junk
+    // would be refused by the schema check anyway, and this test would pass
+    // with the status guard deleted — pinning nothing.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          recipe: {
+            title: "Kanelbullar",
+            servings: 20,
+            servingsUnit: "bullar",
+            imageUrl: null,
+            ingredientLines: ["5 dl mjölk"],
+            instructions: ["Baka 12 min."],
+          },
+        }),
+        { status: 503, headers: { "Content-Type": "application/json" } },
+      ),
+    );
     expect(await extractRecipeWithLlm("<html></html>", "https://example.com")).toBeNull();
   });
 
