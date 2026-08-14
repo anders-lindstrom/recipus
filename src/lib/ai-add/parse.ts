@@ -21,7 +21,13 @@ import { z } from "zod";
 /** A pasted clump is a shopping list, not a novel. Caps request cost. */
 const MAX_TEXT_CHARS = 8_000;
 
-/** How long to wait on the home server before giving up and degrading. */
+/**
+ * How long to wait on the home server before giving up and degrading. Same
+ * value as `src/lib/recipes/llm.ts`'s `SHIM_TIMEOUT_MS`, kept as two copies
+ * rather than a shared constant (see that file's comment) — if you tune one,
+ * tune the other. Below the shim's own internal bound (`ASK_TIMEOUT_MS` in
+ * agentic-os's `shim/src/claude.ts`), so this timeout is what a person sees.
+ */
 const SHIM_TIMEOUT_MS = 60_000;
 
 /** Where on the input a line was read. See the spec, §2.1. */

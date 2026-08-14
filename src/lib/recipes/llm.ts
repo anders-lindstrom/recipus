@@ -22,7 +22,14 @@ import { decodeHtmlEntities, type ImportedRecipe } from "./jsonld";
 // reason to ship 2 MB of markup across the LAN for the shim to throw away.
 const MAX_PAGE_TEXT_CHARS = 40_000;
 
-/** How long to wait on the home server before giving up and degrading. */
+/**
+ * How long to wait on the home server before giving up and degrading. Same
+ * value as `src/lib/ai-add/parse.ts`'s `SHIM_TIMEOUT_MS`, kept as two copies
+ * rather than a shared constant (a shared module for one constant would be
+ * its own over-building for two call sites) — if you tune one, tune the
+ * other. Below the shim's own internal bound (`ASK_TIMEOUT_MS` in
+ * agentic-os's `shim/src/claude.ts`), so this timeout is what a person sees.
+ */
 const SHIM_TIMEOUT_MS = 60_000;
 
 const DEFAULT_SERVINGS = 4;
