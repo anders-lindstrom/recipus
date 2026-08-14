@@ -19,13 +19,15 @@ import {
  * control that cannot work is worse than an absent one, because it teaches you
  * the app is broken rather than that the feature is elsewhere.
  *
- * Whatever is heard lands in the textarea, which means a misheard word is
- * editable before anything is parsed, and the transcript then goes through the
- * same model pass as a paste. No audio leaves as a file.
+ * No audio leaves as a file. What is heard lands in the textarea, which means a
+ * misheard word is editable before anything is parsed, and the transcript then
+ * goes through the same model pass as a paste.
  *
- * `onTranscript` receives the WHOLE spoken segment each time, not the newest
- * fragment, and the caller is expected to replace rather than append — see
- * `onresult`. One dictation is one segment however many times it is reported.
+ * Two things come back out, and keeping them apart is what this hook is for.
+ * `live` is the sentence being spoken RIGHT NOW, which moves constantly and is
+ * only ever shown. `onUtterance` fires once per finished sentence, and that is
+ * the only thing the textarea is ever told about. Nothing that can still change
+ * reaches the field.
  */
 
 interface SpeechRecognitionLike {
@@ -36,23 +38,45 @@ interface SpeechRecognitionLike {
   stop: () => void;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
   onend: (() => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
 }
 
-/**
- * Every result of the session so far, settled and unsettled, which is what the
- * engine hands over on each event — not just the part that changed.
- *
- * The event also carries `resultIndex`, "the first result that moved", and this
- * deliberately does not name it. Reading only from there is what broke: see
- * `dictation` below.
- */
+/** Every result of the session so far, settled and unsettled. */
 export type SpeechResultsLike = ArrayLike<
   ArrayLike<{ transcript: string }> & { isFinal: boolean }
 >;
 
 interface SpeechRecognitionEventLike {
   results: SpeechResultsLike;
+}
+
+/**
+ * The whole reading rule: THE LAST RESULT IS THE SENTENCE.
+ *
+ * Not the sum of the results, and not the newest fragment added to what came
+ * before. This is the third attempt at this function and the first one that is
+ * not arithmetic, because the arithmetic could not be made right: the engines
+ * disagree about what a result MEANS, and no way of adding them up survives
+ * both readings.
+ *
+ * Said into a phone, "A B C D E" arrives as five settled results reading "A",
+ * "A B", "A B C", "A B C D", "A B C D E" — each one the entire sentence so far,
+ * restated at a new index. A desktop sends one result reading "A B C D E".
+ * Adding results together gives "AA BA B C…" on the phone, which is how
+ * "massvis med gröt" became "massvismassvis med gröt", and how "bröd grötbröd"
+ * became "brödbrödbrödbröd grötbröd grötbröd" before it. Taking the last result
+ * and nothing else is right on both, and cannot drift, because there is no
+ * accumulated state left for a later event to corrupt.
+ *
+ * `isFinal` is deliberately not read. On that same phone every one of those
+ * five results is final, so a sentence is not finished when a result says it
+ * is — it is finished when the SESSION is, which is what `onend` is for and why
+ * `continuous` is off. Reading `isFinal` here would put five copies of one
+ * sentence in the field, which the end-to-end suite proves by trying it.
+ */
+export function hear(event: SpeechRecognitionEventLike): string {
+  const alternative = event.results[event.results.length - 1]?.[0];
+  return alternative ? alternative.transcript.trim() : "";
 }
 
 type Ctor = new () => SpeechRecognitionLike;
@@ -92,52 +116,10 @@ function serverSupported(): boolean {
   return false;
 }
 
-/**
- * One dictation, reading each event as the whole sentence so far.
- *
- * Call it once per session; call the result on every `onresult`. What comes
- * back is everything said since the microphone opened — settled words plus the
- * tail still being guessed at — which is what the sink then puts in the
- * textarea, replacing rather than appending.
- *
- * The rule that matters is that reading the same event twice must produce the
- * same sentence, not twice the sentence. This accumulated instead: each event's
- * newly-final words were APPENDED to a running string, on the assumption that a
- * result goes final exactly once and is then never mentioned again. The
- * assumption holds on a desktop and does not hold on a phone, which re-sends
- * settled results several times over — so "bröd grötbröd", said once into one,
- * arrived as "brödbrödbrödbröd grötbröd grötbröd", each word counted once per
- * event that happened to mention it.
- *
- * So the settled words are stored BY THE INDEX the engine gave them rather than
- * concatenated in arrival order. Hearing result 0 for the fourth time now
- * overwrites result 0 with the same words instead of adding them a fourth time,
- * and the repetition stops mattering. The list is re-read from the start each
- * event for the same reason — `resultIndex` is an optimisation that costs
- * nothing to ignore, and ignoring it means the assembly depends on no promise
- * about which events an engine chooses to send.
- */
-export function dictation(): (event: SpeechRecognitionEventLike) => string {
-  const settled: string[] = [];
-
-  return (event) => {
-    let tail = "";
-    for (let i = 0; i < event.results.length; i++) {
-      const result = event.results[i];
-      const alternative = result?.[0];
-      if (!alternative) continue;
-      // An unsettled result REPLACES its own earlier guess — "två", "två
-      // liter", "två liter mjölk" is one phrase being sharpened, not three.
-      if (result.isFinal) settled[i] = alternative.transcript;
-      else tail += alternative.transcript;
-    }
-    return `${settled.join("")}${tail}`.trim();
-  };
-}
-
-export function useSpeech(onTranscript: (text: string) => void): {
+export function useSpeech(onUtterance: (text: string) => void): {
   supported: boolean;
   listening: boolean;
+  live: string;
   toggle: () => void;
 } {
   const supported = useSyncExternalStore(
@@ -146,7 +128,27 @@ export function useSpeech(onTranscript: (text: string) => void): {
     serverSupported,
   );
   const [listening, setListening] = useState(false);
+  /** The sentence being spoken, for showing only. Replaced whole, every time. */
+  const [live, setLive] = useState("");
   const recognition = useRef<SpeechRecognitionLike | null>(null);
+  /**
+   * Whether the microphone is still wanted, which is not the same question as
+   * whether it is currently running.
+   *
+   * A session ends by itself at every pause (see `continuous` below), and the
+   * answer to "start another one?" is needed inside `onend` — synchronously,
+   * from a closure created several sessions ago. `listening` is state and would
+   * be whatever it was when that closure was made; this is the live answer, and
+   * only a press changes it.
+   */
+  const wanted = useRef(false);
+  /**
+   * The unsettled sentence on screen, so a session that ends without settling
+   * it does not throw it away. Kept beside `live` rather than read from it for
+   * the same reason as `wanted`: `onend` needs the current value, not the one
+   * that was current when the handler was created.
+   */
+  const pending = useRef("");
   /**
    * The callback through a ref, so restarting recognition is not a dependency
    * of every keystroke in the textarea above it.
@@ -155,54 +157,40 @@ export function useSpeech(onTranscript: (text: string) => void): {
    * reason `useDismissOnOutsidePress` does it: a ref written while rendering is
    * a render with a side effect, and the lint rule says so.
    */
-  const sink = useRef(onTranscript);
+  const sink = useRef(onUtterance);
   useEffect(() => {
-    sink.current = onTranscript;
+    sink.current = onUtterance;
   });
 
-  // Whatever is still listening when the sheet closes must stop listening. The
-  // microphone does not belong to a component that no longer exists. Nulled as
-  // well as stopped, so the guard below also retires the last instance's late
-  // events rather than letting them reach a sink that is gone.
-  useEffect(
-    () => () => {
-      recognition.current?.stop();
-      recognition.current = null;
-    },
-    [],
-  );
+  /**
+   * A finished sentence leaves the preview and goes in the field, once.
+   *
+   * Emptiness is dropped here rather than at each call site because there are
+   * three of them — a settled result, a session that ended holding an unsettled
+   * one, and the press that stops listening — and a silent session reaching the
+   * textarea as ", " would be worse than useless.
+   */
+  const commit = useCallback((text: string) => {
+    pending.current = "";
+    setLive("");
+    if (text) sink.current(text);
+  }, []);
 
-  const toggle = useCallback(() => {
-    if (recognition.current) {
-      recognition.current.stop();
-      recognition.current = null;
-      setListening(false);
-      return;
-    }
-
+  const listen = useCallback(() => {
     const Recognition = ctor();
-    if (!Recognition) return;
+    if (!Recognition) return false;
 
     const rec = new Recognition();
 
     /**
      * Is `rec` still the instance the hook is driving?
      *
-     * Every handler below asks before it touches anything shared, because a
-     * stopped `SpeechRecognition` is not a finished one: `stop()` with audio
-     * still pending fires one last `onresult` and then `onend`, asynchronously,
-     * after the call has returned. So the ordinary stop-and-start-again gesture
-     * leaves a retired instance holding live callbacks while a new one runs.
-     *
-     * Unguarded, everything those callbacks touched was shared by every
-     * instance. The settled words were one tally for the whole hook, so session
-     * one's trailing words landed in session two's and the sink overwrote the
-     * textarea with the mixture — the same bug as the prefix pile-up, arriving
-     * by instance-crossing instead of result-index-crossing. And
-     * `onend` nulled `recognition.current` unconditionally, so a late one from
-     * the OLD instance dropped the reference to the new, still-listening one and
-     * flipped the button back to "not listening" while the microphone was open.
-     * The tally is now per-session (below); this is what covers the rest.
+     * Every handler asks before it touches anything shared, because a stopped
+     * `SpeechRecognition` is not a finished one: `stop()` with audio still
+     * pending fires one last `onresult` and then `onend`, asynchronously, after
+     * the call has returned. Unguarded, a retired instance's late `onend` would
+     * drop the reference to a new, still-listening one and flip the button back
+     * to "not listening" with the microphone open.
      *
      * Identity rather than a session counter: `recognition.current` is already
      * the single answer to "which one is live", every path that retires an
@@ -212,54 +200,103 @@ export function useSpeech(onTranscript: (text: string) => void): {
      */
     const isCurrent = () => recognition.current === rec;
 
-    /**
-     * What THIS session has heard.
-     *
-     * A closure variable rather than a ref on the hook, which is what makes the
-     * isolation structural instead of disciplinary: one tally shared by every
-     * instance is what let a retired session's trailing words land in its
-     * successor's, and there is no reset to remember or to get wrong, because a
-     * new session simply gets a new binding. The guard above still matters — a
-     * retired instance must not call the sink or claim the slot — but it is no
-     * longer the only thing keeping two sessions apart.
-     */
-    const say = dictation();
-
     rec.lang = "sv-SE";
-    rec.continuous = true;
+    /**
+     * One sentence per session, and this is the structural half of the fix.
+     *
+     * Continuous recognition is what produced a list of results to reconcile in
+     * the first place, and reconciling them is exactly what no rule could do
+     * correctly across engines. A session that carries one utterance has one
+     * result to read, so the ambiguity is not handled — it is absent.
+     *
+     * The cost is that the engine stops at every pause. That is paid in `onend`
+     * by starting another session, which also makes the pause the moment a
+     * sentence lands in the field. Sessions cannot restate each other's words —
+     * a new one starts empty — so joining ACROSS them is sound in the way that
+     * joining within one never was.
+     */
+    rec.continuous = false;
     // The words appear as they are said. A silent five seconds followed by a
     // paragraph reads as a hang.
     rec.interimResults = true;
-    /**
-     * The whole segment said so far, reported every time — it REPLACES rather
-     * than appends, and `dictation` above is where that is made true whatever
-     * the engine repeats.
-     *
-     * Nothing is filtered out on the way through: skipping the unsettled
-     * results is the obvious repair for a jumpy transcript and the wrong one,
-     * because it would take back the live words, and a silent five seconds
-     * followed by a paragraph reads as a hang.
-     */
+
+    // Shown, never kept. Every event is another go at the same sentence, and
+    // the field hears about it only when the session is over.
     rec.onresult = (event) => {
       if (!isCurrent()) return;
-      const segment = say(event);
-      if (segment) sink.current(segment);
+      const text = hear(event);
+      pending.current = text;
+      setLive(text);
     };
+
     rec.onend = () => {
       if (!isCurrent()) return;
+      // The session ending IS the sentence ending — that is the whole reason
+      // one session carries one utterance. Whatever it left on screen is what
+      // the speaker watched arrive, so that is what goes in the field.
+      commit(pending.current);
+      if (wanted.current) {
+        rec.start();
+        return;
+      }
       recognition.current = null;
       setListening(false);
     };
-    rec.onerror = () => {
+
+    /**
+     * Silence is not a failure. `no-speech` is what a pause longer than the
+     * engine's patience looks like, and `aborted` is what `stop()` looks like;
+     * both are followed by `onend`, which is the single place that decides
+     * whether to listen again. Anything else — a refused microphone, a dead
+     * network — is the end of the dictation, and the button must say so rather
+     * than sit lit above a microphone that is not running.
+     */
+    rec.onerror = (event) => {
       if (!isCurrent()) return;
+      if (event.error === "no-speech" || event.error === "aborted") return;
+      wanted.current = false;
+      pending.current = "";
       recognition.current = null;
+      setLive("");
       setListening(false);
     };
 
     recognition.current = rec;
     rec.start();
-    setListening(true);
-  }, []);
+    return true;
+  }, [commit]);
 
-  return { supported, listening, toggle };
+  // Whatever is still listening when the sheet closes must stop listening. The
+  // microphone does not belong to a component that no longer exists. Nulled as
+  // well as stopped, so the guard above also retires the last instance's late
+  // events rather than letting them reach a sink that is gone.
+  useEffect(
+    () => () => {
+      wanted.current = false;
+      recognition.current?.stop();
+      recognition.current = null;
+    },
+    [],
+  );
+
+  const toggle = useCallback(() => {
+    const rec = recognition.current;
+    if (rec) {
+      // Retired before it is stopped, so its trailing `onresult` and `onend`
+      // change nothing — which is also why the half-spoken sentence is
+      // committed here rather than left for a handler that will not run.
+      wanted.current = false;
+      recognition.current = null;
+      rec.stop();
+      commit(pending.current);
+      setListening(false);
+      return;
+    }
+
+    wanted.current = true;
+    if (listen()) setListening(true);
+    else wanted.current = false;
+  }, [commit, listen]);
+
+  return { supported, listening, live, toggle };
 }

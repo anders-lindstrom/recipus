@@ -70,7 +70,7 @@ sorters indata och landar i **samma** granskningslista:
 
 | Vad du gör | Vad som händer |
 |---|---|
-| Trycker på mikrofonen och pratar | Texten hamnar i fältet, redigerbar |
+| Trycker på mikrofonen och pratar | Meningen syns medan du säger den, och hamnar i fältet när den är slut — redigerbar |
 | Klistrar in en klump text | Ligger kvar i fältet tills du trycker *Läs listan* |
 | Väljer en bild, eller delar en till appen | Läses direkt |
 
@@ -90,6 +90,21 @@ Mikrofonen använder `SpeechRecognition` med `lang = "sv-SE"` —
 `src/lib/client/use-speech.ts`. Igenkänningen sker i webbläsaren och
 **ingen ljudfil lämnar telefonen**; det som skickas vidare är samma text som du
 kan läsa och rätta i fältet innan du trycker.
+
+Det du säger visas **ovanför fältet medan du säger det**, och landar i fältet
+först när meningen är slut. De två texterna gör olika saker: förhandsvisningen
+byts ut i sin helhet varje gång motorn ändrar sig, och fältet får bara hela,
+färdiga meningar. Ett uppehåll är alltså det som lägger en mening på plats —
+mikrofonen fortsätter lyssna efteråt, tills du trycker för att sluta.
+
+Att det är uppdelat så är inte en finess utan hela rättelsen. Motorerna är
+oense om vad ett *resultat* betyder: en telefon skickar hela meningen om och om
+igen — "A", "A B", "A B C" — medan en dator skickar den en gång. Att lägga ihop
+resultaten gav `massvis med gröt` → `massvismassvis med gröt`. Regeln är därför
+**det sista resultatet är meningen**, aldrig summan, och en session bär exakt en
+mening (`continuous = false`) så att det inte finns något att summera. Testerna
+i `tests/e2e/dictation.spec.ts` spelar upp en riktig telefons händelseström, så
+en framtida regel som summerar faller där.
 
 Chrome på Android och Safari på iOS har den. **Firefox har den inte, och där
 ritas knappen inte alls** — en kontroll som inte kan fungera är sämre än en som
