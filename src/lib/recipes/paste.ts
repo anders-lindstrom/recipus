@@ -3,10 +3,11 @@
  * docs/superpowers/specs/2026-07-29-recipus-design.md §5.6, and the way out of
  * a dead end.
  *
- * A page with no JSON-LD and no `ANTHROPIC_API_KEY` gives "Kunde inte läsa
- * receptet från sidan." and a "Försök igen" that will fail in exactly the same
- * way — while the recipe sits fully readable in the tab the person just came
- * from. The machinery to make something of it already exists: `parseIngredientLine`
+ * A page with no JSON-LD that the shim could not read either — because it is
+ * not configured, not reachable, or made nothing of the page — gives "Kunde
+ * inte läsa receptet från sidan." and a "Försök igen" that will fail in exactly
+ * the same way, while the recipe sits fully readable in the tab the person just
+ * came from. The machinery to make something of it already exists: `parseIngredientLine`
  * turns "2 dl grädde" into an amount plus a name, and the matcher finds the
  * household's vara for it. All that was missing was somewhere to put the text.
  *

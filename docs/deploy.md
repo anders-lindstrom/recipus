@@ -150,8 +150,25 @@ cp <repo>/deploy/docker-compose.yml ~/services/recipus/docker-compose.yml
 ```
 DATABASE_URL=postgres://recipus:<the password above>@postgres:5432/recipus
 PROXY_AUTH_SECRET=<openssl rand -hex 32>
-ANTHROPIC_API_KEY=<optional — only the LLM fallback for recipe import needs it>
+AI_SHIM_URL=<optional — http://beelink.host:8301, the Claude shim>
+AI_SHIM_SECRET=<optional — the shim's SHIM_INGEST_SECRET, verbatim>
 ```
+
+**The shim is not part of this deploy.** It is a host service living in
+`agentic-os/shim/`, run by systemd as `agentic-os-shim.service` on port 8301,
+and it holds the Claude Code credential so the household's subscription pays
+rather than a metered API key. Nothing in this repo builds it, ships it or
+restarts it, and **Watchtower knows nothing about it** — a `docker compose pull`
+here will never update the shim, and a shim that is down will not show up as an
+unhealthy container. Its own runbook is in agentic-os.
+
+Both variables are optional, and unset is a supported state rather than a
+broken one. Without them recipe import still works for every page publishing
+`schema.org/Recipe` JSON-LD, and the add-by-photo/text dialog falls back to the
+deterministic parser for text — only reading an image has no fallback, and says
+so with a 503. Set one without the other and nothing is asked at all: both are
+required together, deliberately, because a URL with no token is a 401 on every
+request.
 
 uid 1001 owning `backups` is load-bearing. If it is not writable the entrypoint
 takes the *warning* branch and migrates with no snapshot — and drizzle has no

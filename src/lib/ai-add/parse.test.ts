@@ -54,6 +54,20 @@ describe("parseInput", () => {
     });
   });
 
+  it("does not double the slash when AI_SHIM_URL carries a trailing one", async () => {
+    // A trailing slash is an ordinary thing to type into a .env. Left alone it
+    // yields `//parse`, a 404 and then `null` — a config typo wearing the mask
+    // of a permanent model failure, which is the hardest kind to find.
+    process.env.AI_SHIM_URL = "http://beelink.host:8301/";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ lines: [] }), { status: 200 }),
+    );
+
+    await parseInput({ kind: "text", text: "x" });
+
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("http://beelink.host:8301/parse");
+  });
+
   it("returns null on a non-2xx answer", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 503 }));
     expect(await parseInput({ kind: "text", text: "x" })).toBeNull();
@@ -61,6 +75,15 @@ describe("parseInput", () => {
 
   it("returns null when the shim is unreachable, rather than throwing", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
+    expect(await parseInput({ kind: "text", text: "x" })).toBeNull();
+  });
+
+  it("returns null on a 200 that is not JSON at all", async () => {
+    // A captive portal or a stray proxy answers 200 with HTML. Reading the body
+    // has to stay inside the same guard as the request itself.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html>not json</html>", { status: 200 }),
+    );
     expect(await parseInput({ kind: "text", text: "x" })).toBeNull();
   });
 

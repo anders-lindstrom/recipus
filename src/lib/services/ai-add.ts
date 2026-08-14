@@ -58,10 +58,13 @@ export async function parseForList(input: AiAddInput): Promise<AiAddResult> {
    * An image without a model is simply unreadable, and no empty list of rows
    * would tell the truth about that.
    *
-   * The route turns this into a 503 rather than an answer. It can, because it
-   * has already checked the key by the time it calls this: a missing knob gets
-   * the sentence naming the knob, and `usedModel: false` reaching it any other
-   * way can only mean the call failed, which gets the sentence saying so.
+   * The route turns this into a 503 rather than an answer. It can, because
+   * `usedModel: false` on an image has exactly one meaning by the time it gets
+   * there: the picture was never read. Whether the shim is unconfigured,
+   * unreachable, or answered with something unusable makes no difference to the
+   * person holding the phone, and one sentence — "kunde inte tolka bilden" —
+   * is true of all of them. Naming a cause we cannot distinguish would be a
+   * guess dressed up as a diagnosis.
    */
   return { rows: [], usedModel: false };
 }

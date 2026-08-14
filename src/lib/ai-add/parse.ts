@@ -66,7 +66,7 @@ export async function parseInput(input: AiInput): Promise<ParsedLine[] | null> {
 
   let payload: unknown;
   try {
-    const res = await fetch(`${base}/parse`, {
+    const res = await fetch(`${shimBase(base)}/parse`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
       body: JSON.stringify(body),
@@ -88,4 +88,14 @@ export async function parseInput(input: AiInput): Promise<ParsedLine[] | null> {
   return parsed.data.lines
     .map((line) => ({ text: line.text.trim(), group: line.group }))
     .filter((line) => line.text.length > 0);
+}
+
+/**
+ * A trailing slash in `AI_SHIM_URL` is an ordinary thing to type. Left in, it
+ * makes `//parse`, which is a 404, which is a `null` — a config typo that
+ * presents as a permanently unhelpful model and looks exactly like a real
+ * model failure. Same guard in `src/lib/recipes/llm.ts`.
+ */
+function shimBase(base: string): string {
+  return base.replace(/\/+$/, "");
 }

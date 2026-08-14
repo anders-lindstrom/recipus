@@ -223,6 +223,11 @@ Import by URL parses `schema.org/Recipe` JSON-LD server-side. Pages without it
 fall back to an LLM extraction (Claude) when `ANTHROPIC_API_KEY` is set. Paste
 and manual entry run through the same line parser.
 
+*Superseded 2026-08-14: the LLM extraction now goes through a host-local shim on
+the household's Claude subscription, and the key named above no longer exists in
+this repo. See `2026-08-14-claude-shim-design.md`. The paragraph above is left as
+it was written.*
+
 Adding to a list opens a sheet with a **servings stepper**: the recipe's base
 servings, your target, and every amount rescaled live with the original struck
 through. Items flagged `has_at_home` start excluded, one tap to include.

@@ -16,15 +16,18 @@ const jsonLdHtml = `<html><body><script type="application/ld+json">${JSON.string
 const noRecipeHtml = "<html><body><p>Inget recept här.</p></body></html>";
 
 describe("importRecipeFromUrl", () => {
-  const originalKey = process.env.ANTHROPIC_API_KEY;
+  const originalShimUrl = process.env.AI_SHIM_URL;
 
+  // Unconfigured on purpose, so `extractRecipeWithLlm` returns null before it
+  // reaches the network: these tests are about the JSON-LD path and the error
+  // the caller sees when it finds nothing, not about the shim.
   beforeEach(() => {
-    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.AI_SHIM_URL;
   });
 
   afterEach(() => {
-    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = originalKey;
+    if (originalShimUrl === undefined) delete process.env.AI_SHIM_URL;
+    else process.env.AI_SHIM_URL = originalShimUrl;
   });
 
   it("rejects a non-http(s) URL without making a request", async () => {
@@ -54,7 +57,7 @@ describe("importRecipeFromUrl", () => {
     expect((calledInit as RequestInit).headers).toMatchObject({ "User-Agent": expect.any(String) });
   });
 
-  it("throws the Swedish user-facing error when there is no JSON-LD and no API key", async () => {
+  it("throws the Swedish user-facing error when there is no JSON-LD and no shim", async () => {
     const fetchImpl = fakeFetch(noRecipeHtml);
     await expect(importRecipeFromUrl("https://example.com/tomt", { fetchImpl })).rejects.toThrow(
       "Kunde inte läsa receptet från sidan.",
