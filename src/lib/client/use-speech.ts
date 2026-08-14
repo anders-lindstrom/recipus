@@ -39,9 +39,20 @@ interface SpeechRecognitionLike {
   onerror: (() => void) | null;
 }
 
+/**
+ * Every result of the session so far, settled and unsettled, which is what the
+ * engine hands over on each event — not just the part that changed.
+ *
+ * The event also carries `resultIndex`, "the first result that moved", and this
+ * deliberately does not name it. Reading only from there is what broke: see
+ * `dictation` below.
+ */
+export type SpeechResultsLike = ArrayLike<
+  ArrayLike<{ transcript: string }> & { isFinal: boolean }
+>;
+
 interface SpeechRecognitionEventLike {
-  resultIndex: number;
-  results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
+  results: SpeechResultsLike;
 }
 
 type Ctor = new () => SpeechRecognitionLike;
@@ -79,6 +90,49 @@ function readSupported(): boolean {
 /** No speech during a server render, so the button is simply not drawn yet. */
 function serverSupported(): boolean {
   return false;
+}
+
+/**
+ * One dictation, reading each event as the whole sentence so far.
+ *
+ * Call it once per session; call the result on every `onresult`. What comes
+ * back is everything said since the microphone opened — settled words plus the
+ * tail still being guessed at — which is what the sink then puts in the
+ * textarea, replacing rather than appending.
+ *
+ * The rule that matters is that reading the same event twice must produce the
+ * same sentence, not twice the sentence. This accumulated instead: each event's
+ * newly-final words were APPENDED to a running string, on the assumption that a
+ * result goes final exactly once and is then never mentioned again. The
+ * assumption holds on a desktop and does not hold on a phone, which re-sends
+ * settled results several times over — so "bröd grötbröd", said once into one,
+ * arrived as "brödbrödbrödbröd grötbröd grötbröd", each word counted once per
+ * event that happened to mention it.
+ *
+ * So the settled words are stored BY THE INDEX the engine gave them rather than
+ * concatenated in arrival order. Hearing result 0 for the fourth time now
+ * overwrites result 0 with the same words instead of adding them a fourth time,
+ * and the repetition stops mattering. The list is re-read from the start each
+ * event for the same reason — `resultIndex` is an optimisation that costs
+ * nothing to ignore, and ignoring it means the assembly depends on no promise
+ * about which events an engine chooses to send.
+ */
+export function dictation(): (event: SpeechRecognitionEventLike) => string {
+  const settled: string[] = [];
+
+  return (event) => {
+    let tail = "";
+    for (let i = 0; i < event.results.length; i++) {
+      const result = event.results[i];
+      const alternative = result?.[0];
+      if (!alternative) continue;
+      // An unsettled result REPLACES its own earlier guess — "två", "två
+      // liter", "två liter mjölk" is one phrase being sharpened, not three.
+      if (result.isFinal) settled[i] = alternative.transcript;
+      else tail += alternative.transcript;
+    }
+    return `${settled.join("")}${tail}`.trim();
+  };
 }
 
 export function useSpeech(onTranscript: (text: string) => void): {
@@ -141,14 +195,14 @@ export function useSpeech(onTranscript: (text: string) => void): {
      * leaves a retired instance holding live callbacks while a new one runs.
      *
      * Unguarded, everything those callbacks touched was shared by every
-     * instance. `finals` was one accumulator for the whole hook, so session
-     * one's trailing words landed in session two's tally and the sink overwrote
-     * the textarea with the mixture — the same bug as the prefix pile-up,
-     * arriving by instance-crossing instead of result-index-crossing. And
+     * instance. The settled words were one tally for the whole hook, so session
+     * one's trailing words landed in session two's and the sink overwrote the
+     * textarea with the mixture — the same bug as the prefix pile-up, arriving
+     * by instance-crossing instead of result-index-crossing. And
      * `onend` nulled `recognition.current` unconditionally, so a late one from
      * the OLD instance dropped the reference to the new, still-listening one and
      * flipped the button back to "not listening" while the microphone was open.
-     * `finals` is now per-session (below); this is what covers the rest.
+     * The tally is now per-session (below); this is what covers the rest.
      *
      * Identity rather than a session counter: `recognition.current` is already
      * the single answer to "which one is live", every path that retires an
@@ -159,17 +213,17 @@ export function useSpeech(onTranscript: (text: string) => void): {
     const isCurrent = () => recognition.current === rec;
 
     /**
-     * The words THIS session has settled on.
+     * What THIS session has heard.
      *
      * A closure variable rather than a ref on the hook, which is what makes the
-     * isolation structural instead of disciplinary: one accumulator shared by
-     * every instance is what let a retired session's trailing words land in its
-     * successor's tally, and there is no reset to remember or to get wrong,
-     * because a new session simply gets a new binding. The guard above still
-     * matters — a retired instance must not call the sink or claim the slot —
-     * but it is no longer the only thing keeping two sessions apart.
+     * isolation structural instead of disciplinary: one tally shared by every
+     * instance is what let a retired session's trailing words land in its
+     * successor's, and there is no reset to remember or to get wrong, because a
+     * new session simply gets a new binding. The guard above still matters — a
+     * retired instance must not call the sink or claim the slot — but it is no
+     * longer the only thing keeping two sessions apart.
      */
-    let finals = "";
+    const say = dictation();
 
     rec.lang = "sv-SE";
     rec.continuous = true;
@@ -177,33 +231,18 @@ export function useSpeech(onTranscript: (text: string) => void): {
     // paragraph reads as a hang.
     rec.interimResults = true;
     /**
-     * The whole segment said so far — settled words plus the tail still being
-     * guessed at — reported every time, and it REPLACES rather than appends.
+     * The whole segment said so far, reported every time — it REPLACES rather
+     * than appends, and `dictation` above is where that is made true whatever
+     * the engine repeats.
      *
-     * `interimResults` means this fires on every hypothesis, re-reporting the
-     * same result index with a longer transcript each time: "två", "två liter",
-     * "två liter mjölk". A sink that appended each of those turned one sentence
-     * into a list of its own prefixes, which is why `isFinal` was declared on
-     * the event type and then never read.
-     *
-     * Skipping the non-final results is the obvious repair and the wrong one: it
-     * would take back the live transcript, and a silent five seconds followed by
-     * a paragraph reads as a hang. So the settled words accumulate here instead,
-     * and only the unsettled tail is rebuilt on each event. A result before
-     * `resultIndex` cannot change, and an index goes final exactly once, so
-     * every word is counted exactly once.
+     * Nothing is filtered out on the way through: skipping the unsettled
+     * results is the obvious repair for a jumpy transcript and the wrong one,
+     * because it would take back the live words, and a silent five seconds
+     * followed by a paragraph reads as a hang.
      */
     rec.onresult = (event) => {
       if (!isCurrent()) return;
-      let tail = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const alternative = result?.[0];
-        if (!alternative) continue;
-        if (result.isFinal) finals += alternative.transcript;
-        else tail += alternative.transcript;
-      }
-      const segment = `${finals}${tail}`.trim();
+      const segment = say(event);
       if (segment) sink.current(segment);
     };
     rec.onend = () => {
