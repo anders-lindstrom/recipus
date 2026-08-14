@@ -1,20 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { dictation, type SpeechResultsLike } from "./use-speech";
+import { hear, type SpeechResultsLike } from "./use-speech";
 
 /**
- * One dictation, however many times the phone reports it.
+ * Reading one event, which is now the whole of the reading rule.
  *
- * The bug this exists for: "bröd grötbröd", said once into an Android phone,
- * arrived in the textarea as "brödbrödbrödbröd grötbröd grötbröd". Every word
- * appeared once per event that mentioned it, because the settled words were
- * ACCUMULATED across events — and `results` is the whole session every time, so
- * a result that had already gone final was counted again on each later event.
+ * The rule is: the last result IS the sentence. Not the sum of the results, not
+ * the newest fragment appended to what came before — the last one, whole,
+ * replacing whatever was shown a moment ago.
  *
- * The engines disagree about how much they repeat themselves. Desktop Chrome
- * moves `resultIndex` forward and mentions each result about once; the phone
- * re-sends the entire list, unchanged finals included, several times over. So
- * the assembly has to be idempotent: reading the same list twice must produce
- * the same sentence, not twice the sentence.
+ * That rule exists because the engines cannot be made to agree on any other.
+ * Saying "A B C D E" into a phone produces five settled results reading "A",
+ * "A B", "A B C", "A B C D", "A B C D E" — each one the entire sentence so far,
+ * restated at a new index. A desktop produces one result reading "A B C D E".
+ * Both are answered correctly by taking the last and nothing else, and any rule
+ * that adds results together is wrong on the phone by construction.
  */
 
 /** The list an engine hands over: every result of the session so far. */
@@ -26,81 +25,79 @@ function results(
   );
 }
 
-describe("dictation", () => {
+describe("hear", () => {
   /**
-   * The reported dictation, reproduced event for event.
-   *
-   * Two words, eight events: "bröd" guessed at, "bröd" settled and then sent
-   * back three more times, "grötbröd" guessed at, settled, and sent back again.
-   * Fed to the old accumulator this sequence produces the reported string
-   * exactly — four "bröd" and two "grötbröd", one per event that mentioned
-   * them — which is why it is written out here rather than summarised.
+   * The reported dictation, event for event. Five results, each restating the
+   * whole sentence — the shape that produced "massvismassvis med gröt" when the
+   * results were added together.
    */
-  it("says each word once however often the phone repeats itself", () => {
-    const say = dictation();
-    const heard = [
-      results(["bröd", false]),
-      results(["bröd", true]),
-      results(["bröd", true]),
-      results(["bröd", true]),
-      results(["bröd", true]),
-      results(["bröd", true], [" grötbröd", false]),
-      results(["bröd", true], [" grötbröd", true]),
-      results(["bröd", true], [" grötbröd", true]),
-    ].map((r) => say({ results: r }));
+  it("takes the whole sentence from a phone that restates it", () => {
+    const stream = [
+      results(["A", true]),
+      results(["A", true], ["A B", true]),
+      results(["A", true], ["A B", true], ["A B C", true]),
+      results(["A", true], ["A B", true], ["A B C", true], ["A B C D", true]),
+      results(
+        ["A", true],
+        ["A B", true],
+        ["A B C", true],
+        ["A B C D", true],
+        ["A B C D E", true],
+      ),
+    ];
 
-    expect(heard.at(-1)).toBe("bröd grötbröd");
-    expect(new Set(heard)).toEqual(new Set(["bröd", "bröd grötbröd"]));
+    expect(stream.map((r) => hear({ results: r }))).toEqual([
+      "A",
+      "A B",
+      "A B C",
+      "A B C D",
+      "A B C D E",
+    ]);
   });
 
-  /**
-   * The other half of what an event means: an unsettled result REPLACES its own
-   * earlier guess. Appending them is what once turned a sentence into a list of
-   * its own prefixes, and the accumulator that fixed it is what broke the case
-   * above — so both belong in the same test file, watching each other.
-   */
-  it("replaces the tail it is still guessing at", () => {
-    const say = dictation();
-    const heard = [
+  /** A desktop settles the same sentence once, and is read the same way. */
+  it("takes the whole sentence from a desktop that states it once", () => {
+    expect(hear({ results: results(["A B C D E", true]) })).toBe("A B C D E");
+  });
+
+  /** The tail still being guessed at replaces its own earlier guess. */
+  it("replaces the guess rather than growing it", () => {
+    const stream = [
       results(["två", false]),
       results(["två liter", false]),
       results(["två liter mjölk", false]),
-      results(["två liter mjölk", true]),
-    ].map((r) => say({ results: r }));
+    ];
 
-    expect(heard).toEqual([
+    expect(stream.map((r) => hear({ results: r }))).toEqual([
       "två",
       "två liter",
-      "två liter mjölk",
       "två liter mjölk",
     ]);
   });
 
-  /** A settled sentence with a new guess growing after it. */
-  it("keeps what is settled while the next words are still moving", () => {
-    const say = dictation();
-    const heard = [
-      results(["mjölk", true], [" två", false]),
-      results(["mjölk", true], [" två ägg", false]),
-      results(["mjölk", true], [" två ägg", true]),
-    ].map((r) => say({ results: r }));
-
-    expect(heard).toEqual(["mjölk två", "mjölk två ägg", "mjölk två ägg"]);
+  /**
+   * A sentence is not finished because a result says it is.
+   *
+   * On the phone above, every one of those five results is final — so `isFinal`
+   * cannot mean "keep this now". What finishes a sentence is the session
+   * ending, which is the hook's business and not this function's. Both readings
+   * below are the same sentence, and this says so.
+   */
+  it("reads a settled and an unsettled sentence the same way", () => {
+    expect(hear({ results: results(["mjölk", false]) })).toBe("mjölk");
+    expect(hear({ results: results(["mjölk", true]) })).toBe("mjölk");
   });
 
-  /** A new dictation is a new binding, so nothing carries over from the last. */
-  it("starts empty for every session", () => {
-    const first = dictation();
-    first({ results: results(["bröd", true]) });
-
-    const second = dictation();
-    expect(second({ results: results(["ägg", true]) })).toBe("ägg");
+  /** A fresh guess after a settled result is still the last result. */
+  it("follows the last result even when an earlier one settled", () => {
+    expect(
+      hear({ results: results(["mjölk", true], ["mjölk och bröd", false]) }),
+    ).toBe("mjölk och bröd");
   });
 
-  /** Silence reports nothing, and nothing is not a transcript. */
+  /** Silence reads as nothing, and nothing is never committed. */
   it("has nothing to say before a word is heard", () => {
-    const say = dictation();
-    expect(say({ results: results() })).toBe("");
-    expect(say({ results: results(["", false]) })).toBe("");
+    expect(hear({ results: results() })).toBe("");
+    expect(hear({ results: results(["   ", true]) })).toBe("");
   });
 });

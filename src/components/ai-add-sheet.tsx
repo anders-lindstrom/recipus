@@ -96,25 +96,21 @@ export function AiAddSheet({
   const fileInput = useRef<HTMLInputElement>(null);
   const sharedTried = useRef(false);
   /**
-   * What was in the textarea when this dictation started.
+   * The field only ever gains FINISHED sentences.
    *
-   * `useSpeech` reports the whole spoken segment on every hypothesis, so the
-   * sink has to REPLACE that segment rather than add to it — appending each
-   * report is what turned one sentence into a list of its own prefixes. What it
-   * must not replace is everything typed before, so the field is rebuilt as
-   * "what was already here" + "what is being said", and only the second half
-   * moves while somebody talks.
+   * `useSpeech` shows the sentence in progress itself, below the button, and
+   * calls this once when it stops moving — so nothing that can still change
+   * reaches the textarea, and there is no base to capture and no earlier text
+   * to rebuild around. Adding to what is there is safe precisely because a
+   * finished sentence never comes back.
    *
-   * Captured at the press rather than held in the hook, which is what keeps
-   * dictate-edit-dictate working: the second session's base is whatever the
-   * first one produced INCLUDING the corrections made by hand in between.
+   * The updater form rather than `text`, because two sentences can settle
+   * before a render lands, and the second must add to the first rather than to
+   * whatever the closure remembers.
    */
-  const spokenBase = useRef("");
-
   const speech = useSpeech(
-    useCallback((segment: string) => {
-      const base = spokenBase.current;
-      setText(base ? `${base}, ${segment}` : segment);
+    useCallback((utterance: string) => {
+      setText((current) => (current ? `${current}, ${utterance}` : utterance));
     }, []),
   );
 
@@ -325,13 +321,7 @@ export function AiAddSheet({
             {speech.supported && (
               <button
                 type="button"
-                onClick={() => {
-                  // The base is whatever is in the field at the moment the
-                  // microphone opens — read here, in the event, because that is
-                  // the only moment it means anything.
-                  if (!speech.listening) spokenBase.current = text;
-                  speech.toggle();
-                }}
+                onClick={speech.toggle}
                 aria-pressed={speech.listening}
                 className={cn(
                   "mt-5 flex w-full items-center justify-center gap-3 rounded-card py-5 text-body font-semibold transition-transform duration-100 active:scale-[0.99]",
@@ -349,6 +339,29 @@ export function AiAddSheet({
                   ? "Lyssnar — tryck för att sluta"
                   : "Säg vad ni behöver"}
               </button>
+            )}
+
+            {/*
+             * The sentence being spoken, before it is anybody's to keep.
+             *
+             * It exists because the alternative is a textarea that rewrites
+             * itself under the speaker on every guess — which is what made the
+             * old dictation feel broken even when the words were right. Here
+             * the moving text and the kept text are different objects on
+             * screen: this one is replaced whole each time the engine changes
+             * its mind, and the field below it only ever gains whole sentences.
+             *
+             * `aria-live="polite"` because a blind user gets no other signal
+             * that the microphone heard anything; `min-h` so the layout does
+             * not jump the moment the first word arrives.
+             */}
+            {speech.listening && (
+              <p
+                aria-live="polite"
+                className="mt-3 min-h-[1.5rem] px-1 text-body text-ink-soft italic"
+              >
+                {speech.live || "…"}
+              </p>
             )}
 
             <label className="mt-4 flex flex-col gap-1.5">
