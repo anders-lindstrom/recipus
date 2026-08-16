@@ -116,9 +116,13 @@ aliases `cd` to `z`, and `z` exits 0 on a missing directory. Absolute paths and 
 openssl rand -hex 32
 ```
 
-**The same value goes in two places:** `SHIM_INGEST_SECRET` in agentic-os's **repo-root** `.env` (not
-`shim/`), and `AI_SHIM_SECRET` in `~/services/recipus/.env`. `install.sh` refuses to enable the unit
-without it rather than letting the unit crash-loop, and prints this exact command when it does.
+**Not the same value in two places anymore.** agentic-os's shim now authenticates callers by a
+per-client map, `SHIM_CLIENTS=name:token,name:token`, in agentic-os's **repo-root** `.env` (not
+`shim/`) — the token a caller presents IS which app it is. Give Recipus its own entry, e.g.
+`SHIM_CLIENTS=recipus:<the value from openssl above>`, and put that **same token** (not the whole
+map) in `AI_SHIM_SECRET` in `~/services/recipus/.env`. `install.sh` refuses to enable the unit
+without `SHIM_CLIENTS` rather than letting the unit crash-loop, and prints an example of this
+exact form when it does.
 
 While you are in that file: **check whether agentic-os's `.env` defines `ANTHROPIC_API_KEY`.**
 The shim deletes it from its own environment after loading, so the shim is safe either way. But if it
