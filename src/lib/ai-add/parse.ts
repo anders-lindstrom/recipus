@@ -9,20 +9,26 @@
  * codebase's whole sync story rests on there being one of everything.
  *
  * Shaped like `src/lib/recipes/llm.ts` on purpose, including the rule that
- * matters most: nothing here throws. Every failure — no key, a refusal, a dead
- * network, output that does not fit the schema — comes back as `null`, and the
- * caller decides what to do about it. For text there is a real answer (the
- * deterministic voice parser); for an image there is not.
+ * matters most: nothing here throws. Every failure — the shim not configured,
+ * a dead network, a non-2xx answer, output that does not fit the schema —
+ * comes back as `null`, and the caller decides what to do about it. For text
+ * there is a real answer (the deterministic voice parser); for an image there
+ * is not.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 
-export const AI_ADD_MODEL = "claude-opus-5";
-const MAX_TOKENS = 4000;
-/** A pasted clump is a shopping list, not a novel. Caps prompt cost. */
+/** A pasted clump is a shopping list, not a novel. Caps request cost. */
 const MAX_TEXT_CHARS = 8_000;
+
+/**
+ * How long to wait on the home server before giving up and degrading. Same
+ * value as `src/lib/recipes/llm.ts`'s `SHIM_TIMEOUT_MS`, kept as two copies
+ * rather than a shared constant (see that file's comment) — if you tune one,
+ * tune the other. Below the shim's own internal bound (`ASK_TIMEOUT_MS` in
+ * agentic-os's `shim/src/claude.ts`), so this timeout is what a person sees.
+ */
+const SHIM_TIMEOUT_MS = 60_000;
 
 /** Where on the input a line was read. See the spec, §2.1. */
 export type LineGroup = "list" | "other";
@@ -46,21 +52,6 @@ const LinesSchema = z.object({
   ),
 });
 
-const SYSTEM_PROMPT = `Du läser en inköpslista och plockar ut sakerna som ska köpas.
-
-Regler:
-- Ett element per sak. Slå aldrig ihop två varor på en rad.
-- Skriv raden på svenska, med mängden kvar i texten ("2 l mjölk", "3 st ägg").
-  Saknas mängd, skriv bara varan.
-- Behåll hushållets egna ord. Översätt inte, förfina inte, byt inte ut ett
-  märkesnamn mot en generisk vara.
-- group är "list" för rader som står på själva listan.
-- group är "other" för allt annat du kan läsa: förslagsrutnät ("senast
-  använda"), gråmarkerade rader, redan avbockade rader, och reklam.
-- Hitta aldrig på varor. Står det ingenting läsbart, svara med en tom lista.
-- Skalstreck, rubriker, klockslag, sidnummer och appens egna knappar är inte
-  varor.`;
-
 /**
  * Read whatever came in as the things it names.
  *
@@ -70,47 +61,47 @@ Regler:
  * up retrying a request that will never work.
  */
 export async function parseInput(input: AiInput): Promise<ParsedLine[] | null> {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
+  const base = process.env.AI_SHIM_URL;
+  const secret = process.env.AI_SHIM_SECRET;
+  if (!base || !secret) return null;
 
-  const client = new Anthropic();
-  const content =
+  const body =
     input.kind === "text"
-      ? [{ type: "text" as const, text: input.text.slice(0, MAX_TEXT_CHARS) }]
-      : [
-          {
-            type: "image" as const,
-            source: {
-              type: "base64" as const,
-              // The SDK narrows media_type to its known image types; the
-              // caller is trusted to pass one (the add bar only ever offers
-              // a camera/gallery picker, which yields one of these).
-              media_type: input.mediaType as Anthropic.Base64ImageSource["media_type"],
-              data: input.data,
-            },
-          },
-        ];
+      ? { kind: "text", text: input.text.slice(0, MAX_TEXT_CHARS) }
+      : input;
 
-  let response;
+  let payload: unknown;
   try {
-    response = await client.messages.parse({
-      model: AI_ADD_MODEL,
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content }],
-      output_config: { format: zodOutputFormat(LinesSchema) },
+    const res = await fetch(`${shimBase(base)}/parse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(SHIM_TIMEOUT_MS),
     });
+    if (!res.ok) return null;
+    payload = await res.json();
   } catch {
     return null;
   }
 
-  // Checked before parsed_output is read: a refusal can still carry a
-  // meaningless parsed_output, exactly as recipes/llm.ts documents.
-  if (response.stop_reason === "refusal") return null;
+  // The shim is ours, which is exactly why its answer gets no special trust:
+  // a contract asserted on one side only is a contract that drifts silently.
+  // Its schema lives in a different repository with a different test suite,
+  // and nothing stops the two from diverging except a check like this one.
+  const parsed = LinesSchema.safeParse(payload);
+  if (!parsed.success) return null;
 
-  const parsed = response.parsed_output;
-  if (!parsed) return null;
-
-  return parsed.lines
+  return parsed.data.lines
     .map((line) => ({ text: line.text.trim(), group: line.group }))
     .filter((line) => line.text.length > 0);
+}
+
+/**
+ * A trailing slash in `AI_SHIM_URL` is an ordinary thing to type. Left in, it
+ * makes `//parse`, which is a 404, which is a `null` — a config typo that
+ * presents as a permanently unhelpful model and looks exactly like a real
+ * model failure. Same guard in `src/lib/recipes/llm.ts`.
+ */
+function shimBase(base: string): string {
+  return base.replace(/\/+$/, "");
 }

@@ -4,10 +4,10 @@ import postgres from "postgres";
 /**
  * Getting a recipe in when the page will not give one up.
  *
- * The URL importer reads schema.org markup and, with a key configured, falls
- * back to asking an LLM. Neither can be relied on: plenty of pages publish
- * nothing, and a household running this without `ANTHROPIC_API_KEY` has no
- * fallback at all. What used to happen then was a message and a "Försök igen"
+ * The URL importer reads schema.org markup and, with the shim configured, falls
+ * back to asking Claude through it. Neither can be relied on: plenty of pages
+ * publish nothing, and a household whose shim is unconfigured or unreachable has
+ * no fallback at all. What used to happen then was a message and a "Försök igen"
  * that would fail in precisely the same way — the recipe visible in the tab the
  * person had just come from, and nowhere to put it.
  *

@@ -111,16 +111,22 @@ ritas knappen inte alls** — en kontroll som inte kan fungera är sämre än en
 saknas, för den lär dig att appen är trasig i stället för att funktionen ligger
 någon annanstans. Skriv och klistra in fungerar överallt.
 
-### Nyckeln, och vad som händer utan den
+### Shimmen, och vad som händer utan den
 
-`/api/ai/parse` läser med Claude (`ANTHROPIC_API_KEY`, samma nyckel som
-receptimporten):
+`/api/ai/parse` läser med Claude, men inte direkt. Anropet går till en liten
+tjänst på beelinken — shimmen, som bor i `agentic-os/shim/` och kör som
+`agentic-os-shim.service` på port 8301. Den håller Claude Code-inloggningen, så
+hushållets abonnemang betalar i stället för en mätad API-nyckel, och ingen
+Claude-nyckel finns kvar i det här repot. Receptimporten går samma väg.
+
+Appen behöver två variabler, och båda måste vara satta för att något ska frågas:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...
+AI_SHIM_URL=http://beelink.host:8301
+AI_SHIM_SECRET=<Recipus egen token ur shimmens SHIM_CLIENTS, inte hela kartan>
 ```
 
-Utan den:
+Utan dem — och likadant när shimmen är nere:
 
 - **Text och tal** faller tillbaka på den deterministiska rösttolken — samma
   `interpretUtterance` som Home Assistant-vägen. Bara rader som redan liknar
@@ -129,12 +135,18 @@ Utan den:
 - **Bild** svarar **503**. Det finns ingen tolkning av en skärmdump som inte
   går genom en modell, och ett tomt resultat hade sett ut som en bugg.
 
-Med nyckeln på plats svarar en bild **503** även när själva anropet misslyckas —
-kvotspärr, avslag, död uppkoppling, en bild Anthropic inte tar emot. Meningen är
-en annan än den som pekar på nyckeln, för det är inget som ska konfigureras:
+En bild svarar **503** i varje läge där den inte blev läst: shimmen är inte
+konfigurerad, den svarar inte, Claude är slut för dagen, eller svaret hade fel
+form. Meddelandet är detsamma i samtliga fall, med flit — skillnaden syns inte
+för den som håller telefonen, och att peka ut en orsak vi inte kan skilja på
+vore en gissning utklädd till diagnos:
 *"Kunde inte tolka bilden just nu. Försök igen, eller skriv in listan."*
 
-> **Skärmdumpar skickas till Anthropic.** Precis som receptsidor redan gör.
+Vilket det var står i shimmens journal på beelinken
+(`journalctl --user -u agentic-os-shim`), inte i appen.
+
+> **Skärmdumpar skickas till Anthropic**, via shimmen. Precis som receptsidor
+> redan gör.
 > Bilden är en inköpslista, men den kan råka innehålla annat som stod på
 > skärmen — värt att veta innan man fotar hela mobilskärmen.
 
@@ -343,9 +355,8 @@ interaktionsmodellen och deploya om.
 | Rätt ord, fel vara | Ett alias pekar fel. Fixa raden i `catalog_item_aliases` |
 | Svenska ord kommer fram som nonsens via Alexa | Förväntat, och inte lagbart. Använd Home Assistant |
 | Mikrofonknappen i dialogen finns inte | Firefox har ingen `SpeechRecognition`. Skriv i stället |
-| Dialogen säger "Lästes utan AI" | `ANTHROPIC_API_KEY` är inte satt i containerns miljö |
-| En bild svarar 503 om nyckeln nämns | Samma sak — bild kan inte läsas utan modellen |
-| "Kunde inte tolka bilden just nu" | Nyckeln finns, anropet gick fel. Kvotspärr, avslag, eller en bild över 5 MB |
+| Dialogen säger "Lästes utan AI" | `AI_SHIM_URL`/`AI_SHIM_SECRET` är inte satta i containerns miljö, eller shimmen svarar inte |
+| "Kunde inte tolka bilden just nu" | Bilden blev aldrig läst — samma orsaker som raden ovan, plus kvotspärr, avslag eller en bild över 5 MB. `journalctl --user -u agentic-os-shim` på beelinken säger vilket |
 | "Den delade bilden är borta" | Mer än tio minuter, fem delningar senare, eller en omstart. Dela igen |
 | En delad bild öppnar listan utan dialog | Filen är över 6 MB och parkerades aldrig. Använd *Läs av en bild i stället* |
 | Appen syns inte i iOS delningsmeny | Förväntat. Öppna appen och välj *Läs av en bild i stället* |

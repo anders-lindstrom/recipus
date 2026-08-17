@@ -16,13 +16,13 @@ import { UiIcon, type UiIconName } from "./ui-icon";
  * the first http(s) URL in it is pulled out and imported automatically.
  *
  * The paste field is the answer to a dead end. A page that publishes no JSON-LD
- * and that the LLM fallback cannot read either — or any page at all, when
- * `ANTHROPIC_API_KEY` is unset — produced "Kunde inte läsa receptet från sidan."
- * over a "Försök igen" that would fail identically, with nothing else on the
- * screen to do. The recipe was never actually out of reach: it is on the page
- * the person just came from, and once it is pasted the same parser that reads
- * an imported line reads this one. The failure now offers that way through
- * rather than only a way to repeat itself.
+ * and that the LLM fallback cannot read either — or any page at all, when the
+ * shim that does that reading is unconfigured or unreachable — produced "Kunde
+ * inte läsa receptet från sidan." over a "Försök igen" that would fail
+ * identically, with nothing else on the screen to do. The recipe was never
+ * actually out of reach: it is on the page the person just came from, and once
+ * it is pasted the same parser that reads an imported line reads this one. The
+ * failure now offers that way through rather than only a way to repeat itself.
  */
 
 const URL_RE = /https?:\/\/[^\s]+/i;
