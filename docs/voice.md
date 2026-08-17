@@ -122,8 +122,8 @@ Claude-nyckel finns kvar i det här repot. Receptimporten går samma väg.
 Appen behöver två variabler, och båda måste vara satta för att något ska frågas:
 
 ```bash
-AI_SHIM_URL=http://beelink.host:8301
-AI_SHIM_SECRET=<Recipus egen token ur shimmens SHIM_CLIENTS, inte hela kartan>
+SHIM_URL=http://beelink.host:8301
+SHIM_TOKEN=<Recipus egen token ur shimmens SHIM_CLIENTS, inte hela kartan>
 ```
 
 Utan dem — och likadant när shimmen är nere:
@@ -355,7 +355,7 @@ interaktionsmodellen och deploya om.
 | Rätt ord, fel vara | Ett alias pekar fel. Fixa raden i `catalog_item_aliases` |
 | Svenska ord kommer fram som nonsens via Alexa | Förväntat, och inte lagbart. Använd Home Assistant |
 | Mikrofonknappen i dialogen finns inte | Firefox har ingen `SpeechRecognition`. Skriv i stället |
-| Dialogen säger "Lästes utan AI" | `AI_SHIM_URL`/`AI_SHIM_SECRET` är inte satta i containerns miljö, eller shimmen svarar inte |
+| Dialogen säger "Lästes utan AI" | `SHIM_URL`/`SHIM_TOKEN` är inte satta i containerns miljö, eller shimmen svarar inte |
 | "Kunde inte tolka bilden just nu" | Bilden blev aldrig läst — samma orsaker som raden ovan, plus kvotspärr, avslag eller en bild över 5 MB. `journalctl --user -u agentic-os-shim` på beelinken säger vilket |
 | "Den delade bilden är borta" | Mer än tio minuter, fem delningar senare, eller en omstart. Dela igen |
 | En delad bild öppnar listan utan dialog | Filen är över 6 MB och parkerades aldrig. Använd *Läs av en bild i stället* |

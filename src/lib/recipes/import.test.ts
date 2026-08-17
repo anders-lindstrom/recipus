@@ -16,18 +16,18 @@ const jsonLdHtml = `<html><body><script type="application/ld+json">${JSON.string
 const noRecipeHtml = "<html><body><p>Inget recept här.</p></body></html>";
 
 describe("importRecipeFromUrl", () => {
-  const originalShimUrl = process.env.AI_SHIM_URL;
+  const originalShimUrl = process.env.SHIM_URL;
 
   // Unconfigured on purpose, so `extractRecipeWithLlm` returns null before it
   // reaches the network: these tests are about the JSON-LD path and the error
   // the caller sees when it finds nothing, not about the shim.
   beforeEach(() => {
-    delete process.env.AI_SHIM_URL;
+    delete process.env.SHIM_URL;
   });
 
   afterEach(() => {
-    if (originalShimUrl === undefined) delete process.env.AI_SHIM_URL;
-    else process.env.AI_SHIM_URL = originalShimUrl;
+    if (originalShimUrl === undefined) delete process.env.SHIM_URL;
+    else process.env.SHIM_URL = originalShimUrl;
   });
 
   it("rejects a non-http(s) URL without making a request", async () => {

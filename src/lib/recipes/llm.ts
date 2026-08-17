@@ -26,11 +26,14 @@ const MAX_PAGE_TEXT_CHARS = 40_000;
  * How long to wait on the home server before giving up and degrading. Same
  * value as `src/lib/ai-add/parse.ts`'s `SHIM_TIMEOUT_MS`, kept as two copies
  * rather than a shared constant (a shared module for one constant would be
- * its own over-building for two call sites) — if you tune one, tune the
- * other. Below the shim's own internal bound (`ASK_TIMEOUT_MS` in
- * agentic-os's `shim/src/claude.ts`), so this timeout is what a person sees.
+ * its own over-building for two call sites) — if you tune one, tune the other.
+ *
+ * ABOVE the shim's own bound (`ASK_TIMEOUT_MS`, 90s, in agentic-os's
+ * `shim/src/claude.ts`), so the shim is what decides a call has failed. Set
+ * below it, this timer would abandon calls the shim was about to answer — and
+ * a 502 already means the shim spent a second attempt retrying.
  */
-const SHIM_TIMEOUT_MS = 60_000;
+const SHIM_TIMEOUT_MS = 120_000;
 
 const DEFAULT_SERVINGS = 4;
 const DEFAULT_SERVINGS_UNIT = "portioner";
@@ -55,9 +58,12 @@ const ResponseSchema = z.object({
 
 /** Exported separately so import.ts can be tested without network or shim. */
 export async function extractRecipeWithLlm(html: string, url: string): Promise<ImportedRecipe | null> {
-  const base = process.env.AI_SHIM_URL;
-  const secret = process.env.AI_SHIM_SECRET;
-  if (!base || !secret) return null;
+  const base = process.env.SHIM_URL;
+  const secret = process.env.SHIM_TOKEN;
+  if (!base || !secret) {
+    warnUnconfigured();
+    return null;
+  }
 
   let payload: unknown;
   try {
@@ -100,8 +106,24 @@ export async function extractRecipeWithLlm(html: string, url: string): Promise<I
   };
 }
 
+let warned = false;
+
 /**
- * A trailing slash in `AI_SHIM_URL` is an ordinary thing to type. Left in, it
+ * Say once, at the log, that the shim is switched off.
+ *
+ * Unconfigured is a supported state — a page with JSON-LD still imports — so
+ * this must not throw. But it must not be silent either, or a half-set pair is
+ * indistinguishable from a page the model could not read. Once, not per import.
+ * Same rule and same message shape as `src/lib/ai-add/parse.ts`.
+ */
+function warnUnconfigured(): void {
+  if (warned) return;
+  warned = true;
+  console.warn("[recipes] SHIM_URL/SHIM_TOKEN not both set — asking the shim nothing.");
+}
+
+/**
+ * A trailing slash in `SHIM_URL` is an ordinary thing to type. Left in, it
  * makes `//recipe`, which is a 404, which is a `null` — a config typo that
  * presents as a permanently broken importer and looks exactly like a real
  * model failure.

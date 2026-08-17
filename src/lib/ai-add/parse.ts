@@ -25,10 +25,15 @@ const MAX_TEXT_CHARS = 8_000;
  * How long to wait on the home server before giving up and degrading. Same
  * value as `src/lib/recipes/llm.ts`'s `SHIM_TIMEOUT_MS`, kept as two copies
  * rather than a shared constant (see that file's comment) — if you tune one,
- * tune the other. Below the shim's own internal bound (`ASK_TIMEOUT_MS` in
- * agentic-os's `shim/src/claude.ts`), so this timeout is what a person sees.
+ * tune the other.
+ *
+ * ABOVE the shim's own bound (`ASK_TIMEOUT_MS`, 90s, in agentic-os's
+ * `shim/src/claude.ts`), so the shim is what decides a call has failed. Set
+ * below it, this timer would abandon calls the shim was about to answer — and
+ * the tokens would be spent anyway, because giving up here does not stop the
+ * agent running there.
  */
-const SHIM_TIMEOUT_MS = 60_000;
+const SHIM_TIMEOUT_MS = 120_000;
 
 /** Where on the input a line was read. See the spec, §2.1. */
 export type LineGroup = "list" | "other";
@@ -61,9 +66,12 @@ const LinesSchema = z.object({
  * up retrying a request that will never work.
  */
 export async function parseInput(input: AiInput): Promise<ParsedLine[] | null> {
-  const base = process.env.AI_SHIM_URL;
-  const secret = process.env.AI_SHIM_SECRET;
-  if (!base || !secret) return null;
+  const base = process.env.SHIM_URL;
+  const secret = process.env.SHIM_TOKEN;
+  if (!base || !secret) {
+    warnUnconfigured("ai-add");
+    return null;
+  }
 
   const body =
     input.kind === "text"
@@ -96,8 +104,27 @@ export async function parseInput(input: AiInput): Promise<ParsedLine[] | null> {
     .filter((line) => line.text.length > 0);
 }
 
+let warned = false;
+
 /**
- * A trailing slash in `AI_SHIM_URL` is an ordinary thing to type. Left in, it
+ * Say once, at the log, that the shim is switched off.
+ *
+ * Unconfigured is a supported state — text still falls through to the
+ * deterministic parser — so this must not throw the way `authenticate()` does
+ * for `PROXY_AUTH_SECRET`, whose absence is a security hole rather than a
+ * feature being off. But it must not be silent either: a half-set pair (one of
+ * the two variables, which asks nothing at all) is otherwise indistinguishable
+ * from a model that had nothing to say. Once, not per request, because this
+ * runs on every parse and a log nobody can read is the same as no log.
+ */
+function warnUnconfigured(caller: string): void {
+  if (warned) return;
+  warned = true;
+  console.warn(`[${caller}] SHIM_URL/SHIM_TOKEN not both set — asking the shim nothing.`);
+}
+
+/**
+ * A trailing slash in `SHIM_URL` is an ordinary thing to type. Left in, it
  * makes `//parse`, which is a 404, which is a `null` — a config typo that
  * presents as a permanently unhelpful model and looks exactly like a real
  * model failure. Same guard in `src/lib/recipes/llm.ts`.

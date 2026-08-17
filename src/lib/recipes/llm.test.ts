@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { extractRecipeWithLlm } from "./llm";
 
-const ORIGINAL_URL = process.env.AI_SHIM_URL;
-const ORIGINAL_SECRET = process.env.AI_SHIM_SECRET;
+const ORIGINAL_URL = process.env.SHIM_URL;
+const ORIGINAL_SECRET = process.env.SHIM_TOKEN;
 
 /** A body the shim would consider good, with the fields under test overridden. */
 function shimResponse(recipe: Record<string, unknown>) {
@@ -24,27 +24,27 @@ function shimResponse(recipe: Record<string, unknown>) {
 
 describe("extractRecipeWithLlm", () => {
   beforeEach(() => {
-    process.env.AI_SHIM_URL = "http://beelink.host:8301";
-    process.env.AI_SHIM_SECRET = "test-secret";
+    process.env.SHIM_URL = "http://beelink.host:8301";
+    process.env.SHIM_TOKEN = "test-secret";
     vi.restoreAllMocks();
   });
 
   afterEach(() => {
-    if (ORIGINAL_URL === undefined) delete process.env.AI_SHIM_URL;
-    else process.env.AI_SHIM_URL = ORIGINAL_URL;
-    if (ORIGINAL_SECRET === undefined) delete process.env.AI_SHIM_SECRET;
-    else process.env.AI_SHIM_SECRET = ORIGINAL_SECRET;
+    if (ORIGINAL_URL === undefined) delete process.env.SHIM_URL;
+    else process.env.SHIM_URL = ORIGINAL_URL;
+    if (ORIGINAL_SECRET === undefined) delete process.env.SHIM_TOKEN;
+    else process.env.SHIM_TOKEN = ORIGINAL_SECRET;
   });
 
   it("returns null without calling anything when the shim is not configured", async () => {
-    delete process.env.AI_SHIM_URL;
+    delete process.env.SHIM_URL;
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     expect(await extractRecipeWithLlm("<html></html>", "https://example.com")).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("returns null without calling anything when the shim secret is missing", async () => {
-    delete process.env.AI_SHIM_SECRET;
+    delete process.env.SHIM_TOKEN;
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     expect(await extractRecipeWithLlm("<html></html>", "https://example.com")).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -65,11 +65,11 @@ describe("extractRecipeWithLlm", () => {
     });
   });
 
-  it("does not double the slash when AI_SHIM_URL carries a trailing one", async () => {
+  it("does not double the slash when SHIM_URL carries a trailing one", async () => {
     // A trailing slash is an ordinary thing to type into a .env. Left alone it
     // yields `//recipe`, a 404 and then `null` — a config typo wearing the mask
     // of a permanent model failure, which is the hardest kind to find.
-    process.env.AI_SHIM_URL = "http://beelink.host:8301/";
+    process.env.SHIM_URL = "http://beelink.host:8301/";
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(shimResponse({}));
 
     await extractRecipeWithLlm("<html></html>", "https://example.com");

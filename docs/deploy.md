@@ -150,8 +150,8 @@ cp <repo>/deploy/docker-compose.yml ~/services/recipus/docker-compose.yml
 ```
 DATABASE_URL=postgres://recipus:<the password above>@postgres:5432/recipus
 PROXY_AUTH_SECRET=<openssl rand -hex 32>
-AI_SHIM_URL=<optional — http://beelink.host:8301, the Claude shim>
-AI_SHIM_SECRET=<optional — Recipus's own token from the shim's SHIM_CLIENTS map, verbatim>
+SHIM_URL=<optional — http://beelink.host:8301, the Claude shim>
+SHIM_TOKEN=<optional — Recipus's own token from the shim's SHIM_CLIENTS map, verbatim>
 ```
 
 **The shim is not part of this deploy.** It is a host service living in

@@ -60,7 +60,7 @@ unit template is *not* one of them, because it carries no port at all:
 1. `SHIM_PORT=<port>` in agentic-os's repo-root `.env`. `shim/src/index.ts:71` reads it and falls
    back to 8301, and `index.ts` loads that `.env` itself — so this needs no code edit and no
    `Environment=` line in the unit.
-2. `AI_SHIM_URL` in Recipus's deploy `.env`.
+2. `SHIM_URL` in Recipus's deploy `.env`.
 
 Then update the prose that names the port: `README.md:165` and `CLAUDE.md:7` in agentic-os, and
 `docs/deploy.md` in Recipus. Those are documentation, not configuration — nothing reads them.
@@ -120,7 +120,7 @@ openssl rand -hex 32
 per-client map, `SHIM_CLIENTS=name:token,name:token`, in agentic-os's **repo-root** `.env` (not
 `shim/`) — the token a caller presents IS which app it is. Give Recipus its own entry, e.g.
 `SHIM_CLIENTS=recipus:<the value from openssl above>`, and put that **same token** (not the whole
-map) in `AI_SHIM_SECRET` in `~/services/recipus/.env`. `install.sh` refuses to enable the unit
+map) in `SHIM_TOKEN` in `~/services/recipus/.env`. `install.sh` refuses to enable the unit
 without `SHIM_CLIENTS` rather than letting the unit crash-loop, and prints an example of this
 exact form when it does.
 
@@ -172,8 +172,8 @@ getent hosts beelink.host || echo "does not resolve — use 192.168.50.197"
 Add to `~/services/recipus/.env`:
 
 ```
-AI_SHIM_URL=http://<host>:8301
-AI_SHIM_SECRET=<Recipus's own token — the value after `recipus:` in SHIM_CLIENTS, not the whole map>
+SHIM_URL=http://<host>:8301
+SHIM_TOKEN=<Recipus's own token — the value after `recipus:` in SHIM_CLIENTS, not the whole map>
 ```
 
 A trailing slash is now harmless (both call sites normalise it), but there is no reason to add one.

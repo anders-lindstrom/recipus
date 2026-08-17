@@ -1,25 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseInput } from "./parse";
 
-const ORIGINAL_URL = process.env.AI_SHIM_URL;
-const ORIGINAL_SECRET = process.env.AI_SHIM_SECRET;
+const ORIGINAL_URL = process.env.SHIM_URL;
+const ORIGINAL_SECRET = process.env.SHIM_TOKEN;
 
 describe("parseInput", () => {
   beforeEach(() => {
-    process.env.AI_SHIM_URL = "http://beelink.host:8301";
-    process.env.AI_SHIM_SECRET = "test-secret";
+    process.env.SHIM_URL = "http://beelink.host:8301";
+    process.env.SHIM_TOKEN = "test-secret";
     vi.restoreAllMocks();
   });
 
   afterEach(() => {
-    if (ORIGINAL_URL === undefined) delete process.env.AI_SHIM_URL;
-    else process.env.AI_SHIM_URL = ORIGINAL_URL;
-    if (ORIGINAL_SECRET === undefined) delete process.env.AI_SHIM_SECRET;
-    else process.env.AI_SHIM_SECRET = ORIGINAL_SECRET;
+    if (ORIGINAL_URL === undefined) delete process.env.SHIM_URL;
+    else process.env.SHIM_URL = ORIGINAL_URL;
+    if (ORIGINAL_SECRET === undefined) delete process.env.SHIM_TOKEN;
+    else process.env.SHIM_TOKEN = ORIGINAL_SECRET;
   });
 
   it("returns null without calling anything when the shim is not configured", async () => {
-    delete process.env.AI_SHIM_URL;
+    delete process.env.SHIM_URL;
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     expect(await parseInput({ kind: "text", text: "mjölk" })).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -54,11 +54,11 @@ describe("parseInput", () => {
     });
   });
 
-  it("does not double the slash when AI_SHIM_URL carries a trailing one", async () => {
+  it("does not double the slash when SHIM_URL carries a trailing one", async () => {
     // A trailing slash is an ordinary thing to type into a .env. Left alone it
     // yields `//parse`, a 404 and then `null` — a config typo wearing the mask
     // of a permanent model failure, which is the hardest kind to find.
-    process.env.AI_SHIM_URL = "http://beelink.host:8301/";
+    process.env.SHIM_URL = "http://beelink.host:8301/";
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ lines: [] }), { status: 200 }),
     );
