@@ -117,6 +117,13 @@ timers. It is a service rather than a timer — the only always-on piece in a re
 unauthenticated. It binds `0.0.0.0`, because the Recipus container sits in a bridge network and
 cannot reach the host's loopback — so the token is load-bearing, not ceremony.
 
+> **Superseded 2026-08-17, before this ever deployed.** The single `SHIM_INGEST_SECRET` was replaced
+> by a per-client map, `SHIM_CLIENTS=name:token,name:token`, so that the token a caller presents *is*
+> which app it is — self-reported identity being worthless in the usage stats the shim now writes.
+> Recipus needed no code change: it already sent a bearer token, and that value simply became its own.
+> See `agentic-os/docs/superpowers/specs/2026-08-14-claude-usage-stats-design.md` §4. The paragraph
+> above is left as it was written.
+
 ### 5.2 Networking
 
 Port **8301**, beside agentic-os's 8300 — confirmed free with `sudo netstat -tulpn | grep LISTEN`

@@ -173,7 +173,7 @@ Add to `~/services/recipus/.env`:
 
 ```
 AI_SHIM_URL=http://<host>:8301
-AI_SHIM_SECRET=<the same value as SHIM_INGEST_SECRET>
+AI_SHIM_SECRET=<Recipus's own token — the value after `recipus:` in SHIM_CLIENTS, not the whole map>
 ```
 
 A trailing slash is now harmless (both call sites normalise it), but there is no reason to add one.

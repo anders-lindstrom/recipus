@@ -123,7 +123,7 @@ Appen behöver två variabler, och båda måste vara satta för att något ska f
 
 ```bash
 AI_SHIM_URL=http://beelink.host:8301
-AI_SHIM_SECRET=<samma värde som shimmens SHIM_INGEST_SECRET>
+AI_SHIM_SECRET=<Recipus egen token ur shimmens SHIM_CLIENTS, inte hela kartan>
 ```
 
 Utan dem — och likadant när shimmen är nere:
