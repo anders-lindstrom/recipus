@@ -15,7 +15,7 @@ usage() {
 usage: bin/deploy-local [--gates-only | --dry-run]
 
 Run committed HEAD in an isolated checkout with act, then confirm live
-health (build identity is not checked). Host dependencies stay untouched.
+health and build identity. Host dependencies stay untouched.
 The default deploy requires a clean committed HEAD and secrets supplied by fnox.
 
   --gates-only  check committed HEAD without deployment or secrets
@@ -103,14 +103,15 @@ else
       process.stdin.on("end", () => {
         try {
           const health = JSON.parse(body);
-          process.exit(health.status === "ok" && health.db === "up" ? 0 : 1);
+          process.exit(health.status === "ok" && health.db === "up" &&
+            health.sha === process.argv[1] ? 0 : 1);
         } catch { process.exit(1); }
-      });'; then
+      });' "${sha:0:12}"; then
       healthy=true
       break
     fi
     sleep 5
   done
-  [[ "$healthy" == true ]] || { echo 'deploy-local: live health check failed' >&2; exit 1; }
-  echo 'Health ok (database up); build identity is not checked.'
+  [[ "$healthy" == true ]] || { echo "deploy-local: live health check failed for build ${sha:0:12}" >&2; exit 1; }
+  echo "Health ok (database up); build ${sha:0:12} is live."
 fi
