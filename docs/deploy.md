@@ -37,8 +37,12 @@ real gates and deployments always start Postgres. Deployment requires a clean tr
 fnox secrets; it warns if HEAD is outside `origin/master`. It deploys HEAD even
 when the workflow's `paths-ignore` would suppress a GitHub push run.
 After deployment it polls `/api/health` inside the container over batch-mode
-`ssh beelink` for `status: ok` and `db: up` (the public URL requires login);
-**build identity is not checked**. Gates and dry runs need no secrets.
+`ssh beelink` for `status: ok`, `db: up`, and `sha` matching the first 12
+characters of deployed HEAD (the public URL requires login). It retries up to
+30 times, five seconds apart, while Watchtower recreates the container, and fails
+if the expected healthy build never appears. Success prints the SHA now live.
+The health endpoint returns `sha: "dev"` when `RECIPUS_GIT_SHA` is unset or blank;
+it never runs git. Gates and dry runs need no secrets.
 The failure-only artifact step currently finds no `playwright-report/` because
 the configured reporter does not create it; a failing run warns and uploads
 nothing. Local artifact files are temporary and removed when the wrapper exits.
@@ -292,7 +296,7 @@ curl -fsS -X POST -H "Authorization: Bearer $(sudo cat ~/services/watchtower/api
   "http://127.0.0.1:8088/v1/update?image=registry.lindstromhome.cc/recipus"
 
 docker logs -f recipus
-docker exec recipus wget -qO- http://127.0.0.1:3000/api/health   # {"status":"ok","db":"up"}
+docker exec recipus wget -qO- http://127.0.0.1:3000/api/health   # {"status":"ok","db":"up","sha":"<12-char sha>"}
 
 # What tags does the registry have? (rollback targets)
 curl -s -u anders https://registry.lindstromhome.cc/v2/recipus/tags/list
