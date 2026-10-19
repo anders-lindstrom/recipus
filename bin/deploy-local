@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Run the existing deployment workflow on this machine.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+workflow='.github/workflows/deploy.yml'
+runner='catthehacker/ubuntu:act-22.04'
+# Repo-specific settings.
+trunk=master
+gate_jobs=(test e2e)
+health_host=beelink
+health_command='timeout 15 docker exec recipus wget -T 10 -qO- http://127.0.0.1:3000/api/health'
+work_prefix=recipus-act
+usage() {
+  cat <<'HELP'
+usage: bin/deploy-local [--gates-only | --dry-run]
+
+Run committed HEAD in an isolated checkout with act, then confirm live
+health (build identity is not checked). Host dependencies stay untouched.
+The default deploy requires a clean committed HEAD and secrets supplied by fnox.
+
+  --gates-only  check committed HEAD without deployment or secrets
+  --dry-run     validate all three jobs without running them or needing secrets
+  --help, -h    show this help
+
+Examples:
+  bin/deploy-local --gates-only
+  bin/deploy-local --dry-run
+  fnox -P beelink-deploy exec -- bin/deploy-local
+
+Runner: catthehacker/ubuntu:act-22.04 (native architecture).
+The workflow builds the deployed image for linux/amd64.
+Exit: 0 success; 1 runtime failure; 2 usage or missing prerequisite.
+HELP
+}
+for arg in "$@"; do
+  case "$arg" in --help|-h|help) usage; exit 0;; esac
+done
+mode=deploy
+if (( $# > 1 )); then usage >&2; exit 2; fi
+case "${1:-}" in
+  '') ;;
+  --gates-only) mode=gates ;;
+  --dry-run) mode=dry ;;
+  *) echo "deploy-local: unknown option $1" >&2; usage >&2; exit 2 ;;
+esac
+cd "$root"
+for tool in act docker git; do
+  command -v "$tool" >/dev/null || { echo "deploy-local: $tool is required" >&2; exit 2; }
+done
+sha="$(git rev-parse HEAD)"
+if [[ "$mode" == deploy ]]; then
+  [[ -z "$(git status --porcelain)" ]] || { echo 'deploy-local: commit or remove working tree changes before deploying' >&2; exit 1; }
+  command -v ssh >/dev/null || { echo 'deploy-local: ssh is required' >&2; exit 2; }
+  command -v node >/dev/null || { echo 'deploy-local: node is required' >&2; exit 2; }
+  for name in REGISTRY_USERNAME REGISTRY_PASSWORD WATCHTOWER_TOKEN; do
+    [[ -n "${!name:-}" ]] || { echo "deploy-local: $name is missing; use fnox -P beelink-deploy exec -- bin/deploy-local" >&2; exit 2; }
+  done
+  git fetch --quiet origin "$trunk"
+  if ! git merge-base --is-ancestor "$sha" "origin/$trunk"; then
+    echo "deploy-local: warning: HEAD is not on origin/$trunk" >&2
+  fi
+fi
+# act dry runs also clean up named containers; never overlap this workflow.
+lock="${TMPDIR:-/tmp}/act-deploy-local.lock"
+mkdir "$lock" 2>/dev/null || { echo "deploy-local: another run holds $lock" >&2; exit 1; }
+work=''
+cleanup() {
+  cd "$root"
+  [[ -z "$work" ]] || rm -rf "$work"
+  rmdir "$lock"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# This directory must have the same path on the host and inside the act runner:
+# Docker actions can start sibling containers through the host Docker socket.
+work="$(mktemp -d "${TMPDIR:-/tmp}/${work_prefix}.XXXXXX")"
+work="$(cd "$work" && pwd -P)"
+workspace="$work/repo"
+git clone --quiet --no-hardlinks --no-checkout "$root" "$workspace"
+git -C "$workspace" checkout --quiet --detach "$sha"
+git -C "$workspace" remote set-url origin "$(git -C "$root" remote get-url origin)"
+cd "$workspace"
+args=(push -W "$workflow" -P "ubuntu-latest=$runner" --bind
+  --concurrent-jobs 1 --container-architecture linux/arm64 --network bridge --rm --env-file /dev/null --secret-file /dev/null
+  --var-file /dev/null --input-file /dev/null
+  --container-options "--volume=$work:$work" --env "TMPDIR=$work"
+  --artifact-server-path "$work/artifacts" --artifact-server-port 0)
+if [[ "$mode" == gates ]]; then
+  for job in "${gate_jobs[@]}"; do
+    act "${args[@]}" -j "$job" >&2
+  done
+elif [[ "$mode" == dry ]]; then
+  act "${args[@]}" --var DEPLOY_LOCAL_DRY_RUN=true -n >&2
+else
+  act "${args[@]}" -s REGISTRY_USERNAME -s REGISTRY_PASSWORD -s WATCHTOWER_TOKEN >&2
+  healthy=false
+  for attempt in {1..30}; do
+    if ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 \
+      -o ServerAliveCountMax=2 "$health_host" "$health_command" | node -e '
+      let body = "";
+      process.stdin.on("data", chunk => body += chunk);
+      process.stdin.on("end", () => {
+        try {
+          const health = JSON.parse(body);
+          process.exit(health.status === "ok" && health.db === "up" ? 0 : 1);
+        } catch { process.exit(1); }
+      });'; then
+      healthy=true
+      break
+    fi
+    sleep 5
+  done
+  [[ "$healthy" == true ]] || { echo 'deploy-local: live health check failed' >&2; exit 1; }
+  echo 'Health ok (database up); build identity is not checked.'
+fi

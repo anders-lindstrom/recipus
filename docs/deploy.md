@@ -20,6 +20,29 @@ CI trigger broke, not that the deploy is impossible.
 This is the same pipeline as `longhaul` and `hue-lights`. What follows is only
 what is specific to Recipus.
 
+## Deploying while Actions minutes are out
+
+Run the existing workflow locally with Docker Desktop and `act` installed:
+
+```bash
+bin/deploy-local --gates-only
+bin/deploy-local --dry-run
+fnox -P beelink-deploy exec -- bin/deploy-local
+```
+
+The wrapper runs committed HEAD in a temporary checkout, serializes jobs, and
+builds `linux/amd64` for beelink. Dry runs set `DEPLOY_LOCAL_DRY_RUN` to
+omit service creation, avoiding act 0.2.89's service-health dry-run panic;
+real gates and deployments always start Postgres. Deployment requires a clean tree and the three
+fnox secrets; it warns if HEAD is outside `origin/master`. It deploys HEAD even
+when the workflow's `paths-ignore` would suppress a GitHub push run.
+After deployment it polls `/api/health` inside the container over batch-mode
+`ssh beelink` for `status: ok` and `db: up` (the public URL requires login);
+**build identity is not checked**. Gates and dry runs need no secrets.
+The failure-only artifact step currently finds no `playwright-report/` because
+the configured reporter does not create it; a failing run warns and uploads
+nothing. Local artifact files are temporary and removed when the wrapper exits.
+
 ---
 
 ## Upgrading the running install — read before the next deploy
