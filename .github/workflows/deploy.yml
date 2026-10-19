@@ -39,7 +39,8 @@ jobs:
       postgres:
         # Match the beelink's major. The entrypoint's pg_dump refuses to dump a
         # server newer than its client, so a mismatch found here is cheaper.
-        image: postgres:17-alpine
+        # act 0.2.89 cannot inspect service health in a non-executing dry run.
+        image: ${{ vars.DEPLOY_LOCAL_DRY_RUN != 'true' && 'postgres:17-alpine' || '' }}
         env:
           POSTGRES_USER: recipus
           POSTGRES_PASSWORD: recipus
@@ -54,6 +55,9 @@ jobs:
     env:
       DATABASE_URL: postgres://recipus:recipus@localhost:5432/recipus
     steps:
+      - name: Reach the published Postgres port from Docker Desktop
+        if: env.ACT
+        run: echo "DATABASE_URL=${DATABASE_URL/localhost/host.docker.internal}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
@@ -102,7 +106,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        # act 0.2.89 cannot inspect service health in a non-executing dry run.
+        image: ${{ vars.DEPLOY_LOCAL_DRY_RUN != 'true' && 'postgres:17-alpine' || '' }}
         env:
           POSTGRES_USER: recipus
           POSTGRES_PASSWORD: recipus
@@ -120,6 +125,9 @@ jobs:
       # from the .env written below.
       DATABASE_URL: postgres://recipus:recipus@localhost:5432/recipus
     steps:
+      - name: Reach the published Postgres port from Docker Desktop
+        if: env.ACT
+        run: echo "DATABASE_URL=${DATABASE_URL/localhost/host.docker.internal}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
@@ -177,8 +185,8 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: ${{ !env.ACT && 'type=gha' || '' }}
+          cache-to: ${{ env.ACT && 'type=inline' || 'type=gha,mode=max' }}
 
       - name: Trigger deploy on beelink
         # POST only (GET returns 405). Scoped by ?image= so Watchtower recreates
