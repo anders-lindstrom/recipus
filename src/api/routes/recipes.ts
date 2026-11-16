@@ -2,10 +2,23 @@ import { randomUUID } from "node:crypto";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { and, asc, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/db";
-import { catalogItems, recipeIngredients, recipes } from "@/db/schema";
+import { catalogItems, recipeIngredients, recipeSources, recipes } from "@/db/schema";
 import { matchParsedIngredient, parseIngredientLine } from "@/lib/ingredients";
 import { loadMatchCandidates } from "@/lib/services/match-candidates";
-import { cleanPastedIngredients, importRecipeFromUrl } from "@/lib/recipes";
+import { cleanPastedIngredients, extractRecipeFromFile, importRecipeFromUrl } from "@/lib/recipes";
+import {
+  attachSource,
+  decodeBase64,
+  loadSourceFor,
+  saveFileSource,
+  SourceGoneError,
+  SourceRejectedError,
+  SourceStorageError,
+  SourceTakenError,
+  sourceSummaryFor,
+  storeTextSource,
+  type SourceSummary,
+} from "@/lib/services/recipe-sources";
 import type { Unit } from "@/lib/domain";
 import type { ApiEnv } from "..";
 import {
@@ -72,6 +85,7 @@ async function loadRecipe(id: string) {
     imageUrl: recipeRow.imageUrl,
     instructions: recipeRow.instructions,
     notes: recipeRow.notes,
+    source: await sourceSummaryFor(id),
     ingredients: ingredientRows.map((r) => ({
       id: r.id,
       recipeId: r.recipeId,
@@ -94,7 +108,27 @@ async function loadRecipe(id: string) {
  * either side was tuned, and the symptom — a pasted "2 dl grädde" matching a
  * different vara than an imported one — is nearly impossible to notice.
  */
-async function persistRecipe(recipe: RecipeToPersist, actor: string) {
+/**
+ * What a recipe was read from, when it was not a web page: a draft's file
+ * already on disk and recorded (`sourceId`), or pasted text still to be kept.
+ */
+type PersistSource = { sourceId: string } | { pastedText: string };
+
+/**
+ * The pasted text as an original — or, if the disk will not take it, no
+ * original. Paste worked before originals existed, and a storage folder left
+ * unwritable by a deploy must not take it down with the file import.
+ */
+async function keepPastedText(text: string, actor: string) {
+  try {
+    return await storeTextSource(text, actor);
+  } catch (err) {
+    if (err instanceof SourceStorageError) return null;
+    throw err;
+  }
+}
+
+async function persistRecipe(recipe: RecipeToPersist, actor: string, from?: PersistSource) {
   // Live varor AND every word that reaches one, so an ingredient line
   // written against a word the household has since merged away still
   // resolves — which is the entire point of keeping the merged-away word as
@@ -115,6 +149,13 @@ async function persistRecipe(recipe: RecipeToPersist, actor: string) {
       catalogItemId: match?.id ?? null,
     };
   });
+
+  // Disk cannot roll back, so pasted text is written before the transaction;
+  // if the transaction then fails, the file is a stray the prune job sweeps.
+  const textSource = from && "pastedText" in from ? await keepPastedText(from.pastedText, actor) : null;
+  let source: SourceSummary | null = textSource
+    ? { kind: textSource.kind, mediaType: textSource.mediaType }
+    : null;
 
   await db.transaction(async (tx) => {
     await tx.insert(recipes).values({
@@ -141,6 +182,21 @@ async function persistRecipe(recipe: RecipeToPersist, actor: string) {
         })),
       );
     }
+    if (textSource) {
+      await tx.insert(recipeSources).values({ ...textSource, recipeId });
+    }
+    if (from && "sourceId" in from) {
+      // Throwing rolls the recipe back with it: a double-tapped "Spara" must
+      // not leave a second recipe behind the first.
+      const attached = await attachSource(tx, from.sourceId, recipeId, actor);
+      if (attached === "gone") throw new SourceGoneError();
+      if (attached === "taken") throw new SourceTakenError();
+      const [row] = await tx
+        .select({ kind: recipeSources.kind, mediaType: recipeSources.mediaType })
+        .from(recipeSources)
+        .where(eq(recipeSources.id, from.sourceId));
+      source = row ?? null;
+    }
   });
 
   return {
@@ -154,6 +210,7 @@ async function persistRecipe(recipe: RecipeToPersist, actor: string) {
     // A brand-new recipe has no household note by construction: this is the
     // response to the request that created it.
     notes: null,
+    source,
     ingredients: ingredientRows.map((r) => ({
       id: r.id,
       recipeId,
@@ -198,6 +255,45 @@ const recipePasteRequestSchema = z
     text: z.string().min(1).max(20_000),
   })
   .openapi("RecipePasteRequest");
+
+/**
+ * A file for POST /read-file, base64 like /api/ai/parse's images. The bound on
+ * `data` is only there to stop an absurd body early; the real 10 MB check is on
+ * the decoded bytes, where it can answer 413 rather than a validation error.
+ */
+const recipeReadFileRequestSchema = z
+  .object({
+    data: z.string().min(1).max(20_000_000),
+    mediaType: z.string().min(1).max(100),
+    fileName: z.string().max(255).optional(),
+  })
+  .openapi("RecipeReadFileRequest");
+
+const recipeDraftSchema = z
+  .object({
+    title: z.string(),
+    servings: z.number(),
+    servingsUnit: z.string(),
+    ingredientLines: z.array(z.string()),
+    instructions: z.array(z.string()),
+  })
+  .openapi("RecipeDraft");
+
+const recipeReadFileResponseSchema = z
+  .object({ sourceId: z.string(), draft: recipeDraftSchema.nullable() })
+  .openapi("RecipeReadFileResponse");
+
+/** The paste path's bounds, plus what a reviewed draft carries besides. */
+const recipeFromFileRequestSchema = z
+  .object({
+    sourceId: z.string().min(1).max(64),
+    title: z.string().trim().min(1).max(200),
+    servings: z.number().positive().max(999),
+    servingsUnit: z.string().trim().min(1).max(40),
+    ingredientText: z.string().min(1).max(20_000),
+    instructions: z.array(z.string().max(2000)).max(60),
+  })
+  .openapi("RecipeFromFileRequest");
 
 export function recipesRoutes() {
   const app = new OpenAPIHono<ApiEnv>();
@@ -338,11 +434,127 @@ export function recipesRoutes() {
             sourceUrl: null,
           },
           actor,
+          // Kept as the recipe's original, so "what did I actually paste" has
+          // an answer after the tidying has thrown the headings away.
+          { pastedText: text },
         ),
         200,
       );
     },
   );
+
+  app.openapi(
+    createRoute({
+      method: "post",
+      path: "/read-file",
+      tags: ["recipes"],
+      description:
+        "Read a recipe out of one photo, screenshot or PDF (image/jpeg, image/png, image/webp, application/pdf; at most 10 MB). The file is stored FIRST and kept whatever happens next, then the shim is asked to read it. Answers the stored file's sourceId and the draft the shim read, or draft null when it could not — the review screen opens either way, beside the original, and nothing is saved as a recipe until POST /from-file.",
+      request: { body: jsonBody(recipeReadFileRequestSchema) },
+      responses: {
+        200: jsonRes(recipeReadFileResponseSchema, "The stored file and what could be read from it"),
+        400: jsonRes(errorSchema, "Not a file we keep"),
+        413: jsonRes(errorSchema, "Over 10 MB"),
+        500: jsonRes(errorSchema, "The file could not be stored"),
+      },
+    }),
+    async (c) => {
+      const body = c.req.valid("json");
+      const actor = c.get("actor");
+
+      let saved: { id: string };
+      try {
+        const bytes = decodeBase64(body.data);
+        saved = await saveFileSource({
+          bytes,
+          mediaType: body.mediaType,
+          fileName: body.fileName?.trim() || null,
+          actor,
+        });
+      } catch (err) {
+        if (err instanceof SourceRejectedError) return c.json({ error: err.message }, err.status);
+        if (err instanceof SourceStorageError) return c.json({ error: err.message }, 500);
+        throw err;
+      }
+
+      const read = await extractRecipeFromFile({ data: body.data, mediaType: body.mediaType });
+      const draft = read
+        ? {
+            ...read,
+            // The same tidying a page import gets: headings like "Deg:" are not
+            // ingredients, and the review screen should not offer them as such.
+            ingredientLines: cleanPastedIngredients(read.ingredientLines.join("\n")),
+          }
+        : null;
+      return c.json({ sourceId: saved.id, draft }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post",
+      path: "/from-file",
+      tags: ["recipes"],
+      description:
+        "Save a reviewed draft as a recipe and attach the file it was read from. Ingredients arrive as text, one per line, and go through exactly the same tidy-parse-match as a paste. The source is attached only if it is still unattached and was stored by this actor — a second save of the same draft is a 409 and creates nothing.",
+      request: { body: jsonBody(recipeFromFileRequestSchema) },
+      responses: {
+        200: jsonRes(recipeSchema, "Saved recipe"),
+        400: jsonRes(errorSchema, "No ingredients"),
+        404: jsonRes(errorSchema, "The draft expired"),
+        409: jsonRes(errorSchema, "Saved already"),
+      },
+    }),
+    async (c) => {
+      const body = c.req.valid("json");
+      const actor = c.get("actor");
+
+      const ingredientLines = cleanPastedIngredients(body.ingredientText);
+      if (ingredientLines.length === 0) {
+        return c.json({ error: "Hittade inga ingredienser i texten." }, 400);
+      }
+
+      try {
+        return c.json(
+          await persistRecipe(
+            {
+              title: body.title,
+              servings: body.servings,
+              servingsUnit: body.servingsUnit,
+              imageUrl: null,
+              ingredientLines,
+              instructions: body.instructions.map((step) => step.trim()).filter((step) => step.length > 0),
+              sourceUrl: null,
+            },
+            actor,
+            { sourceId: body.sourceId },
+          ),
+          200,
+        );
+      } catch (err) {
+        if (err instanceof SourceTakenError) return c.json({ error: "Receptet är redan sparat." }, 409);
+        if (err instanceof SourceGoneError) {
+          return c.json({ error: "Utkastet finns inte längre. Välj filen igen." }, 404);
+        }
+        throw err;
+      }
+    },
+  );
+
+  /*
+   * The original, as bytes. A plain route rather than an OpenAPI one because
+   * the body is a file, not JSON. Private caching: the file never changes, but
+   * it is the household's and must not sit in a shared cache.
+   */
+  app.get("/:id/source", async (c) => {
+    const found = await loadSourceFor(c.req.param("id"));
+    if (found === null || found === "missing") return c.json({ error: "Originalet finns inte." }, 404);
+    return c.body(new Uint8Array(found.bytes), 200, {
+      "Content-Type": found.mediaType,
+      "Content-Disposition": "inline",
+      "Cache-Control": "private, max-age=86400",
+    });
+  });
 
   app.openapi(
     createRoute({

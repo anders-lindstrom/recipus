@@ -186,6 +186,10 @@ export const recipeSchema = z
     instructions: z.array(z.string()),
     notes: z.string().nullable(),
     ingredients: z.array(recipeIngredientSchema),
+    /** The file or text the recipe was read from, when one was kept. */
+    source: z
+      .object({ kind: z.enum(["image", "pdf", "text"]), mediaType: z.string() })
+      .nullable(),
   })
   .openapi("Recipe");
 
