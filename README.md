@@ -22,7 +22,7 @@ docker run -d --name recipus-pg \
   -e POSTGRES_USER=recipus -e POSTGRES_PASSWORD=recipus -e POSTGRES_DB=recipus \
   -p 5434:5432 postgres:17-alpine
 
-cp .env.example .env          # DATABASE_URL, PROXY_AUTH_SECRET, DEV_AUTH_USER
+cp .env.example .env          # DATABASE_URL, PROXY_AUTH_SECRET, DEV_AUTH_USER, STORAGE_DIR
 
 pnpm install
 pnpm db:migrate               # drizzle-migrationer
