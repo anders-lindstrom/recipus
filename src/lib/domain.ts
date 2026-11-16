@@ -241,6 +241,11 @@ export interface Recipe {
   servingsUnit: string;
   imageUrl: string | null;
   /**
+   * The photo, PDF or pasted text the recipe was read from, when one was kept
+   * (`recipe_sources`). Optional: nothing but the recipe screen needs it.
+   */
+  source?: { kind: "image" | "pdf" | "text"; mediaType: string } | null;
+  /**
    * The method, one step per entry, in order. Empty when nobody has written or
    * imported one — which is common, and is why the screen has to read well with
    * no steps at all rather than treating it as a missing field.

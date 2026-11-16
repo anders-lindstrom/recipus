@@ -50,6 +50,7 @@ interface ApiRecipe {
   imageUrl: string | null;
   instructions: string[];
   notes: string | null;
+  source: { kind: "image" | "pdf" | "text"; mediaType: string } | null;
   ingredients: ApiRecipeIngredient[];
 }
 
@@ -525,7 +526,15 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
 
       {status === "ready" && recipe && (
         <>
-          <RecipeHero title={recipe.title} imageUrl={recipe.imageUrl} />
+          {/* A photographed card has no picture of its own but is one: the
+              original stands in for the hero. A PDF does not — it is a page. */}
+          <RecipeHero
+            title={recipe.title}
+            imageUrl={
+              recipe.imageUrl ??
+              (recipe.source?.kind === "image" ? `/api/recipes/${recipe.id}/source` : null)
+            }
+          />
 
           <div className="px-4 pt-1">
             <h1 className="text-display text-ink">{recipe.title}</h1>
@@ -543,6 +552,17 @@ export function RecipeDetail({ recipeId, actor }: RecipeDetailProps) {
                   className="inline-flex items-center gap-1 font-semibold text-brand"
                 >
                   {hostnameOf(recipe.sourceUrl)}
+                  <UiIcon name="external" size={13} />
+                </a>
+              )}
+              {recipe.source && (
+                <a
+                  href={`/api/recipes/${recipe.id}/source`}
+                  target="_blank"
+                  rel="noopener"
+                  className="inline-flex items-center gap-1 font-semibold text-brand"
+                >
+                  {recipe.source.kind === "text" ? "Visa inklistrad text" : "Visa original"}
                   <UiIcon name="external" size={13} />
                 </a>
               )}
