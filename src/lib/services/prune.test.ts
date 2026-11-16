@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
@@ -9,8 +12,11 @@ import {
   lists,
   ops as opsTable,
   purchases,
+  recipeSources,
+  recipes,
   suggestionDismissals,
 } from "@/db/schema";
+import { LocalFSStorage, setStorageForTests, storage, type StorageAdapter } from "@/lib/storage";
 import { entryId, manualContributionId } from "@/lib/domain";
 import type { Op } from "@/lib/sync";
 import { applyOpToDatabase } from "./apply-op";
@@ -223,5 +229,108 @@ describe("pruneRetention", () => {
       .from(opsTable)
       .where(eq(opsTable.seq, seq));
     expect(row).toBeDefined();
+  });
+});
+
+describe("pruneRetention and recipe originals", () => {
+  const SRC_ACTOR = `test-prune-src-${RUN}`;
+  let dir = "";
+  let previous: StorageAdapter;
+
+  /** A source row and its file, created at `createdAt`, attached to `recipeId`. */
+  async function seedSource(createdAt: string, recipeId: string | null): Promise<string> {
+    const key = `sources/${randomUUID()}.jpg`;
+    await storage().put(key, Buffer.from("bytes"));
+    await db.insert(recipeSources).values({
+      id: randomUUID(),
+      recipeId,
+      kind: "image",
+      mediaType: "image/jpeg",
+      storageKey: key,
+      sha256: "x",
+      byteSize: 5,
+      createdBy: SRC_ACTOR,
+      createdAt: new Date(createdAt),
+    });
+    return key;
+  }
+
+  async function seedRecipe(deletedAt: string | null): Promise<string> {
+    const id = randomUUID();
+    await db.insert(recipes).values({
+      id,
+      title: `${SRC_ACTOR} recept`,
+      createdBy: SRC_ACTOR,
+      updatedBy: SRC_ACTOR,
+      deletedAt: deletedAt ? new Date(deletedAt) : null,
+    });
+    return id;
+  }
+
+  async function exists(key: string): Promise<boolean> {
+    return storage().get(key).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  beforeAll(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "recipus-prune-"));
+    previous = setStorageForTests(new LocalFSStorage(dir));
+  });
+
+  afterAll(async () => {
+    await db.delete(recipeSources).where(eq(recipeSources.createdBy, SRC_ACTOR));
+    await db.delete(recipes).where(eq(recipes.createdBy, SRC_ACTOR));
+    setStorageForTests(previous);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("forgets a draft nobody saved within a day — row and file", async () => {
+    const key = await seedSource("2026-07-29T11:00:00.000Z", null); // 25 h before NOW
+    await pruneRetention(NOW);
+    expect(await exists(key)).toBe(false);
+    const rows = await db.select().from(recipeSources).where(eq(recipeSources.storageKey, key));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("keeps a draft still inside its day", async () => {
+    const key = await seedSource("2026-07-30T11:00:00.000Z", null); // 1 h before NOW
+    await pruneRetention(NOW);
+    expect(await exists(key)).toBe(true);
+  });
+
+  it("keeps the original of a live recipe, however old", async () => {
+    const key = await seedSource(LONG_AGO, await seedRecipe(null));
+    await pruneRetention(NOW);
+    expect(await exists(key)).toBe(true);
+  });
+
+  it("sweeps a file older than a day that no row points at, and keeps a fresh one", async () => {
+    const stray = "sources/stray-old.jpg";
+    const fresh = "sources/stray-fresh.jpg";
+    await storage().put(stray, Buffer.from("x"));
+    await storage().put(fresh, Buffer.from("x"));
+    // The sweep goes by the file's own time, which a test cannot set through
+    // the adapter — so it is set on disk directly.
+    const { utimes } = await import("node:fs/promises");
+    const old = new Date("2026-07-29T11:00:00.000Z");
+    await utimes(path.join(dir, stray), old, old);
+    const recent = new Date("2026-07-30T11:00:00.000Z");
+    await utimes(path.join(dir, fresh), recent, recent);
+    const kept = await seedSource("2026-07-29T11:00:00.000Z", await seedRecipe(null));
+    await utimes(path.join(dir, kept), old, old);
+
+    await pruneRetention(NOW);
+    expect(await exists(stray)).toBe(false);
+    expect(await exists(fresh)).toBe(true);
+    expect(await exists(kept)).toBe(true);
+  });
+
+  it("deletes the file of a recipe retention removes for good", async () => {
+    const key = await seedSource(LONG_AGO, await seedRecipe(LONG_AGO));
+    const result = await pruneRetention(NOW);
+    expect(await exists(key)).toBe(false);
+    expect(result.recipeSources).toBeGreaterThanOrEqual(1);
   });
 });
