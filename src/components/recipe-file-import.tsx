@@ -133,14 +133,19 @@ export function RecipeFileImport({ initialShareToken }: RecipeFileImportProps) {
     arrive(outcome);
   }
 
-  // A shared file reads itself, once, the way a shared link imports itself.
-  // State is only touched from inside the `.then`, behind `cancelled`.
+  /*
+   * A shared file reads itself, once, the way a shared link imports itself.
+   *
+   * A run-once ref and NO cancellation flag, for the reason `ai-add-sheet.tsx`
+   * gives at length: the share token is spent by the first read, so the two
+   * together deadlock under StrictMode — the second setup finds the ref marked
+   * and starts nothing, and the first read resolves into a closure told to
+   * discard it, leaving the spinner up for ever.
+   */
   useEffect(() => {
     if (!initialShareToken || shareTried.current) return;
     shareTried.current = true;
-    let cancelled = false;
     void postRead({ shareToken: initialShareToken }).then((outcome) => {
-      if (cancelled) return;
       if ("error" in outcome) {
         setPhase({ at: "pick" });
         setError(outcome.error);
@@ -150,9 +155,6 @@ export function RecipeFileImport({ initialShareToken }: RecipeFileImportProps) {
       setOriginal({ kind: outcome.kind, url: `/api/recipes/sources/${outcome.sourceId}` });
       arrive(outcome);
     });
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

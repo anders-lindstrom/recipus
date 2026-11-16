@@ -1,6 +1,6 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { parseForList } from "@/lib/services/ai-add";
-import { takeSharedImage } from "@/lib/services/share-inbox";
+import { peekSharedFile } from "@/lib/services/share-inbox";
 import type { ApiEnv } from "..";
 import { amountSchema, errorSchema, jsonBody, jsonRes } from "../schemas";
 
@@ -79,6 +79,7 @@ export function aiRoutes() {
       request: { body: jsonBody(parseBody) },
       responses: {
         200: jsonRes(parseResult, "What was understood"),
+        400: jsonRes(errorSchema, "A shared PDF, which is not a shopping list"),
         404: jsonRes(errorSchema, "The shared image is gone"),
         503: jsonRes(errorSchema, "The image could not be read"),
       },
@@ -87,14 +88,23 @@ export function aiRoutes() {
       const body = c.req.valid("json");
 
       if (body.kind === "share") {
-        const image = takeSharedImage(body.token, c.get("actor"));
+        // Peeked, not taken: the dialog can still hand this share to the
+        // recipe importer, which is the one that spends it.
+        const image = peekSharedFile(body.token, c.get("actor"));
         if (!image) {
           return c.json(
             { error: "Den delade bilden är borta. Dela den igen." },
             404,
           );
         }
-        const shared = await parseForList({ kind: "image", ...image });
+        if (image.mediaType === "application/pdf") {
+          return c.json({ error: "En PDF läses som recept, inte som inköpslista." }, 400);
+        }
+        const shared = await parseForList({
+          kind: "image",
+          data: image.data,
+          mediaType: image.mediaType as "image/jpeg" | "image/png" | "image/webp",
+        });
         if (!shared.usedModel) return c.json({ error: IMAGE_UNREADABLE }, 503);
         return c.json(shared, 200);
       }

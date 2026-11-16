@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import { AuthError, authenticate } from "@/lib/auth";
-import { putSharedImage } from "@/lib/services/share-inbox";
+import { MAX_SOURCE_BYTES } from "@/lib/recipes/sources";
+import { putSharedFile } from "@/lib/services/share-inbox";
 
 /**
  * The one share target, triaging what was shared.
@@ -24,6 +25,7 @@ import { putSharedImage } from "@/lib/services/share-inbox";
  */
 
 const ACCEPTED = new Set(["image/jpeg", "image/png", "image/webp"]);
+const PDF = "application/pdf";
 
 /**
  * A ceiling on what gets parked, not on what a photo may weigh.
@@ -47,7 +49,7 @@ function seeOther(path: string): Response {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  // Who shared it, so `takeSharedImage` can refuse to hand the image to anybody
+  // Who shared it, so `takeSharedFile` can refuse to hand the image to anybody
   // else. A share from a lapsed session goes to the app, which shows its own
   // signed-out banner over a working offline list — far better than an error
   // page at the end of a share.
@@ -66,13 +68,26 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const file = form.get("image");
+  /*
+   * A PDF is a recipe — nobody shares their shopping list as one — so it goes
+   * to the recipe importer, which reads it from the token. Ten megabytes, the
+   * importer's own cap, rather than the 6 MB a screenshot gets: a cookbook PDF
+   * is bigger than a screenshot and goes nowhere near a phone's camera roll.
+   */
+  if (actor && file instanceof File && file.size > 0 && file.type === PDF) {
+    if (file.size > MAX_SOURCE_BYTES) return seeOther("/");
+    const data = Buffer.from(await file.arrayBuffer()).toString("base64");
+    const token = putSharedFile({ data, mediaType: PDF, actor });
+    return seeOther(`/recept/importera?share=${encodeURIComponent(token)}`);
+  }
+
   if (actor && file instanceof File && file.size > 0 && ACCEPTED.has(file.type)) {
     // Checked before the branch below can see it: a shared image usually comes
     // with a title as well, and falling through would send an oversized photo
     // to the recipe importer.
     if (file.size > MAX_SHARE_BYTES) return seeOther("/");
     const data = Buffer.from(await file.arrayBuffer()).toString("base64");
-    const token = putSharedImage({ data, mediaType: file.type, actor });
+    const token = putSharedFile({ data, mediaType: file.type, actor });
     return seeOther(`/?ai=share&t=${encodeURIComponent(token)}`);
   }
 

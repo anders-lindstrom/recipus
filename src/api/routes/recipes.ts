@@ -9,6 +9,7 @@ import { cleanPastedIngredients, extractRecipeFromFile, importRecipeFromUrl } fr
 import {
   attachSource,
   decodeBase64,
+  loadDraftSource,
   loadSourceFor,
   saveFileSource,
   SourceGoneError,
@@ -19,6 +20,7 @@ import {
   storeTextSource,
   type SourceSummary,
 } from "@/lib/services/recipe-sources";
+import { takeSharedFile } from "@/lib/services/share-inbox";
 import type { Unit } from "@/lib/domain";
 import type { ApiEnv } from "..";
 import {
@@ -262,11 +264,16 @@ const recipePasteRequestSchema = z
  * the decoded bytes, where it can answer 413 rather than a validation error.
  */
 const recipeReadFileRequestSchema = z
-  .object({
-    data: z.string().min(1).max(20_000_000),
-    mediaType: z.string().min(1).max(100),
-    fileName: z.string().max(255).optional(),
-  })
+  .union([
+    z.object({
+      data: z.string().min(1).max(20_000_000),
+      mediaType: z.string().min(1).max(100),
+      // Truncated, not refused: a long file name is no reason to lose a photo.
+      fileName: z.string().transform((name) => name.slice(0, 255)).optional(),
+    }),
+    // A photo or PDF shared from another app, parked by /dela.
+    z.object({ shareToken: z.string().min(1).max(128) }),
+  ])
   .openapi("RecipeReadFileRequest");
 
 const recipeDraftSchema = z
@@ -458,13 +465,20 @@ export function recipesRoutes() {
       responses: {
         200: jsonRes(recipeReadFileResponseSchema, "The stored file and what could be read from it"),
         400: jsonRes(errorSchema, "Not a file we keep"),
+        404: jsonRes(errorSchema, "The shared file is gone"),
         413: jsonRes(errorSchema, "Over 10 MB"),
         500: jsonRes(errorSchema, "The file could not be stored"),
       },
     }),
     async (c) => {
-      const body = c.req.valid("json");
+      const request = c.req.valid("json");
       const actor = c.get("actor");
+
+      // Taken, not peeked: once it is stored as a source the share has done
+      // its job, and a second read of the token would store it twice.
+      const body: { data: string; mediaType: string; fileName?: string } | null =
+        "shareToken" in request ? takeSharedFile(request.shareToken, actor) : request;
+      if (!body) return c.json({ error: "Den delade filen är borta. Dela den igen." }, 404);
 
       let saved: { id: string; kind: "image" | "pdf" };
       try {
@@ -550,6 +564,18 @@ export function recipesRoutes() {
    * the body is a file, not JSON. Private caching: the file never changes, but
    * it is the household's and must not sit in a shared cache.
    */
+  // A draft's file, for the review screen of a share — there is no local copy
+  // to show. Only to the person who stored it, and only while it is a draft.
+  app.get("/sources/:sourceId", async (c) => {
+    const found = await loadDraftSource(c.req.param("sourceId"), c.get("actor"));
+    if (found === null || found === "missing") return c.json({ error: "Originalet finns inte." }, 404);
+    return c.body(new Uint8Array(found.bytes), 200, {
+      "Content-Type": found.mediaType,
+      "Content-Disposition": "inline",
+      "Cache-Control": "private, no-store",
+    });
+  });
+
   app.get("/:id/source", async (c) => {
     const found = await loadSourceFor(c.req.param("id"));
     if (found === null || found === "missing") return c.json({ error: "Originalet finns inte." }, 404);

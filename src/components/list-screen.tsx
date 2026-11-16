@@ -286,9 +286,9 @@ export function ListScreen({
   /**
    * The share token, held in state rather than read straight off the prop.
    *
-   * It is one-shot: `takeSharedImage` empties the slot on first read, so a
-   * second read of the same token is a 404 and the sheet opens into its error
-   * card instead of its text field. The prop comes from the URL and nothing
+   * It does not last: the slot expires after ten minutes (and the recipe
+   * importer spends it), so a later read of the same token is a 404 and the
+   * sheet opens into its error card instead of its text field. The prop comes from the URL and nothing
    * rewrites the URL, so without this, closing the dialog and tapping the
    * sparkle again re-fires a read that cannot succeed — and reloading the same
    * address is worse, because `aiOpen` starts true and the error is then the

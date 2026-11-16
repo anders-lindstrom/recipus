@@ -177,6 +177,30 @@ export async function sourceSummaryFor(recipeId: string): Promise<SourceSummary 
   return row ?? null;
 }
 
+/** Reads a row's file, mapping a missing file to `"missing"` (logged). */
+async function readRow(row: { storageKey: string; mediaType: string }, owner: string) {
+  try {
+    return { mediaType: row.mediaType, bytes: await storage().get(row.storageKey) };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    console.error(`[recipe-sources] ${row.storageKey} is recorded for ${owner} but missing on disk`);
+    return "missing" as const;
+  }
+}
+
+/** A draft's file, for the person who stored it and nobody else. */
+export async function loadDraftSource(
+  sourceId: string,
+  actor: string,
+): Promise<{ mediaType: string; bytes: Buffer } | "missing" | null> {
+  const [row] = await db
+    .select()
+    .from(recipeSources)
+    .where(and(eq(recipeSources.id, sourceId), isNull(recipeSources.recipeId), eq(recipeSources.createdBy, actor)))
+    .limit(1);
+  return row ? readRow(row, `draft ${sourceId}`) : null;
+}
+
 /**
  * The original's bytes, or `"missing"` when the row exists and the file does
  * not — a restore that brought back the database but not the folder. Logged,
@@ -191,12 +215,5 @@ export async function loadSourceFor(
     .where(eq(recipeSources.recipeId, recipeId))
     .orderBy(recipeSources.createdAt)
     .limit(1);
-  if (!row) return null;
-  try {
-    return { mediaType: row.mediaType, bytes: await storage().get(row.storageKey) };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    console.error(`[recipe-sources] ${row.storageKey} is recorded for recipe ${recipeId} but missing on disk`);
-    return "missing";
-  }
+  return row ? readRow(row, `recipe ${recipeId}`) : null;
 }

@@ -7,6 +7,7 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import { recipeSources, recipes } from "@/db/schema";
+import { putSharedFile } from "@/lib/services/share-inbox";
 import { LocalFSStorage, setStorageForTests, storage, type StorageAdapter } from "@/lib/storage";
 import type { ApiEnv } from "..";
 import { recipesRoutes } from "./recipes";
@@ -222,6 +223,16 @@ describe("POST /recipes/from-file", () => {
     expect((await saveDraft({ sourceId })).status).toBe(409);
   });
 
+  it("says the draft is gone, not saved, when it was pruned before the save", async () => {
+    const sourceId = await freshSource();
+    await db.delete(recipeSources).where(eq(recipeSources.id, sourceId));
+    const res = await saveDraft({ sourceId });
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "Utkastet finns inte längre. Välj filen igen.",
+    );
+  });
+
   it("refuses a draft with no ingredients, as the paste path does", async () => {
     const sourceId = await freshSource();
     const res = await saveDraft({ sourceId, ingredientText: "Deg:\n\n" });
@@ -279,5 +290,56 @@ describe("POST /recipes/paste keeps what was pasted", () => {
 
     const source = await app.request(`/recipes/${recipe.id}/source`);
     expect(await source.text()).toBe(text);
+  });
+});
+
+describe("a shared file", () => {
+  it("is read from its share token, and the token is spent", async () => {
+    shimAnswers(null);
+    const shareToken = putSharedFile({ data: JPEG_B64, mediaType: "application/pdf", actor: ACTOR });
+    const res = await readFile({ shareToken });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sourceId: string; kind: string };
+    expect(body.kind).toBe("pdf");
+    expect((await readFile({ shareToken })).status).toBe(404);
+  });
+
+  it("is a 404 with a message when the share is gone", async () => {
+    const res = await readFile({ shareToken: "made-up" });
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe("Den delade filen är borta. Dela den igen.");
+  });
+
+  it("can be looked at by its owner while it is still a draft, and by nobody else", async () => {
+    const sourceId = await freshSource();
+    const mine = await app.request(`/recipes/sources/${sourceId}`);
+    expect(mine.status).toBe(200);
+    expect(Buffer.from(await mine.arrayBuffer()).equals(JPEG)).toBe(true);
+    expect((await appFor(OTHER).request(`/recipes/sources/${sourceId}`)).status).toBe(404);
+  });
+});
+
+describe("paste when the disk will not take the original", () => {
+  it("still saves the recipe, without an original", async () => {
+    const restore = setStorageForTests({
+      put: async () => {
+        throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+      },
+      get: async () => Buffer.alloc(0),
+      delete: async () => {},
+      list: async () => [],
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await app.request("/recipes/paste", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Pannkakor utan original", servings: 4, text: "3 dl mjöl" }),
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { source: unknown }).source).toBeNull();
+    } finally {
+      setStorageForTests(restore);
+    }
   });
 });
