@@ -2,6 +2,13 @@
 
 /** The long edge a photo is shrunk to. See `fitWithin`'s own comment. */
 const MAX_EDGE = 1600;
+
+/**
+ * The long edge for a recipe photo. Larger than a shopping list's, because what
+ * is shrunk here is also the original the household keeps — and a dense
+ * cookbook page or a handwritten card needs the pixels to stay legible.
+ */
+export const RECIPE_MAX_EDGE = 2400;
 const QUALITY = 0.8;
 
 /**
@@ -38,9 +45,10 @@ export function fitWithin(
  */
 export async function fileToParseInput(
   file: File,
+  maxEdge: number = MAX_EDGE,
 ): Promise<{ data: string; mediaType: "image/jpeg" }> {
   const bitmap = await createImageBitmap(file);
-  const { width, height } = fitWithin(bitmap.width, bitmap.height, MAX_EDGE);
+  const { width, height } = fitWithin(bitmap.width, bitmap.height, maxEdge);
 
   const canvas = document.createElement("canvas");
   canvas.width = width;

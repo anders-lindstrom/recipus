@@ -1,4 +1,5 @@
 import {
+  ImagePlus,
   ArrowLeft,
   ArrowUp,
   BookOpen,
@@ -81,6 +82,7 @@ const GLYPHS = {
   toList: ListPlus,
   toTop: ArrowUp,
   undo: Undo2,
+  upload: ImagePlus,
   warning: CircleAlert,
 } as const;
 

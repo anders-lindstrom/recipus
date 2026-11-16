@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { RecipeFileImport } from "./recipe-file-import";
 import { ScreenHeader } from "./screen-header";
 import { UiIcon, type UiIconName } from "./ui-icon";
 
@@ -124,9 +125,11 @@ export interface RecipeImportProps {
   initialUrl?: string;
   /** From `?text=` — Android often puts the link inside a sentence here instead. */
   initialText?: string;
+  /** From `?share=` — a photo or PDF parked by `/dela`. */
+  initialShareToken?: string;
 }
 
-export function RecipeImport({ initialUrl, initialText }: RecipeImportProps) {
+export function RecipeImport({ initialUrl, initialText, initialShareToken }: RecipeImportProps) {
   const router = useRouter();
   // The field starts prefilled with whatever the share target resolved to —
   // computed once, during the initial render, rather than written from an
@@ -442,6 +445,8 @@ export function RecipeImport({ initialUrl, initialText }: RecipeImportProps) {
             </div>
           </form>
         )}
+
+        <RecipeFileImport initialShareToken={initialShareToken} />
       </div>
     </div>
   );

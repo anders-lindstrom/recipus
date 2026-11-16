@@ -101,8 +101,9 @@ describe("POST /recipes/read-file", () => {
     const res = await readFile({ data: JPEG_B64, mediaType: "image/jpeg", fileName: "kort.jpg" });
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { sourceId: string; draft: unknown };
+    const body = (await res.json()) as { sourceId: string; kind: string; draft: unknown };
     expect(body.draft).toBeNull();
+    expect(body.kind).toBe("image");
 
     const rows = await sourceRows();
     expect(rows.length).toBe(before + 1);

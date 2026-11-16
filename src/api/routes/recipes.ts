@@ -280,7 +280,11 @@ const recipeDraftSchema = z
   .openapi("RecipeDraft");
 
 const recipeReadFileResponseSchema = z
-  .object({ sourceId: z.string(), draft: recipeDraftSchema.nullable() })
+  .object({
+    sourceId: z.string(),
+    kind: z.enum(["image", "pdf"]),
+    draft: recipeDraftSchema.nullable(),
+  })
   .openapi("RecipeReadFileResponse");
 
 /** The paste path's bounds, plus what a reviewed draft carries besides. */
@@ -462,7 +466,7 @@ export function recipesRoutes() {
       const body = c.req.valid("json");
       const actor = c.get("actor");
 
-      let saved: { id: string };
+      let saved: { id: string; kind: "image" | "pdf" };
       try {
         const bytes = decodeBase64(body.data);
         saved = await saveFileSource({
@@ -486,7 +490,7 @@ export function recipesRoutes() {
             ingredientLines: cleanPastedIngredients(read.ingredientLines.join("\n")),
           }
         : null;
-      return c.json({ sourceId: saved.id, draft }, 200);
+      return c.json({ sourceId: saved.id, kind: saved.kind, draft }, 200);
     },
   );
 
