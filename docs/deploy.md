@@ -167,8 +167,8 @@ on every boot, and the server seeds the catalog after that.
 ### 3. `~/services/recipus/`
 
 ```bash
-mkdir -p ~/services/recipus/backups
-sudo chown -R 1001:1001 ~/services/recipus/backups
+mkdir -p ~/services/recipus/backups ~/services/recipus/data/storage
+sudo chown -R 1001:1001 ~/services/recipus/backups ~/services/recipus/data/storage
 cp <repo>/deploy/docker-compose.yml ~/services/recipus/docker-compose.yml
 ```
 
@@ -196,6 +196,14 @@ deterministic parser for text — only reading an image has no fallback, and say
 so with a 503. Set one without the other and nothing is asked at all: both are
 required together, deliberately, because a URL with no token is a 401 on every
 request.
+
+`data/storage` holds the original each recipe was read from — the photo, the
+PDF, or the pasted text — mounted at `STORAGE_DIR=/app/data/storage`. It sits
+under `~/services/recipus/`, so backrest's daily backup covers it with no change.
+The rows that point at those files are in Postgres, covered by the nightly dump:
+restore both, or a recipe's "Visa original" answers 404. If the directory is not
+writable by uid 1001, importing from a file fails with "Kunde inte spara filen."
+while URL and paste imports carry on.
 
 uid 1001 owning `backups` is load-bearing. If it is not writable the entrypoint
 takes the *warning* branch and migrates with no snapshot — and drizzle has no

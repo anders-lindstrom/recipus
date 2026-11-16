@@ -21,17 +21,28 @@ vi.mock("@/lib/auth", () => ({
 
 const { POST } = await import("./route");
 
-function share(bytes: number, extra: Record<string, string> = {}) {
+function share(bytes: number, extra: Record<string, string> = {}, type = "image/jpeg") {
   const form = new FormData();
   form.set(
     "image",
-    new File([new Uint8Array(bytes)], "lista.jpg", { type: "image/jpeg" }),
+    new File([new Uint8Array(bytes)], type === "application/pdf" ? "recept.pdf" : "lista.jpg", { type }),
   );
   for (const [key, value] of Object.entries(extra)) form.set(key, value);
   return POST(new Request("http://localhost/dela", { method: "POST", body: form }));
 }
 
 describe("POST /dela", () => {
+  it("sends a shared PDF to the recipe importer, which is the only thing a PDF can be", async () => {
+    const res = await share(2 * 1024 * 1024, { title: "Recept" }, "application/pdf");
+    expect(res.status).toBe(303);
+    expect(res.headers.get("Location")).toMatch(/^\/recept\/importera\?share=.+/);
+  });
+
+  it("drops a PDF over 10 MB on the list rather than parking it", async () => {
+    const res = await share(10 * 1024 * 1024 + 1, {}, "application/pdf");
+    expect(res.headers.get("Location")).toBe("/");
+  });
+
   it("parks an ordinary screenshot and sends the dialog its token", async () => {
     const res = await share(64 * 1024);
 

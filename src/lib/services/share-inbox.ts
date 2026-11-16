@@ -1,5 +1,5 @@
 /**
- * A shared image, held just long enough to be looked at.
+ * A shared image or PDF, held just long enough to be looked at.
  *
  * Android's share target is a POST navigation, so the image arrives at the
  * server before the app is even open — but the parse belongs to the dialog the
@@ -23,13 +23,13 @@ import { randomBytes } from "node:crypto";
 export const SHARE_TTL_MS = 10 * 60 * 1000;
 export const SHARE_CAPACITY = 5;
 
-export interface SharedImage {
+export interface SharedFile {
   /** base64, no data-URL prefix. */
   data: string;
   mediaType: string;
 }
 
-interface Slot extends SharedImage {
+interface Slot extends SharedFile {
   actor: string;
   at: number;
 }
@@ -37,7 +37,7 @@ interface Slot extends SharedImage {
 const slots = new Map<string, Slot>();
 
 /** Test seam. Not called by the app — the store is process-lifetime. */
-export function resetSharedImages(): void {
+export function resetSharedFiles(): void {
   slots.clear();
 }
 
@@ -53,26 +53,49 @@ function evictStale(now: number): void {
   }
 }
 
-export function putSharedImage(
-  image: SharedImage & { actor: string },
+export function putSharedFile(
+  file: SharedFile & { actor: string },
   now: Date = new Date(),
 ): string {
   evictStale(now.getTime());
   const token = randomBytes(24).toString("base64url");
   slots.set(token, {
-    data: image.data,
-    mediaType: image.mediaType,
-    actor: image.actor,
+    data: file.data,
+    mediaType: file.mediaType,
+    actor: file.actor,
     at: now.getTime(),
   });
   return token;
 }
 
-export function takeSharedImage(
+/**
+ * The file, without spending the share.
+ *
+ * The shopping-list dialog reads a shared image this way, so that the same
+ * share can still go to the recipe importer from that dialog ("Spara som
+ * recept i stället"), which takes it for good. The ten-minute TTL and the five
+ * slots still bound how long and how much is held.
+ */
+export function peekSharedFile(
   token: string,
   actor: string,
   now: Date = new Date(),
-): SharedImage | null {
+): SharedFile | null {
+  const slot = slots.get(token);
+  if (!slot) return null;
+  if (now.getTime() - slot.at > SHARE_TTL_MS) {
+    slots.delete(token);
+    return null;
+  }
+  if (slot.actor !== actor) return null;
+  return { data: slot.data, mediaType: slot.mediaType };
+}
+
+export function takeSharedFile(
+  token: string,
+  actor: string,
+  now: Date = new Date(),
+): SharedFile | null {
   const slot = slots.get(token);
   if (!slot) return null;
   if (now.getTime() - slot.at > SHARE_TTL_MS) {

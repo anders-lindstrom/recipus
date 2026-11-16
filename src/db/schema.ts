@@ -387,6 +387,40 @@ export const recipeIngredients = pgTable(
   (t) => [index("recipe_ingredients_recipe_idx").on(t.recipeId)],
 );
 
+/**
+ * The file a recipe was read from — a photo, a PDF, or the text someone pasted.
+ *
+ * The bytes are on disk under `STORAGE_DIR` (`src/lib/storage.ts`); this row
+ * says where, and is written only AFTER the file, so a crash in between leaves a
+ * stray file the prune job clears, never a row pointing at nothing.
+ *
+ * `recipe_id` is null while the recipe is still a draft on someone's review
+ * screen. A draft nobody saves is pruned after a day (`prune.ts`). A table and
+ * not columns on `recipes`, so a two-page spread can later carry two sources
+ * without a migration; today a recipe has at most one.
+ */
+export const recipeSources = pgTable(
+  "recipe_sources",
+  {
+    id: text("id").primaryKey(),
+    recipeId: text("recipe_id").references(() => recipes.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<"image" | "pdf" | "text">().notNull(),
+    mediaType: text("media_type").notNull(),
+    storageKey: text("storage_key").notNull(),
+    sha256: text("sha256").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    fileName: text("file_name"),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("recipe_sources_recipe_idx").on(t.recipeId),
+    index("recipe_sources_created_idx").on(t.createdAt),
+  ],
+);
+
 export const recipeAdditions = pgTable(
   "recipe_additions",
   {

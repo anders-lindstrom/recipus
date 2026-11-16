@@ -32,7 +32,11 @@ export default async function ImportRecipePage({
 
   return (
     <main>
-      <RecipeImport initialUrl={first(sp.url)} initialText={first(sp.text)} />
+      <RecipeImport
+        initialUrl={first(sp.url)}
+        initialText={first(sp.text)}
+        initialShareToken={first(sp.share)}
+      />
     </main>
   );
 }

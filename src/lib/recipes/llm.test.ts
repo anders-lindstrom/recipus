@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { extractRecipeWithLlm } from "./llm";
+import { extractRecipeFromFile, extractRecipeWithLlm } from "./llm";
 
 const ORIGINAL_URL = process.env.SHIM_URL;
 const ORIGINAL_SECRET = process.env.SHIM_TOKEN;
@@ -234,5 +234,66 @@ describe("extractRecipeWithLlm", () => {
       "Smula jästen.",
       "Baka 12 min.",
     ]);
+  });
+});
+
+describe("extractRecipeFromFile", () => {
+  const FILE = { data: "QUJD", mediaType: "application/pdf" };
+
+  beforeEach(() => {
+    process.env.SHIM_URL = "http://beelink.host:8301/";
+    process.env.SHIM_TOKEN = "test-secret";
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_URL === undefined) delete process.env.SHIM_URL;
+    else process.env.SHIM_URL = ORIGINAL_URL;
+    if (ORIGINAL_SECRET === undefined) delete process.env.SHIM_TOKEN;
+    else process.env.SHIM_TOKEN = ORIGINAL_SECRET;
+  });
+
+  it("returns null without calling anything when the shim is not configured", async () => {
+    delete process.env.SHIM_URL;
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    expect(await extractRecipeFromFile(FILE)).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("posts the file to /recipe as {kind:'file'} with the bearer token", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(shimResponse({}));
+    await extractRecipeFromFile(FILE);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(String(url)).toBe("http://beelink.host:8301/recipe");
+    expect((init!.headers as Record<string, string>).Authorization).toBe("Bearer test-secret");
+    expect(JSON.parse(init!.body as string)).toEqual({ kind: "file", data: "QUJD", mediaType: "application/pdf" });
+  });
+
+  it("maps a good answer into a draft, with the same tidying as a page", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      shimResponse({ servings: 0, servingsUnit: "  ", ingredientLines: ["2 ägg"], instructions: [" Rör. ", ""] }),
+    );
+    expect(await extractRecipeFromFile(FILE)).toEqual({
+      title: "Kanelbullar",
+      servings: 4,
+      servingsUnit: "portioner",
+      ingredientLines: ["2 ägg"],
+      instructions: ["Rör."],
+    });
+  });
+
+  it("returns null on a non-2xx answer", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 400 }));
+    expect(await extractRecipeFromFile(FILE)).toBeNull();
+  });
+
+  it("returns null on a body that does not match the schema", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ recipe: { title: 1 } })));
+    expect(await extractRecipeFromFile(FILE)).toBeNull();
+  });
+
+  it("returns null when the shim is unreachable, rather than throwing", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed"));
+    expect(await extractRecipeFromFile(FILE)).toBeNull();
   });
 });

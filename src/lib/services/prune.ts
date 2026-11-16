@@ -1,13 +1,15 @@
-import { lt } from "drizzle-orm";
+import { and, inArray, isNull, lt } from "drizzle-orm";
 import { db } from "@/db";
 import {
   listEntries,
   lists,
   ops as opsTable,
   recipeAdditions,
+  recipeSources,
   recipes,
   suggestionDismissals,
 } from "@/db/schema";
+import { storage } from "@/lib/storage";
 import { localDayKey } from "@/lib/cadence";
 import { retentionCutoff } from "@/lib/retention";
 
@@ -37,8 +39,16 @@ export interface PruneResult {
   recipeAdditions: number;
   lists: number;
   recipes: number;
+  /** Recipe originals forgotten: abandoned drafts, and those of pruned recipes. */
+  recipeSources: number;
   suggestionDismissals: number;
 }
+
+/**
+ * How long a draft's file waits for its "Spara". Far past any review screen
+ * left open over lunch; short enough that an abandoned photo is not kept.
+ */
+export const DRAFT_SOURCE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export async function pruneRetention(now: Date): Promise<PruneResult> {
   const cutoff = retentionCutoff(now);
@@ -46,7 +56,12 @@ export async function pruneRetention(now: Date): Promise<PruneResult> {
   // One transaction: a half-applied prune would leave the op log trimmed while
   // the tombstones it was matched to survive, or the reverse — and the reverse
   // is the resurrection bug.
-  return db.transaction(async (tx) => {
+  // Files cannot roll back, so they are deleted only after the transaction
+  // that forgot their rows has committed. A crash in between leaves stray
+  // files, which cost disk, rather than rows pointing at nothing.
+  const doomedKeys: string[] = [];
+
+  const result = await db.transaction(async (tx) => {
     /**
      * The op log goes by SERVER time, not the client clock in `at`.
      *
@@ -93,6 +108,30 @@ export async function pruneRetention(now: Date): Promise<PruneResult> {
       .where(lt(lists.deletedAt, cutoff))
       .returning({ id: lists.id });
 
+    /**
+     * Recipe originals, collected BEFORE the recipes go: their rows leave with
+     * the recipe by cascade, and the keys would be unknowable afterwards. A
+     * draft nobody saved is deleted outright.
+     */
+    const doomedRecipeIds = tx
+      .select({ id: recipes.id })
+      .from(recipes)
+      .where(lt(recipes.deletedAt, cutoff));
+    const cascadingSources = await tx
+      .select({ key: recipeSources.storageKey })
+      .from(recipeSources)
+      .where(inArray(recipeSources.recipeId, doomedRecipeIds));
+    const abandonedSources = await tx
+      .delete(recipeSources)
+      .where(
+        and(
+          isNull(recipeSources.recipeId),
+          lt(recipeSources.createdAt, new Date(now.getTime() - DRAFT_SOURCE_TTL_MS)),
+        ),
+      )
+      .returning({ key: recipeSources.storageKey });
+    doomedKeys.push(...cascadingSources.map((r) => r.key), ...abandonedSources.map((r) => r.key));
+
     const prunedRecipes = await tx
       .delete(recipes)
       .where(lt(recipes.deletedAt, cutoff))
@@ -119,7 +158,41 @@ export async function pruneRetention(now: Date): Promise<PruneResult> {
       recipeAdditions: prunedAdditions.length,
       lists: prunedLists.length,
       recipes: prunedRecipes.length,
+      recipeSources: doomedKeys.length,
       suggestionDismissals: prunedDismissals.length,
     };
   });
+
+  doomedKeys.push(...(await strayFiles(now)));
+
+  for (const key of doomedKeys) {
+    try {
+      await storage().delete(key);
+    } catch (err) {
+      console.error(`[prune] could not delete recipe original ${key}:`, err);
+    }
+  }
+  return result;
+}
+
+/**
+ * Files under `sources/` that no row points at, older than a draft's day.
+ *
+ * Written file-first, a crash before the row — or a post-commit delete above
+ * that failed — leaves a file nothing refers to. Old ones only: a file younger
+ * than a day may be an upload whose row is being written right now.
+ */
+async function strayFiles(now: Date): Promise<string[]> {
+  const cutoff = now.getTime() - DRAFT_SOURCE_TTL_MS;
+  const old = (await storage().list("sources/")).filter((f) => f.modifiedAt.getTime() < cutoff);
+  if (old.length === 0) return [];
+  const known = new Set(
+    (
+      await db
+        .select({ key: recipeSources.storageKey })
+        .from(recipeSources)
+        .where(inArray(recipeSources.storageKey, old.map((f) => f.key)))
+    ).map((r) => r.key),
+  );
+  return old.map((f) => f.key).filter((key) => !known.has(key));
 }

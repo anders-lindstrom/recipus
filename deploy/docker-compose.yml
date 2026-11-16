@@ -10,7 +10,7 @@
 #
 # --- Before the first deploy -------------------------------------------------
 #   cp <repo>/.env.example .env      # fill in DATABASE_URL + PROXY_AUTH_SECRET
-#   mkdir -p backups && sudo chown -R 1001:1001 backups
+#   mkdir -p backups data/storage && sudo chown -R 1001:1001 backups data/storage
 #
 # The image runs as uid 1001 (`nextjs`). If `backups` is not writable by it the
 # entrypoint takes the *warning* branch and migrates with no snapshot — a silent
@@ -59,10 +59,17 @@ services:
       # are computed from day boundaries, and a base-image change that shifted
       # the clock would quietly shift every purchase interval with it.
       - TZ=Europe/Stockholm
+      # Recipe originals (photos, PDFs, pasted text) — see the volume below.
+      - STORAGE_DIR=/app/data/storage
     volumes:
       # Pre-migration pg_dumps (newest 10). Must be writable by uid 1001 — see
       # the note above about how badly this degrades if it is not.
       - ./backups:/backups
+      # The photo, PDF or pasted text each recipe was read from. Under
+      # ~/services, so backrest backs it up with no change of its own. Must be
+      # writable by uid 1001: if it is not, every file import fails with
+      # "Kunde inte spara filen." (URL and paste imports still work).
+      - ./data/storage:/app/data/storage
     healthcheck:
       # /api/health is public by design (registered before the auth gate), so
       # this needs no credentials. It reports 503 when Postgres is unreachable.

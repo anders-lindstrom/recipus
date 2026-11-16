@@ -146,8 +146,8 @@ export function AiAddSheet({
    * The run-once ref and a cancellation flag cannot both be here, and the ref is
    * the one that has to stay. `recipe-import.tsx` pairs them safely because its
    * guard is re-derivable — a cancelled share can simply be imported again. This
-   * token cannot: it is one-shot and consumed on first read, so a second fetch
-   * gets a 404.
+   * one must not run twice either: each read of the share is a model call, and
+   * the token expires after ten minutes, after which a second fetch is a 404.
    *
    * Together they deadlock under StrictMode, which the App Router turns on:
    * setup marks the ref and starts the fetch, the simulated cleanup sets
@@ -401,6 +401,19 @@ export function AiAddSheet({
               Läs av en bild i stället
             </button>
           </>
+        )}
+
+        {/* A shared picture may be a recipe, not a list. The list read only
+            peeked at the share, so the importer can still take it. A link
+            rather than a callback: it leaves this screen, and that is all. */}
+        {shareToken && (
+          <a
+            href={`/recept/importera?share=${encodeURIComponent(shareToken)}`}
+            className="mb-4 inline-flex items-center gap-2 text-body-sm font-semibold text-brand"
+          >
+            <UiIcon name="recipes" size={15} />
+            Spara som recept i stället
+          </a>
         )}
 
         {phase.step === "parsing" && (
