@@ -7,6 +7,6 @@
 
 export type { ImportedRecipe } from "./jsonld";
 export { extractJsonLdRecipe } from "./jsonld";
-export { extractRecipeWithLlm } from "./llm";
+export { extractRecipeFromFile, extractRecipeWithLlm, type RecipeDraft } from "./llm";
 export { importRecipeFromUrl, type ImportRecipeOptions } from "./import";
 export { cleanPastedIngredients } from "./paste";

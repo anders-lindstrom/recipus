@@ -56,8 +56,53 @@ const ResponseSchema = z.object({
   }),
 });
 
+/**
+ * A recipe read out of a file, before anybody has looked at it. No source URL
+ * and no image URL: the file itself is the source, and it is kept beside the
+ * recipe (`recipe_sources`). Goes to the review screen, not straight to a save.
+ */
+export interface RecipeDraft {
+  title: string;
+  servings: number;
+  servingsUnit: string;
+  ingredientLines: string[];
+  instructions: string[];
+}
+
 /** Exported separately so import.ts can be tested without network or shim. */
 export async function extractRecipeWithLlm(html: string, url: string): Promise<ImportedRecipe | null> {
+  const recipe = await askShimForRecipe({ html: extractPageText(html), url });
+  if (!recipe) return null;
+  return { ...recipe, sourceUrl: url, method: "llm" };
+}
+
+/**
+ * A photo, screenshot or PDF of a recipe, read by the shim. Same rules as the
+ * page path — never throws, every failure is `null` — and the same tidying of
+ * what comes back, so a draft from a file looks like a recipe from a page.
+ *
+ * `data` is base64 with no data-URL prefix; `mediaType` is one of
+ * `SOURCE_MEDIA_TYPES` (`./sources.ts`). The caller has already checked both.
+ */
+export async function extractRecipeFromFile(file: {
+  data: string;
+  mediaType: string;
+}): Promise<RecipeDraft | null> {
+  const recipe = await askShimForRecipe({ kind: "file", data: file.data, mediaType: file.mediaType });
+  if (!recipe) return null;
+  return {
+    title: recipe.title.trim(),
+    servings: recipe.servings,
+    servingsUnit: recipe.servingsUnit,
+    ingredientLines: recipe.ingredientLines,
+    instructions: recipe.instructions,
+  };
+}
+
+type ShimRecipe = RecipeDraft & { imageUrl: string | null };
+
+/** One POST to `/recipe`, whichever body it carries, tidied the same way. */
+async function askShimForRecipe(body: unknown): Promise<ShimRecipe | null> {
   const base = process.env.SHIM_URL;
   const secret = process.env.SHIM_TOKEN;
   if (!base || !secret) {
@@ -70,7 +115,7 @@ export async function extractRecipeWithLlm(html: string, url: string): Promise<I
     const res = await fetch(`${shimBase(base)}/recipe`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
-      body: JSON.stringify({ html: extractPageText(html), url }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(SHIM_TIMEOUT_MS),
     });
     if (!res.ok) return null;
@@ -101,8 +146,6 @@ export async function extractRecipeWithLlm(html: string, url: string): Promise<I
     instructions: recipe.instructions
       .map((step) => step.trim())
       .filter((step) => step.length > 0),
-    sourceUrl: url,
-    method: "llm",
   };
 }
 
